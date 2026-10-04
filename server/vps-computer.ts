@@ -221,9 +221,18 @@ export function vpsSshTunnelArgs(alias: string, localPort: number, privateIp: st
   if (!privateDockerIpv4(privateIp)) throw new Error("invalid VPS private container address");
   return [
     // the app's config shares the connection every other VPS command holds,
-    // so the viewer tunnel comes up without its own handshake
+    // so the viewer tunnel gets the same alias/identity/known_hosts — but it
+    // must NOT ride that shared connection: a multiplexed slave registers its
+    // forward with the master and exits 0 immediately (no stderr), which the
+    // join route reads as "SSH viewer tunnel exited 0" and rejects, even
+    // though the forward itself lives on the master. Force a dedicated
+    // connection so the child stays alive for the tunnel's whole lifetime.
     ...(configPath ? ["-F", configPath] : []),
     "-N",
+    "-o",
+    "ControlMaster=no",
+    "-o",
+    "ControlPath=none",
     "-o",
     "BatchMode=yes",
     "-o",

@@ -299,6 +299,11 @@ describe("VPS computer", () => {
     expect(args).toContain("127.0.0.1:45678:172.17.0.5:6901");
     expect(args.at(-1)).toBe("production-vps");
     expect(args).toContain("ExitOnForwardFailure=yes");
+    // a multiplexed slave would register the forward with an existing
+    // ControlMaster and exit 0 instantly; the tunnel must be its own
+    // long-lived connection so the join route can track and close it
+    expect(args).toContain("ControlMaster=no");
+    expect(args).toContain("ControlPath=none");
     // the app's shared-connection config rides along when the platform has one
     expect(vpsSshTunnelArgs("production-vps", 45678, "172.17.0.5", "/data/ssh/config").slice(0, 3)).toEqual(["-F", "/data/ssh/config", "-N"]);
     expect(vpsSshTunnelArgs("production-vps", 45678, "172.17.0.5", null)[0]).toBe("-N");
