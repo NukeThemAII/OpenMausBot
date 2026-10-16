@@ -3,6 +3,7 @@ import { Check, Loader2, Sparkles } from "lucide-react";
 
 import { api, useStore, type ConfigStatus } from "@/state/store";
 import { normalizeImageGenerationUrl, type AvatarImageProvider } from "../../shared/image-generation";
+import { Select } from "./Select";
 
 const PROVIDERS = {
   openai: { label: "OpenAI", keyLabel: "OpenAI image API key", credential: "openaiImageApiKey" },
@@ -29,7 +30,6 @@ export function AvatarImageGenerator({
   const { state, dispatch } = useStore();
   const imageGen = state.config?.imageGen;
   const savedProvider = imageGen?.provider ?? "openai";
-  // Null means follow the shared configuration. Drafts stay local until saved.
   const [providerDraft, setProviderDraft] = useState<AvatarImageProvider | null>(null);
   const [urlDraft, setUrlDraft] = useState<string | null>(null);
   const [modelDraft, setModelDraft] = useState<string | null>(null);
@@ -91,7 +91,6 @@ export function AvatarImageGenerator({
     setUrlDraft(null);
     setModelDraft(null);
     setError(null);
-    // Custom connections need an explicit save after their address/model is set.
     if (next === "custom") return;
     setPending(true);
     try {
@@ -229,9 +228,9 @@ export function AvatarImageGenerator({
       </div>
       <label className="mt-3 block text-[11.5px] text-ink-secondary">
         Image provider
-        <select value={provider} onChange={(event) => void chooseProvider(event.target.value as AvatarImageProvider)} disabled={busy || !state.config} className={`${INPUT_CLASS} mt-1`}>
+        <Select value={provider} onChange={(event) => void chooseProvider(event.target.value as AvatarImageProvider)} disabled={busy || !state.config} className="mt-1 w-full">
           {Object.entries(PROVIDERS).map(([value, info]) => <option key={value} value={value}>{info.label}</option>)}
-        </select>
+        </Select>
       </label>
       <p className="mt-1.5 text-[11px] leading-relaxed text-ink-secondary">
         {provider === "openai" ? "GPT Image 2 · low-quality square draft. Billed to your OpenAI API account."

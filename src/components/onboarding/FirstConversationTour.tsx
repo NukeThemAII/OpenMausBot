@@ -1,10 +1,3 @@
-// Watches the selected bot's chat and puts a spotlight on the right control
-// at the right moment during the first real turn. The order and the
-// once-only rule live in lib/first-conversation.ts; this component only
-// observes the store and persists dismissals to the server's hint list.
-// It stays quiet until the welcome tour is done, and never shows on a
-// paired remote client or to a hosted workspace's member, who cannot save
-// the hint list.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { hintSeenPatch, welcomeDue } from "@/lib/onboarding";
 import { emailGateDone } from "@/lib/analytics";
@@ -12,7 +5,7 @@ import { currentStep } from "@/lib/guided-tour";
 import { anchorFor, cardAnswered, nextSpotlight, placementFor, tourComplete, type ChatObservation, type SpotlightId } from "@/lib/first-conversation";
 import { t } from "@/lib/i18n";
 import type { MausState } from "@/lib/mascot";
-import { api, useStore, useStreaming } from "@/state/store";
+import { api, useStore } from "@/state/store";
 import { Spotlight } from "./Spotlight";
 
 const COPY: Record<SpotlightId, { key: "onboarding.spot.composer" | "onboarding.spot.model" | "onboarding.spot.approval" | "onboarding.spot.connector"; mascot: MausState }> = {
@@ -24,11 +17,8 @@ const COPY: Record<SpotlightId, { key: "onboarding.spot.composer" | "onboarding.
 
 export function FirstConversationTour({ quiet = false }: { quiet?: boolean }) {
   const { state, dispatch } = useStore();
-  const { streaming } = useStreaming();
   const remoteClient = window.ogb?.remoteClient?.active === true;
   const record = state.config?.onboarding;
-  // the guided tour covers the composer and the model chip; this watcher
-  // only explains the two cards that appear on their own
   const [dismissed, setDismissed] = useState<string[]>([]);
   const seen = useMemo(() => [...(record?.hintsSeen ?? []), ...dismissed, "spot.composer", "spot.model"], [record?.hintsSeen, dismissed]);
   const [active, setActive] = useState<SpotlightId | null>(null);
@@ -36,9 +26,8 @@ export function FirstConversationTour({ quiet = false }: { quiet?: boolean }) {
   const sawBusy = useRef(false);
 
   const bot = state.bots.find((b) => b.id === state.selectedId) ?? null;
-  const busy = Boolean(bot?.busy) || Boolean(bot && streaming[bot.threadId]);
+  const busy = Boolean(bot?.busy);
 
-  // a reply has finished once the bot was busy and then stopped
   useEffect(() => {
     if (busy) sawBusy.current = true;
     else if (sawBusy.current) setReplyFinished(true);
@@ -78,8 +67,6 @@ export function FirstConversationTour({ quiet = false }: { quiet?: boolean }) {
 
   useEffect(() => {
     if (!eligible) return;
-    // the card was answered: the tip has done its job and must not stay
-    // over the reply that follows
     if (active && cardAnswered(active, observation)) {
       dismiss();
       return;

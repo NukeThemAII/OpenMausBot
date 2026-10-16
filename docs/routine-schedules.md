@@ -53,8 +53,8 @@ use an appropriate event/webhook workflow instead of a fake weekly schedule.
   occurrence. The preview uses the same calculation as execution.
 - Routine execution defaults to **Bot’s current setup**: its selected model and
   configured computer, including a self-hosted VPS. No Boat key is needed for
-  that VPS. **Boat-hosted agent** is a separate, explicit choice that switches
-  to the Boat runner. The agent tools call these `run_on: "maus"` and
+  that VPS. **Boat cloud computer** is a separate, explicit choice: the bot's
+  own model works on its Boat. The agent tools call these `run_on: "maus"` and
   `run_on: "box"`; legacy stored `runOn: "cloud"` still means Boat and is not
   migrated to a different runner.
 - OpenMausBot must be running to dispatch routines, including cloud-targeted
@@ -69,7 +69,9 @@ use an appropriate event/webhook workflow instead of a fake weekly schedule.
 - Existing catch-up policy remains: up to 12 hours late, one missed occurrence
   can be dispatched; older work receives a missed-run receipt. The next date
   advances without replaying every missed minute. Queued/running/waiting work
-  for the same cron routine does not accumulate overlapping copies.
+  for the same cron routine does not accumulate overlapping copies (a run is
+  waiting while teammates still owe it results on the job runtime,
+  docs/runtime-contract.md §9).
 - Existing one-time, daily/weekday and interval schedules are not migrated or
   reinterpreted. Team exports retain cron expressions and zones; imports remain
   paused until enabled. Older phone apps safely treat cron as a newer schedule;

@@ -15,6 +15,7 @@ const fixture = vi.hoisted(() => ({
   overrides: new Map<number, unknown>(),
   index: 0,
   counting: false,
+  showThreads: true,
 }));
 vi.mock("react", async (original) => {
   const react = await original<typeof import("react")>();
@@ -28,7 +29,9 @@ vi.mock("react", async (original) => {
     },
   };
 });
-vi.mock("@/state/store", () => ({
+vi.mock("@/lib/thread-preferences", () => ({ useShowThreads: () => fixture.showThreads }));
+vi.mock("@/state/store", async (importOriginal) => ({
+  openBotThread: (await importOriginal<typeof import("@/state/store")>()).openBotThread,
   api: fixture.api,
   useStore: () => ({
     state: {
@@ -84,6 +87,7 @@ beforeEach(() => {
   fixture.bots = [bot("scout", "Scout"), bot("atlas", "Atlas")];
   fixture.webhooks = [];
   fixture.overrides = new Map();
+  fixture.showThreads = true;
   vi.stubGlobal("window", { confirm: () => true });
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {}, removeItem: () => {} });
 });
@@ -167,6 +171,20 @@ describe("Triggers pop-up", () => {
     expect(fixture.api).toHaveBeenCalledWith("/api/webhooks/w2", { method: "PATCH", body: JSON.stringify({ enabled: true, verificationPending: false }) });
   });
 
+  it("opens a delivery's chat as before with threads shown, and by the switch alone with them hidden", () => {
+    fixture.webhooks = [webhook("w1")];
+    fixture.bots = [{ ...bot("scout", "Scout"), threadId: "scout-chat" }, bot("atlas", "Atlas")];
+    const openChat = () => {
+      fixture.dispatch.mockClear();
+      const row = render().nodes.find((node) => (node.props.webhook as WebhookTrigger | undefined)?.id === "w1")!;
+      (row.props.onOpenChat as (threadId: string) => void)("delivery-run");
+      return fixture.dispatch.mock.calls.map(([action]) => action).filter((action) => action.type !== "toggleTriggers");
+    };
+    expect(openChat()).toEqual([{ type: "select", id: "scout" }, { type: "switchTask", botId: "scout", threadId: "delivery-run" }]);
+    fixture.showThreads = false;
+    expect(openChat()).toEqual([{ type: "switchTask", botId: "scout", threadId: "delivery-run" }]);
+  });
+
   it("closes through the store", () => {
     const { nodes: tree } = render();
     const close = tree.find((node) => node.props["aria-label"] === "Close triggers")!;
@@ -178,7 +196,6 @@ describe("Triggers pop-up", () => {
     fixture.webhooks = [webhook("w1"), webhook("w2", { name: "Stripe" })];
     fixture.overrides.set(1, "w1:command");
     const { html } = render();
-    // Copy link, switch, copy command, rotate, edit and delete on both rows.
     expect(html.match(/ disabled=""/g)).toHaveLength(12);
   });
 

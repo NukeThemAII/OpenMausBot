@@ -13,6 +13,7 @@ const fixture = vi.hoisted(() => ({
   states: {} as Record<number, unknown>,
   queues: [] as Array<{ enqueue: ReturnType<typeof vi.fn>; clear: ReturnType<typeof vi.fn>; drain: ReturnType<typeof vi.fn>;
     settle: ReturnType<typeof vi.fn>; size: ReturnType<typeof vi.fn>; stopped: ReturnType<typeof vi.fn> }>,
+  computerControl: {} as Record<string, unknown>,
 }));
 vi.mock("react", async (importOriginal) => {
   const react = await importOriginal<typeof import("react")>();
@@ -26,7 +27,7 @@ vi.mock("react", async (importOriginal) => {
     },
   };
 });
-vi.mock("@/state/store", () => ({ api: vi.fn().mockResolvedValue({}), useStore: () => ({ state: { config: { browserProfiles: [] } } }) }));
+vi.mock("@/state/store", () => ({ api: vi.fn().mockResolvedValue({}), useStore: () => ({ state: { config: { browserProfiles: [] }, computerControl: fixture.computerControl } }) }));
 vi.mock("./BrowserProfilesManager", () => ({ BrowserProfilesManager: () => null }));
 vi.mock("@/lib/browser-input-queue", () => ({ createBrowserInputQueue: () => {
   const queue = { enqueue: vi.fn(), clear: vi.fn(), drain: vi.fn().mockResolvedValue(undefined),
@@ -92,7 +93,7 @@ const sentTypes = () => vi.mocked(api).mock.calls.map(([, init]) => JSON.parse(S
 beforeEach(() => {
   fixture.effects = []; fixture.refs = []; fixture.queues = []; fixture.setters = [];
   fixture.control = { held: false, controlling: false, owned: false };
-  fixture.frame = null; fixture.states = {};
+  fixture.frame = null; fixture.states = {}; fixture.computerControl = {};
   FixtureEventSource.instances = [];
   vi.stubGlobal("EventSource", FixtureEventSource);
   vi.stubGlobal("window", { confirm: vi.fn(() => true) });
@@ -181,6 +182,36 @@ describe("live browser connection lifecycle", () => {
     expect(fixture.setters[0]).not.toHaveBeenCalled();
   });
 
+  it("waits on a busy browser without spending the retry budget, and stops waiting once ready", () => {
+    vi.useFakeTimers();
+    render();
+    const cleanup = fixture.effects[2]!();
+    const source = FixtureEventSource.instances[0]!;
+    const busy = fixture.setters[13]!;
+    source.emit("waiting", { reason: "busy" });
+    source.emit("waiting", { reason: "busy" });
+    expect(busy).toHaveBeenLastCalledWith(true);
+    vi.advanceTimersByTime(30_000);
+    expect(fixture.setters[0]).not.toHaveBeenCalled();
+    source.emit("ready", { viewerId: "after-busy" });
+    expect(busy).toHaveBeenLastCalledWith(false);
+    cleanup?.();
+  });
+
+  it("shows a busy timeout as the server's reason and does not retry it", () => {
+    vi.useFakeTimers();
+    render();
+    const cleanup = fixture.effects[2]!();
+    const source = FixtureEventSource.instances[0]!;
+    source.emit("waiting", { reason: "busy" });
+    source.emit("error", { retryable: false, message: "The bot is still using this browser. Reconnect when it has finished." });
+    expect(fixture.setters[7]).toHaveBeenLastCalledWith("The bot is still using this browser. Reconnect when it has finished.");
+    expect(fixture.setters[13]).toHaveBeenLastCalledWith(false);
+    vi.advanceTimersByTime(30_000);
+    expect(fixture.setters[0]).not.toHaveBeenCalled();
+    cleanup?.();
+  });
+
   it("does not retry terminal server refusals", () => {
     vi.useFakeTimers();
     render();
@@ -193,8 +224,7 @@ describe("live browser connection lifecycle", () => {
 
   it("does not let an old source error discard the replacement viewer or input queue", () => {
     render();
-    // Replay the real connection effect's cleanup/setup, as on reconnect or
-    // StrictMode, while retaining the same component refs.
+    // Replays the real connection effect's cleanup and setup, as on reconnect or StrictMode, keeping the same refs.
     const connect = fixture.effects[2]!;
     const firstCleanup = connect();
     const first = FixtureEventSource.instances[0]!;
@@ -283,7 +313,6 @@ describe("live browser connection lifecycle", () => {
     click(nodes, "Restart browser…"); await settle();
     click(nodes, "Reconnect view");
     fixture.setters.forEach((setter) => setter.mockClear());
-    // Complete the request before React has run reconnect's cleanup/setup.
     restart.resolve(); await settle();
     expect(fixture.setters[0]).not.toHaveBeenCalled();
     expect(fixture.setters[6]).not.toHaveBeenCalled();
@@ -312,7 +341,6 @@ describe("live browser connection lifecycle", () => {
     const cleanup = connect();
     FixtureEventSource.instances[0]!.emit("ready", { viewerId: "old-viewer" });
     const oldAction = deferred(); const currentAction = deferred();
-    // Each viewer's first toolbar action takes control by itself, then runs.
     vi.mocked(api).mockResolvedValueOnce({}).mockReturnValueOnce(oldAction.promise)
       .mockResolvedValueOnce({}).mockReturnValueOnce(currentAction.promise);
     click(nodes, "Back"); await settleAll();
@@ -384,18 +412,19 @@ describe("live browser control affordance", () => {
   });
 
   it.each([
-    ["the bot has the browser", { held: false, controlling: false, owned: false }],
-    ["this viewer holds it", { held: true, controlling: true, owned: true }],
-  ])("has no Take control or Return to bot button while %s", (_state, control) => {
+    ["the bot has the browser", { held: false, controlling: false, owned: false }, "Take control", "false"],
+    ["this viewer holds it", { held: true, controlling: true, owned: true }, "Hand back", "true"],
+  ])("offers one explicit control button while %s", (_state, control, label, pressed) => {
     fixture.control = control;
+    fixture.states = { 4: true };
     const html = render();
-    expect(html).not.toMatch(/Take control|Return to bot|aria-pressed/);
+    expect(html).toContain(label);
+    expect(html).toContain(`aria-pressed="${pressed}"`);
+    expect(html).not.toContain("Return to bot");
     expect(html).toContain('aria-label="Browser profiles"');
     expect(html).toContain("Restart browser…");
   });
 
-  // The status floats over the live view, so its words show at any panel width
-  // and it never takes a click from the page.
   const status = (html: string) => /<div role="status"([^>]*)>(.*?)<\/div><\/div><dialog/.exec(html)!;
 
   it("shows a status pill, not a control, over the page only while this viewer holds the browser", () => {
@@ -428,7 +457,7 @@ describe("live browser control affordance", () => {
     fixture.states = { 4: true };
     fixture.frame = { seq: 1, data: "fixture", viewerId: "current-viewer", generation: 1 };
     const controls = () => {
-      fixture.setters = []; // fixture.states index this render's useState calls
+      fixture.setters = [];
       const nodes = renderElements();
       const find = (label: string) => nodes.find((node) => node.props["aria-label"] === label)!;
       return { back: find("Back"), reload: find("Reload page"), newTab: find("New tab"), address: find("Browser address"),
@@ -438,7 +467,6 @@ describe("live browser control affordance", () => {
     expect([watching.back, watching.reload, watching.newTab].map((node) => node.props.disabled)).toEqual([false, false, false]);
     expect(watching.address.props.readOnly).toBe(false);
     expect(watching.viewport.props.driving).toBe(true);
-    // A pending take holds toolbar actions back, while page input still reaches the take.
     fixture.states = { 4: true, 11: "pending" };
     const taking = controls();
     expect([taking.back, taking.reload, taking.newTab].map((node) => node.props.disabled)).toEqual([true, true, true]);
@@ -468,9 +496,6 @@ describe("live browser control affordance", () => {
     expect(open.props.disabled).toBe(!ready);
     expect(submit.props.disabled).toBe(!ready);
     if (!ready) {
-      // A stale dialog stays open with its draft intact until the person
-      // closes it; submitting must never take control and insert into a
-      // field the bot could have changed while the dialog was open.
       const form = nodes.find((node) => node.type === "form" && elements(node).some((child) => child.type === "button" && child.props.children === "Type"))!;
       const field = { value: "private@example.test" };
       form.props.onSubmit!({ preventDefault: vi.fn(), currentTarget: { elements: { namedItem: () => field } } });
@@ -485,7 +510,6 @@ describe("live browser control affordance", () => {
     expect(fresh()).not.toMatch(/Another window is using this browser|Profiles unlock/);
     fixture.control = { held: true, controlling: false, owned: false };
     expect(fresh()).toContain("Another window is using this browser. Switch profiles once it’s done.");
-    // An idle hold of its own needs no line: opening the profiles hands it back.
     fixture.control = { held: true, controlling: true, owned: true };
     expect(fresh()).not.toMatch(/Another window is using this browser|Profiles unlock/);
     fixture.states = { 6: true };
@@ -494,7 +518,7 @@ describe("live browser control affordance", () => {
 
   it("keeps the page while its own take waits but hides it while another window holds it", () => {
     fixture.control = { held: true, controlling: false, owned: false };
-    expect(render()).toContain("Live view paused for human control");
+    expect(render()).toContain("Another window or device controls this browser. Hand control back there to use it here.");
     fixture.control = { held: false, controlling: false, owned: false };
     const cleanup = fixture.effects[2]!();
     const source = FixtureEventSource.instances[0]!;
@@ -504,6 +528,20 @@ describe("live browser control affordance", () => {
     expect(fixture.setters[1]).not.toHaveBeenCalled();
     source.emit("control", { held: true, controlling: false, owned: false });
     expect(fixture.setters[1]).toHaveBeenCalledWith(null);
+    cleanup?.();
+  });
+
+  it("says another window holds the browser instead of dropping a click or a sign-in page silently", () => {
+    fixture.frame = { seq: 1, data: "fixture", viewerId: "current-viewer", generation: 1 };
+    const nodes = renderElements();
+    const cleanup = fixture.effects[2]!();
+    const source = FixtureEventSource.instances[0]!;
+    source.emit("ready", { viewerId: "current-viewer" });
+    source.emit("control", { held: true, controlling: false, owned: false });
+    fixture.setters[7]!.mockClear();
+    nodes.find((node) => node.type === BrowserViewport)!.props.input!({ type: "input_mouse", eventType: "mousePressed", x: 4, y: 5, button: "left", clickCount: 1, modifiers: 0 });
+    expect(fixture.setters[7]).toHaveBeenCalledWith("Another window or device controls this browser. Hand control back there to use it here.");
+    expect(api).not.toHaveBeenCalled();
     cleanup?.();
   });
 });
@@ -638,9 +676,6 @@ describe("implicit browser control", () => {
   });
 });
 
-// MOCA-266: the expand button only ever entered full screen. On macOS that
-// takes the whole window into native full screen, where minimize is disabled,
-// and clicking the button again did nothing.
 describe("browser full screen", () => {
   const fullscreenDocument = () => {
     const listeners = new Map<string, () => void>();
@@ -700,5 +735,110 @@ describe("browser full screen", () => {
     click(nodes, "Full screen");
     await settle();
     expect(fixture.setters[7]).toHaveBeenLastCalledWith("Could not leave full screen. Press Esc instead.");
+  });
+});
+
+describe("explicit browser control and signing in", () => {
+  const press = { type: "input_mouse", eventType: "mousePressed", x: 4, y: 5, button: "left", clickCount: 1, modifiers: 0 };
+  const lift = { ...press, eventType: "mouseReleased" };
+  const plea = { held: false, helpReason: "sign in to example.com", help: { botId: "pepper", threadId: "t1", messageId: "card-1", site: "example.com", place: "browser" } };
+  const capture = (props: { bot: Bot; signIn?: { url: string; site: string; nonce: number } } = { bot }) => {
+    let tree!: ReturnType<typeof LiveBrowser>;
+    function Capture() { tree = LiveBrowser(props); return tree; }
+    renderToStaticMarkup(createElement(Capture));
+    return elements(tree);
+  };
+  const byText = (nodes: Node[], text: string) => nodes.find((node) => node.type === "button" && Children.toArray(node.props.children).includes(text))!;
+  const connect = (props?: Parameters<typeof capture>[0]) => {
+    fixture.frame = { seq: 1, data: "fixture", viewerId: "current-viewer", generation: 1 };
+    const nodes = capture(props);
+    const cleanup = fixture.effects[2]!();
+    const source = FixtureEventSource.instances[0]!;
+    source.emit("ready", { viewerId: "current-viewer" });
+    return { cleanup, source, nodes, input: nodes.find((node) => node.type === BrowserViewport)!.props.input! };
+  };
+
+  it("takes the browser on Take control and keeps it past idle time", async () => {
+    vi.useFakeTimers();
+    fixture.states = { 4: true };
+    const { cleanup, nodes } = connect();
+    byText(nodes, "Take control").props.onClick!({});
+    await settleAll();
+    expect(sentTypes()).toEqual(["take"]);
+    expect(fixture.setters[14]).toHaveBeenLastCalledWith(true);
+    vi.advanceTimersByTime(120_000); await settleAll();
+    expect(sentTypes()).toEqual(["take"]);
+    cleanup?.();
+  });
+
+  it("hands back at once on Hand back, even while held on purpose", async () => {
+    vi.useFakeTimers();
+    fixture.states = { 4: true, 14: true };
+    fixture.control = { held: true, controlling: true, owned: true };
+    const { cleanup, nodes, input } = connect();
+    input(press); input(lift); await settleAll();
+    vi.advanceTimersByTime(60_000); await settleAll();
+    expect(sentTypes()).toEqual(["take"]);
+    byText(nodes, "Hand back").props.onClick!({});
+    vi.advanceTimersByTime(0); await settleAll();
+    expect(sentTypes()).toEqual(["take", "release"]);
+    expect(fixture.setters[14]).toHaveBeenLastCalledWith(false);
+    cleanup?.();
+  });
+
+  it("does not hand back after idle seconds while a sign-in request is open", async () => {
+    vi.useFakeTimers();
+    fixture.computerControl = { pepper: plea };
+    const { cleanup, input } = connect();
+    input(press); input(lift); await settleAll();
+    vi.advanceTimersByTime(120_000); await settleAll();
+    expect(sentTypes()).toEqual(["take"]);
+    cleanup?.();
+  });
+
+  it("still hands back after idle seconds once nothing holds it on purpose", async () => {
+    vi.useFakeTimers();
+    fixture.computerControl = { pepper: { ...plea, help: { ...plea.help, place: "vm" } } };
+    const { cleanup, input } = connect();
+    input(press); input(lift); await settleAll();
+    vi.advanceTimersByTime(8_000); await settleAll();
+    expect(sentTypes()).toEqual(["take", "release"]);
+    cleanup?.();
+  });
+
+  it.each([
+    ["a blank page", "about:blank", ["take", "navigate"]],
+    ["the bot's own page", "https://accounts.example.com/login", ["take"]],
+  ])("a sign-in card's Open takes the browser and opens the site only on %s", async (_label, url, sent) => {
+    fixture.states = { 4: true };
+    const signIn = { url: "https://example.com/", site: "example.com", nonce: 1 };
+    const { cleanup, source } = connect({ bot, signIn });
+    source.emit("tabs", { tabs: [{ tabId: "t1", active: true, title: "", url }] });
+    fixture.effects[5]!(); await settleAll();
+    expect(sentTypes()).toEqual(sent);
+    if (sent.includes("navigate")) expect(JSON.parse(String(vi.mocked(api).mock.calls[1]![1]!.body)).url).toBe("https://example.com/");
+    fixture.effects[5]!(); await settleAll();
+    expect(sentTypes()).toEqual(sent);
+    cleanup?.();
+  });
+
+  it("types a password into the page and nowhere else", async () => {
+    const secret = "hunter2-correct-horse";
+    const logs = (["log", "info", "warn", "error", "debug"] as const).map((level) => vi.spyOn(console, level).mockImplementation(() => {}));
+    fixture.control = { held: true, controlling: true, owned: true };
+    fixture.states = { 4: true, 9: true, 15: true };
+    const { cleanup, nodes } = connect();
+    const field = nodes.find((node) => node.type === "input" && (node.props as { name?: string }).name === "pageText")!;
+    expect((field.props as { type?: string }).type).toBe("password");
+    expect(nodes.some((node) => Children.toArray(node.props.children).includes("It goes only to the page. OpenMausBot does not keep, log or show it."))).toBe(true);
+    const form = nodes.find((node) => node.type === "form" && elements(node).some((child) => (child.props as { name?: string }).name === "pageText"))!;
+    const value = { value: secret };
+    form.props.onSubmit!({ preventDefault: vi.fn(), currentTarget: { elements: { namedItem: () => value } } });
+    await settleAll();
+    expect(fixture.queues[0]!.enqueue).toHaveBeenCalledExactlyOnceWith({ type: "input_keyboard", eventType: "char", text: secret });
+    expect(value.value).toBe("");
+    for (const setter of fixture.setters) expect(JSON.stringify(setter.mock.calls)).not.toContain(secret);
+    for (const log of logs) expect(JSON.stringify(log.mock.calls)).not.toContain(secret);
+    cleanup?.();
   });
 });

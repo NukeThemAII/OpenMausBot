@@ -6,6 +6,26 @@ credentials, SQLite data, transcripts, and computers. The iPhone trusts a Mac
 by scanning the QR code shown in desktop **Settings → Remote access**; it does not need
 an OpenMausBot account of its own.
 
+## Use My Cloud on your phone
+
+With MausBot Cloud, pair the phone with your Cloud instead of your computer, and
+it keeps working while the computer is off.
+
+1. In the desktop app, open the menu under your name and choose **Get the
+   phone app**: the App Store for iPhone, or the APK for Android. Scan its code
+   with the phone's camera.
+2. In the same menu, choose **Connect your phone · to your Cloud (always on)**.
+   (**Settings → MausBot Cloud → Use My Cloud on your phone** does the same.) The
+   app opens your Cloud in its window, at the Cloud's phone pairing.
+3. Choose **Create pairing code** and scan the QR code with the phone app.
+
+On your computer, **Connect your phone** offers your Cloud first and this
+computer second, once your plan is paid and your Cloud is Ready. Until the Cloud
+is Ready it offers only *to this computer*, with a note that the Cloud will show
+there. With the Cloud open in the app window, the entry reads *to your Cloud*
+and pairs with it directly. On another server it pairs with that server, and it
+is shown only to a session allowed to make pairing codes there.
+
 ## Current status
 
 The first version includes:
@@ -103,7 +123,11 @@ There are three deliberately separate trust surfaces:
 
 The desktop app owns the sidecar lifecycle through
 `electron/companion.mjs`. The renderer only receives narrow IPC operations; it
-does not fetch the control port directly.
+does not fetch the control port directly. Every control route needs a token
+the app makes for each sidecar launch and hands over Electron's private port,
+so a page served from `127.0.0.1:8811` itself, as a bot's browser could open
+it, cannot start pairing or change a device's access. A standalone sidecar
+prints its pairing page link with that token.
 
 ## SQLite compatibility
 
@@ -175,6 +199,14 @@ configuration or Tailscale installation is required. The hosted address is
 included in a pairing invitation only after it is ready. The default setup
 waits for that HTTPS address instead of silently substituting Tailscale;
 Tailscale pairing remains an explicit choice in its own optional card.
+
+The address is held only while something needs it. The desktop creates it
+when you sign in, choose Retry, or start pairing (a few seconds under the
+"Creating secure remote access" spinner), keeps it while any phone or desktop
+is paired, and gives it back one to four hours after Remote access shows
+nothing paired and no pairing open. The next pairing gets the same address
+back. If no HTTPS address is free, the panel says when to try again, and
+Wi-Fi or Tailscale pairing still works.
 
 Cloudflare terminates and proxies the encrypted connection to the connector.
 The OpenMausBot control plane stores account and installation metadata plus
@@ -370,12 +402,6 @@ companion/
   src/origin.ts       private per-launch hosted origin listener
   src/control.ts      loopback-only control plane
   src/mdns.ts         Bonjour advertisement
-
-ios/
-  Sources/CompanionCore/   models, HTTP, SSE, state fold
-  Tests/CompanionCoreTests/ captured-contract and core tests
-  App/                     SwiftUI, lifecycle, discovery, Keychain
-  project.yml              generated Xcode project specification
 ```
 
 ## Verification contract
@@ -387,15 +413,6 @@ pnpm typecheck
 pnpm test
 pnpm build:companion
 pnpm check:electron
-
-cd ios
-swift test
-xcodegen generate
-xcodebuild -project OpenMausCompanion.xcodeproj \
-  -scheme OpenMausCompanion \
-  -sdk iphonesimulator \
-  -destination 'generic/platform=iOS Simulator' \
-  CODE_SIGNING_ALLOWED=NO build
 ```
 
 The simulator validates compilation, launch, layout, manual address parsing,

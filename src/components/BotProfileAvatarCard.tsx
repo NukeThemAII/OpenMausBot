@@ -189,9 +189,8 @@ export function BotProfileAvatarCard({
     setGenerating(true);
     setError(null);
     try {
-      // Generation reads the bot's identity and crop server-side. Commit any
-      // debounced profile edits first, then feed the generated avatar back
-      // through the same serialized mutation lane as upload/remove.
+      // Commit debounced profile edits first, then feed the generated avatar back through the same serialized mutation
+      // lane as upload and remove.
       const cropAtStart = cropRef.current;
       await flushBotPatches(bot.id);
       const result: { avatarUrl: string; bot: Bot } = await api(`/api/bots/${bot.id}/avatar/generate`, {
@@ -201,10 +200,6 @@ export function BotProfileAvatarCard({
       const latestCrop = cropRef.current;
       onPatch({
         avatarUrl: result.avatarUrl,
-        // The server owns this crop for generate (server/index.ts picks
-        // "circle" for a mascot bot). The fallback below is never actually
-        // reached, since the server always assigns a crop; "circle" is kept
-        // only as the truthful default if it ever were.
         avatarCrop:
           latestCrop === cropAtStart
             ? (result.bot.avatarCrop ?? "circle")
@@ -234,8 +229,6 @@ export function BotProfileAvatarCard({
         {Boolean(organization?.icons.length) && <div className="mb-3 border-b border-hairline/40 pb-3">
           <div className="mb-2 text-[13px] font-medium text-ink-secondary">{organization!.name} icons</div>
           <div className="flex flex-wrap gap-2">{organization!.icons.map(icon => <button key={icon.id} type="button" disabled={busy} title={icon.name} aria-label={`Use ${icon.name} icon`} className="flex size-12 items-center justify-center rounded-lg border border-hairline/40 hover:bg-control disabled:opacity-50" onClick={() => {
-            // Use the normal attachment path, so chosen icons survive removal
-            // from Admin and travel with the user's own workspace backups.
             const bytes = Uint8Array.from(atob(icon.image.slice(22)), byte => byte.charCodeAt(0));
             void upload(new File([bytes], `${icon.id}.png`, { type: "image/png" }));
           }}><img src={icon.image} alt="" className="size-10 rounded-md object-contain" /></button>)}</div>

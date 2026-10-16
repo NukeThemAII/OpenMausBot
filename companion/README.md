@@ -92,11 +92,15 @@ It prints where to point the phone, and where you pair:
 
 ```text
 companion  http://0.0.0.0:8810  →  harness 127.0.0.1:8799
-pair here  http://127.0.0.1:8811
+pair here  http://127.0.0.1:8811/#token=…
 on the device, enter  macbook.tail1234.ts.net:8810
 ```
 
-Open the pairing page, click **Start pairing**, and type the six digits into
+Open the pairing page from that exact link: the token after `#token=` is new
+each time the sidecar starts, and every control request needs it, so a web
+page that some other browser tab (or a bot's browser) opens on port 8811
+cannot pair a device or change one. The token stays in the address fragment,
+which never leaves the page. Click **Start pairing**, and type the six digits into
 the phone. The normal desktop panel also turns that short-lived code and the
 dialable address into a QR handoff, so the mobile app can fill both in without
 putting the long-lived device token in the QR. Stopping the process is the off
@@ -115,7 +119,8 @@ it is switched on, so the opt-in is never implicit.
 | `OMB_PORT` | `8799` | where the harness is |
 | `OMB_WEBHOOK_PORT` | `OMB_PORT` + 1 | the harness's webhook receiver — refused, not used |
 | `OMB_COMPANION_PORT` | `8810` | where devices connect |
-| `OMB_CONTROL_PORT` | `8811` | the pairing page, loopback only |
+| `OMB_CONTROL_PORT` | `8811` | the pairing page, loopback only, behind a per-launch token |
+| `OMB_CONTROL_TOKEN` | random | that token (43 base64url characters), for a script that starts the sidecar; the desktop app ignores it |
 | `OMB_COMPANION_DIR` | `~/.openmausbot-companion` | paired devices live here |
 | `OMB_COMPANION_NAME` | your name, from the harness | what the phone calls this computer |
 

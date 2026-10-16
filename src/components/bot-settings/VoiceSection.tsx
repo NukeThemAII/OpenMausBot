@@ -1,6 +1,3 @@
-// Voice & alerts: this bot's spoken-reply voice and its desktop/phone
-// notifications. Moved verbatim from SettingsPanel.tsx (VoiceSettings
-// mount ~1026, Notifications ~1028-1046).
 import { requestNotificationPermission } from "@/lib/notify";
 import type { Bot } from "@/state/store";
 import { Switch } from "../SettingsPrimitives";

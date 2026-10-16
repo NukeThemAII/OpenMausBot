@@ -1,10 +1,13 @@
 import { z } from "zod";
 
+import { planAccountLink } from "../../../shared/connector-account-link";
+
 interface InstallationRow {
   id: string;
   composio_user_id: string;
   session_id: string | null;
   disabled_at: number | null;
+  last_seen_at?: number;
 }
 
 interface ComposioSession {
@@ -13,7 +16,12 @@ interface ComposioSession {
   headers: Record<string, string>;
   userId?: string;
   multiAccountConfigured: boolean;
+  /** Project auth configs the Session was created with, by canonical toolkit slug. */
+  authConfigs: AuthConfigMap;
 }
+
+/** Toolkit slug -> auth config id. */
+type AuthConfigMap = Record<string, string>;
 
 interface ConnectedAccountSummary {
   id: string;
@@ -46,9 +54,26 @@ const sessionWireSchema = z.object({
       max_accounts_per_toolkit: z.number().optional(),
       require_explicit_selection: z.boolean().optional(),
     }).optional(),
+    auth_configs: z.record(z.string(), z.string()).optional(),
   }).optional(),
 });
 type SessionWire = z.infer<typeof sessionWireSchema>;
+
+// A Session reaches a toolkit Composio doesn't manage auth for (HighLevel, a
+// BYO OAuth app) only if created with the project's auth config id under
+// `auth_configs`.
+const authConfigItemSchema = z.object({
+  id: z.string().optional(),
+  status: z.string().nullable().optional(),
+  is_composio_managed: z.boolean().optional(),
+  is_enabled_for_tool_router: z.boolean().nullable().optional(),
+  last_updated_at: z.string().nullable().optional(),
+  toolkit: z.object({ slug: z.string().optional() }).optional(),
+});
+const authConfigsPageSchema = z.object({
+  items: z.array(authConfigItemSchema).optional(),
+  next_cursor: z.string().nullable().optional(),
+});
 
 const connectedAccountResponseSchema = z.object({
   id: z.string().optional(),
@@ -91,10 +116,10 @@ const MULTI_ACCOUNT_CONFIG = {
   require_explicit_selection: true,
 } as const;
 // Workers on the free plan get 50 subrequests per request, and the connected
-// inventory runs two paginated sweeps back to back — 20 pages each keeps the
-// worst case at ~40 fetches with headroom for the session lookup. At 100
-// accounts per page nobody real is near the ceiling.
+// inventory runs two paginated sweeps back to back: 20 pages each leaves
+// headroom for the session lookup.
 const MAX_CONNECTED_ACCOUNT_PAGES = 20;
+const MAX_AUTH_CONFIG_PAGES = 20;
 const ACCOUNT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 /** Composio's catalog cursor is base64 of the page and limit. */
 const CATALOG_CURSOR = /^[A-Za-z0-9+/_=-]{1,256}$/;
@@ -122,6 +147,12 @@ function normalizeAccountAlias(value: string | null | undefined): string | undef
     throw new Error("Account alias must be 1-64 printable characters");
   }
   return alias;
+}
+
+/** Composio's slug is `twitter`; saved cards and model calls may still say `x`. */
+function canonicalToolkitSlug(slug: string): string {
+  const normalized = slug.trim().toLowerCase();
+  return normalized === "x" ? "twitter" : normalized;
 }
 
 function randomToken() {
@@ -158,6 +189,9 @@ function parseSession(value: SessionWire): ComposioSession {
     // creation, and recreating a Session would post the same config and get
     // the same echo back — strict equality here can only churn, never fix.
     multiAccountConfigured: multi?.enable === true,
+    authConfigs: Object.fromEntries(
+      Object.entries(config?.auth_configs ?? {}).map(([slug, id]) => [canonicalToolkitSlug(slug), id]),
+    ),
   };
 }
 
@@ -191,7 +225,7 @@ async function getSession(env: Env, sessionId: string) {
   return parseSession(sessionWireSchema.parse(await response.json()));
 }
 
-async function createSession(env: Env, userId: string) {
+async function createSession(env: Env, userId: string, authConfigs: AuthConfigMap = {}) {
   const response = await composioRequest(env, "/tool_router/session", {
     method: "POST",
     body: JSON.stringify({
@@ -202,42 +236,152 @@ async function createSession(env: Env, userId: string) {
         enable_connection_removal: true,
       },
       multi_account: MULTI_ACCOUNT_CONFIG,
+      ...(Object.keys(authConfigs).length ? { auth_configs: authConfigs } : {}),
     }),
   });
   if (!response.ok) throw new Error(await upstreamError(response, `Session creation failed (${response.status})`));
   return parseSession(sessionWireSchema.parse(await response.json()));
 }
 
-/** Session ids this isolate already tried to upgrade once. If the fresh
- *  Session STILL doesn't echo multi-account, Composio isn't granting it —
- *  serve single-account behavior instead of recreating a Session and writing
- *  D1 on every request. */
-const multiAccountUpgradeAttempted = new Set<string>();
+/** The project's own (not Composio-managed) auth configs: newest enabled one
+ *  per toolkit. Paged like the account inventory. */
+async function listCustomAuthConfigs(env: Env): Promise<AuthConfigMap> {
+  const chosen = new Map<string, { id: string; updated: string }>();
+  let cursor: string | undefined;
+  for (let page = 0; page < MAX_AUTH_CONFIG_PAGES; page += 1) {
+    const params = new URLSearchParams({ is_composio_managed: "false", limit: "100" });
+    if (cursor) params.set("cursor", cursor);
+    const response = await composioRequest(env, `/auth_configs?${params}`);
+    if (!response.ok) throw new Error(await upstreamError(response, `Auth config lookup failed (${response.status})`));
+    const body = authConfigsPageSchema.parse(await response.json());
+    for (const item of body.items ?? []) {
+      const slug = item.toolkit?.slug ? canonicalToolkitSlug(item.toolkit.slug) : "";
+      if (!slug || !item.id || item.is_composio_managed === true) continue;
+      if (item.is_enabled_for_tool_router === false) continue;
+      if (item.status && /^(disabled|inactive|expired|deleted)$/i.test(item.status)) continue;
+      const updated = item.last_updated_at ?? "";
+      const current = chosen.get(slug);
+      if (!current || updated > current.updated) chosen.set(slug, { id: item.id, updated });
+    }
+    const next = body.next_cursor || undefined;
+    if (!next || next === cursor) break;
+    cursor = next;
+  }
+  return Object.fromEntries([...chosen].sort(([a], [b]) => a.localeCompare(b)).map(([slug, { id }]) => [slug, id]));
+}
 
-async function ensureSession(installation: InstallationRow, env: Env, ctx: ExecutionContext) {
+/** The Worker serves one Composio project, so its auth configs are read once
+ *  per isolate every ten minutes. A failed read keeps the last good map (or
+ *  none) and retries sooner: Sessions must keep working without it. */
+const AUTH_CONFIG_TTL_MS = 10 * 60_000;
+const AUTH_CONFIG_RETRY_MS = 60_000;
+let authConfigCache: { configs: AuthConfigMap; expiresAt: number } | undefined;
+
+async function projectAuthConfigs(env: Env): Promise<AuthConfigMap> {
+  if (authConfigCache && Date.now() < authConfigCache.expiresAt) return authConfigCache.configs;
+  try {
+    authConfigCache = { configs: await listCustomAuthConfigs(env), expiresAt: Date.now() + AUTH_CONFIG_TTL_MS };
+  } catch (error) {
+    console.error(JSON.stringify({ message: "auth config lookup failed", error: error instanceof Error ? error.message : String(error) }));
+    authConfigCache = { configs: authConfigCache?.configs ?? {}, expiresAt: Date.now() + AUTH_CONFIG_RETRY_MS };
+  }
+  return authConfigCache.configs;
+}
+
+function sessionCoversAuthConfigs(session: ComposioSession, wanted: AuthConfigMap) {
+  return Object.entries(wanted).every(([slug, id]) => session.authConfigs[slug] === id);
+}
+
+function authConfigsKey(sessionId: string, wanted: AuthConfigMap) {
+  return `${sessionId}:${JSON.stringify(wanted)}`;
+}
+
+/** Session ids this isolate already tried to upgrade once. If the fresh Session
+ *  still doesn't echo multi-account, Composio isn't granting it. */
+const multiAccountUpgradeAttempted = new Set<string>();
+/** Likewise for an `auth_configs` echo Composio leaves out, keyed by the map
+ *  asked for so a new auth config still triggers one more upgrade. */
+const authConfigUpgradeAttempted = new Set<string>();
+
+/** A Session cannot be edited, so one that lacks multi-account or the
+ *  project's current auth configs is replaced (once per shortfall). */
+function sessionReady(session: ComposioSession, authConfigs: AuthConfigMap) {
+  return (session.multiAccountConfigured || multiAccountUpgradeAttempted.has(session.sessionId))
+    && (sessionCoversAuthConfigs(session, authConfigs) || authConfigUpgradeAttempted.has(authConfigsKey(session.sessionId, authConfigs)));
+}
+
+/** A Session's MCP URL and headers are fixed for its id, so the relay reuses a
+ *  recent verification. Keyed by the session_id D1 returned, so a replaced
+ *  Session never hits a stale entry. */
+const VERIFIED_SESSION_TTL_MS = 5 * 60_000;
+const VERIFIED_SESSION_LIMIT = 1_000;
+const verifiedSessions = new Map<string, { session: ComposioSession; verifiedAt: number }>();
+
+function rememberSession(session: ComposioSession) {
+  verifiedSessions.delete(session.sessionId);
+  verifiedSessions.set(session.sessionId, { session, verifiedAt: Date.now() });
+  // Maps iterate in insertion order, so the oldest entries go first.
+  for (const sessionId of verifiedSessions.keys()) {
+    if (verifiedSessions.size <= VERIFIED_SESSION_LIMIT) break;
+    verifiedSessions.delete(sessionId);
+  }
+}
+
+function forgetSession(sessionId: string) {
+  verifiedSessions.delete(sessionId);
+}
+
+function verifiedSession(sessionId: string | null) {
+  if (!sessionId) return undefined;
+  const entry = verifiedSessions.get(sessionId);
+  if (entry && Date.now() - entry.verifiedAt < VERIFIED_SESSION_TTL_MS) return entry.session;
+  verifiedSessions.delete(sessionId);
+  return undefined;
+}
+
+/** last_seen_at only shows an installation is still in use; ten minutes is
+ *  precise enough for the idle-installation sweep. */
+const LAST_SEEN_INTERVAL_MS = 10 * 60_000;
+
+function touchLastSeen(installation: InstallationRow, env: Env, ctx: ExecutionContext) {
+  const now = Date.now();
+  if (now - (installation.last_seen_at ?? 0) < LAST_SEEN_INTERVAL_MS) return;
+  installation.last_seen_at = now;
+  ctx.waitUntil(
+    env.DB.prepare("UPDATE installations SET last_seen_at = ? WHERE id = ?")
+      .bind(now, installation.id)
+      .run()
+      .catch((error: Error) => console.error(JSON.stringify({ message: "last-seen update failed", id: installation.id, error: error.message }))),
+  );
+}
+
+async function limitSessionRequests(installation: InstallationRow, env: Env) {
   if (!(await env.SESSION_LIMITER.limit({ key: installation.id })).success) {
     throw new Response(JSON.stringify({ error: "too many connected-app requests" }), { status: 429, headers: JSON_HEADERS });
   }
+}
+
+async function ensureSession(installation: InstallationRow, env: Env, ctx: ExecutionContext) {
+  await limitSessionRequests(installation, env);
+  return verifySession(installation, env, ctx);
+}
+
+async function verifySession(installation: InstallationRow, env: Env, ctx: ExecutionContext) {
+  const authConfigs = await projectAuthConfigs(env);
   let session = installation.session_id ? await getSession(env, installation.session_id) : null;
-  if (session && !session.multiAccountConfigured && multiAccountUpgradeAttempted.has(session.sessionId)) {
-    return session;
-  }
-  if (!session?.multiAccountConfigured) {
-    // Connected accounts are attached to this stable Composio user ID. A new
-    // Session upgrades legacy installations without relinking OAuth grants.
-    session = await createSession(env, installation.composio_user_id);
+  if (session && sessionReady(session, authConfigs)) {
+    touchLastSeen(installation, env, ctx);
+  } else {
+    // Connected accounts are attached to this stable Composio user ID, so a
+    // Session recreated for it keeps every grant.
+    session = await createSession(env, installation.composio_user_id, authConfigs);
     multiAccountUpgradeAttempted.add(session.sessionId);
+    authConfigUpgradeAttempted.add(authConfigsKey(session.sessionId, authConfigs));
     await env.DB.prepare("UPDATE installations SET session_id = ?, last_seen_at = ? WHERE id = ?")
       .bind(session.sessionId, Date.now(), installation.id)
       .run();
-  } else {
-    ctx.waitUntil(
-      env.DB.prepare("UPDATE installations SET last_seen_at = ? WHERE id = ?")
-        .bind(Date.now(), installation.id)
-        .run()
-        .catch((error: Error) => console.error(JSON.stringify({ message: "last-seen update failed", id: installation.id, error: error.message }))),
-    );
   }
+  rememberSession(session);
   return session;
 }
 
@@ -245,7 +389,7 @@ async function authenticate(request: Request, env: Env) {
   const token = request.headers.get("authorization")?.match(/^Bearer ([0-9a-f]{64})$/)?.[1];
   if (!token) return null;
   const row = await env.DB.prepare(
-    "SELECT id, composio_user_id, session_id, disabled_at FROM installations WHERE token_hash = ?",
+    "SELECT id, composio_user_id, session_id, disabled_at, last_seen_at FROM installations WHERE token_hash = ?",
   ).bind(await sha256(token)).first<InstallationRow>();
   return row && row.disabled_at === null ? row : null;
 }
@@ -271,19 +415,41 @@ async function proxyMcp(request: Request, installation: InstallationRow, env: En
   if (declared > MAX_MCP_BODY) return json({ error: "MCP request is too large" }, 413);
   const body = await request.arrayBuffer();
   if (body.byteLength > MAX_MCP_BODY) return json({ error: "MCP request is too large" }, 413);
-  const session = await ensureSession(installation, env, ctx);
-  const upstreamHeaders = new Headers(session.headers);
-  upstreamHeaders.set("x-api-key", env.COMPOSIO_API_KEY);
-  upstreamHeaders.set("content-type", request.headers.get("content-type") ?? "application/json");
-  upstreamHeaders.set("accept", "application/json, text/event-stream");
+  await limitSessionRequests(installation, env);
+  const reused = verifiedSession(installation.session_id);
+  if (reused) touchLastSeen(installation, env, ctx);
+  let session = reused ?? await verifySession(installation, env, ctx);
   const incomingMcpSession = request.headers.get("mcp-session-id");
-  if (incomingMcpSession) upstreamHeaders.set("mcp-session-id", incomingMcpSession);
-  const response = await fetch(session.url, {
-    method: "POST",
-    headers: upstreamHeaders,
-    body,
-    signal: AbortSignal.timeout(10 * 60_000),
-  });
+  const forward = (target: ComposioSession) => {
+    const upstreamHeaders = new Headers(target.headers);
+    upstreamHeaders.set("x-api-key", env.COMPOSIO_API_KEY);
+    upstreamHeaders.set("content-type", request.headers.get("content-type") ?? "application/json");
+    upstreamHeaders.set("accept", "application/json, text/event-stream");
+    if (incomingMcpSession) upstreamHeaders.set("mcp-session-id", incomingMcpSession);
+    return fetch(target.url, {
+      method: "POST",
+      headers: upstreamHeaders,
+      body,
+      signal: AbortSignal.timeout(10 * 60_000),
+    }).catch((error: unknown) => {
+      forgetSession(target.sessionId);
+      throw error;
+    });
+  };
+  let response = await forward(session);
+  if (reused && !incomingMcpSession && (response.status === 404 || response.status === 410)) {
+    // Composio dropped the Session after this isolate verified it. Without an
+    // mcp-session-id the client has nothing to re-initialize, so look the
+    // Session up again and resend once (a 404 or 410 from the MCP URL
+    // dispatched nothing). With one, the 404 passes through.
+    forgetSession(session.sessionId);
+    await response.body?.cancel();
+    session = await verifySession(installation, env, ctx);
+    response = await forward(session);
+  }
+  // Any upstream failure may mean the Session went bad, so look it up again
+  // on the next message.
+  if (!response.ok) forgetSession(session.sessionId);
   const headers = new Headers({
     "content-type": response.headers.get("content-type") ?? "application/json",
     "cache-control": "no-store",
@@ -294,8 +460,7 @@ async function proxyMcp(request: Request, installation: InstallationRow, env: En
 }
 
 async function catalog(env: Env, url: URL) {
-  // The catalog runs past a thousand toolkits, so pass the caller's cursor
-  // through — dropping it capped the marketplace at one page.
+  // The catalog runs past a thousand toolkits, so pass the caller's cursor through.
   const params = new URLSearchParams({ limit: "500", sort_by: "usage" });
   const cursor = url.searchParams.get("cursor");
   if (cursor && CATALOG_CURSOR.test(cursor)) params.set("cursor", cursor);
@@ -485,18 +650,20 @@ async function authorize(
   // work, with the alias guardrails degrading to first-account behavior.
   const accounts = await listConnectedAccounts(env, installation.composio_user_id, [slug]).catch(() => []);
   const serviceAccounts = accounts.filter((account) => account.toolkit?.slug?.toLowerCase() === slug);
-  const usableAccounts = serviceAccounts.filter((account) => /^(active|initiated|initializing|pending)$/i.test(account.status ?? ""));
-  if (usableAccounts.length >= MULTI_ACCOUNT_CONFIG.max_accounts_per_toolkit) {
-    return json({ error: `${slug} already has the maximum of ${MULTI_ACCOUNT_CONFIG.max_accounts_per_toolkit} accounts` }, 409);
-  }
-  if (usableAccounts.length > 0 && !alias) {
-    return json({ error: "Add an account alias so the existing connection is not replaced" }, 400);
-  }
-  if (alias && serviceAccounts.some((account) => account.alias?.trim().toLowerCase() === alias.toLowerCase())) {
-    return json({ error: `Account alias "${alias}" is already in use for ${slug}` }, 409);
+  const plan = planAccountLink(
+    slug,
+    serviceAccounts,
+    alias,
+    MULTI_ACCOUNT_CONFIG.max_accounts_per_toolkit,
+    () => `omb-retry-${crypto.randomUUID()}`,
+  );
+  if (!plan.ok) return json({ error: plan.error }, plan.status);
+  for (const id of plan.replace) {
+    const removed = await composioRequest(env, `/connected_accounts/${encodeURIComponent(id)}?revoke_on_delete=true`, { method: "DELETE" });
+    if (!removed.ok) return json({ error: await upstreamError(removed, "Removing the earlier sign-in failed") }, 502);
   }
   const linkRequest: AccountLinkRequest = { toolkit: slug };
-  if (alias) linkRequest.alias = alias;
+  if (plan.alias) linkRequest.alias = plan.alias;
   const response = await composioRequest(env, `/tool_router/session/${encodeURIComponent(session.sessionId)}/link`, {
     method: "POST",
     body: JSON.stringify(linkRequest),
@@ -620,6 +787,7 @@ export {
   createSession,
   disconnectAccount,
   ensureSession,
+  listCustomAuthConfigs,
   normalizeAccountAlias,
   parseSession,
   requestAlias,

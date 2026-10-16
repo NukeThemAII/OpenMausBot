@@ -1,41 +1,51 @@
 import type { EffortLevel, EngineAccess, ModelCatalog, ModelSelection, ProviderSnapshot } from "./contracts.ts";
 
-interface SelectableInstance {
+export interface SelectableInstance {
   instanceId: string;
   driverKind: string;
   snapshot: ProviderSnapshot;
   models: ModelCatalog;
   capabilities?: { effortLevels?: readonly EffortLevel[]; modelVariants?: boolean };
   access?: EngineAccess;
+  enabled?: boolean;
 }
 
-/** What an enrolled organisation adds to the choice. Both are omitted (or
- * answer nothing) on a desktop that is not enrolled, which keeps the
- * selection exactly what it has always been. */
 export interface DefaultSelectionContext {
-  /** True for a Company instance the enrolled organisation provides. */
   company?: (instanceId: string) => boolean;
-  /** Why the organisation's desktop policy refuses an instance for bots. */
   refusal?: (instance: SelectableInstance) => string | undefined;
 }
 
 const claudeFirst = (instances: readonly SelectableInstance[]) =>
   instances.find((instance) => instance.driverKind === "claudeAgent") ?? instances[0];
 
-/** A saved choice is intentional: an unavailable provider or removed model
- * sends new bots to setup instead of silently changing their provider. */
+/** A custom endpoint brings its own credential, so its sign-in state does not count. */
+export function signedOut(instance: SelectableInstance): boolean {
+  return instance.snapshot.state === "available" && instance.access !== "custom" && instance.snapshot.authenticated === false;
+}
+
+export function readyToRun(instance: SelectableInstance, context: DefaultSelectionContext = {}): boolean {
+  return instance.enabled !== false && instance.snapshot.state === "available" && context.refusal?.(instance) === undefined && !signedOut(instance);
+}
+
+const defaultModel = (instance: SelectableInstance) => instance.models.default.trim()
+  ? instance.models.default
+  : instance.models.options.find((model) => model.id.trim())?.id ?? "";
+
+/** A saved choice is intentional: an unavailable provider sends new bots to setup, never silently to another provider. On
+ * an enrolled desktop a working personal engine beats a Company one, so billing stays the person's choice. */
 export function selectDefaultModelSelection(
   instances: readonly SelectableInstance[],
   preferred?: ModelSelection,
   context: DefaultSelectionContext = {},
 ): ModelSelection {
-  if (preferred) {
+  if (preferred && (preferred.instanceId || preferred.model)) {
     const instance = instances.find((candidate) => candidate.instanceId === preferred.instanceId);
     if (
       instance?.snapshot.state !== "available" ||
-      instance.snapshot.authenticated === false ||
-      // An organisation that disallows the saved engine makes it unusable,
-      // exactly like an unavailable one: setup, never another provider.
+      instance.enabled === false ||
+      signedOut(instance) ||
+      !preferred.model.trim() ||
+      // A disallowed saved engine is unusable like an unavailable one: setup, never another provider.
       context.refusal?.(instance) !== undefined ||
       (preferred.variant !== undefined && !instance.capabilities?.modelVariants) ||
       !(instance.models.default === preferred.model || instance.models.options.some((model) => model.id === preferred.model))
@@ -43,31 +53,21 @@ export function selectDefaultModelSelection(
       return { instanceId: "", model: "" };
     }
     const selection = { ...preferred };
-    // A saved effort can outlive driver support. Keep the intentional model,
-    // but let the provider use its own effort default instead of failing turn 1.
+    // A saved effort can outlive driver support: keep the model, let the provider use its default effort.
     if (selection.effort && !instance.capabilities?.effortLevels?.includes(selection.effort)) delete selection.effort;
     return selection;
   }
-  // The organisation's policy is inert (no refusal) unless this desktop is enrolled.
-  const available = instances.filter((instance) => instance.snapshot.state === "available" && context.refusal?.(instance) === undefined);
+  const available = instances.filter((instance) => instance.enabled !== false && instance.snapshot.state === "available" && context.refusal?.(instance) === undefined && defaultModel(instance));
+  const ready = available.filter((instance) => readyToRun(instance, context));
   const company = context.company;
-  let pick: SelectableInstance | undefined;
-  if (company && instances.some((instance) => company(instance.instanceId))) {
-    // Enrolled: an installed but signed-out personal Claude would send every
-    // new bot to setup although a Company model can run. Prefer instances that
-    // can run a turn now; a working personal engine still wins, so billing
-    // stays the person's explicit choice.
-    const ready = available.filter((instance) => instance.access === "custom" || instance.snapshot.authenticated !== false);
-    pick = claudeFirst(ready.filter((instance) => !company(instance.instanceId))) ?? claudeFirst(ready) ?? claudeFirst(available);
-  } else {
-    pick = claudeFirst(available);
-  }
-  return { instanceId: pick?.instanceId ?? "", model: pick?.models.default ?? "" };
+  const personal = company && instances.some((instance) => company(instance.instanceId))
+    ? claudeFirst(ready.filter((instance) => !company(instance.instanceId)))
+    : undefined;
+  const pick = personal ?? claudeFirst(ready) ?? claudeFirst(available);
+  return { instanceId: pick?.instanceId ?? "", model: pick ? defaultModel(pick) : "" };
 }
 
-/** Complete a new bot's selection with the workspace's new-bot effort. An
- * explicit effort or model variant is the caller's choice and wins; an engine
- * that does not offer the level keeps sending none rather than failing turn 1. */
+/** An explicit effort or variant wins; an engine without the level sends none rather than failing turn 1. */
 export function withNewBotEffort(
   selection: ModelSelection,
   effort: EffortLevel | undefined,

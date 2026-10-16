@@ -1,14 +1,3 @@
-// History: every change recorded against this bot's profile (name, title,
-// instructions, soul, and the rest of PROFILE_REQUEST_FIELDS), newest
-// first. Server-built list — GET /api/bots/:id/history — and a soul row
-// carries a rollback: POST /api/bots/:id/history/rollback { id, expectedRevision } restores
-// that row's previous SOUL.md text (labeled "Undo", not "Restore" — it
-// applies the previous text, it doesn't reopen an old version to edit).
-// Pure presentational: the dialog owns the fetch, the reload after rollback,
-// and the loading/error split — a first-load failure never reaches this
-// component (the dialog shows "Couldn't load history." instead); a failed
-// reload with rows already on screen arrives as refreshError, the same
-// data-wins precedence OverviewSection gets one level up.
 import { whenLabel } from "@/lib/schedule-label";
 
 export interface HistoryRow {

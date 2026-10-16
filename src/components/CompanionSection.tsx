@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { t } from "@/lib/i18n";
 import {
   Cloud,
@@ -20,6 +20,7 @@ import {
   usePhoneSetupController,
 } from "./PhoneSetupFlow";
 import { companionPairingMode } from "../lib/phone-setup";
+import { revealPhonePairing } from "../lib/phone-pairing";
 import { ConnectionDetail } from "./ConnectionDetail";
 import { Card, Switch } from "./SettingsPrimitives";
 import { brand } from "../lib/brand";
@@ -134,12 +135,16 @@ const endpointHost = (url: string): string => {
   }
 };
 
-export function CompanionSection({ profileEmail = "" }: { profileEmail?: string }) {
+export function CompanionSection({ profileEmail = "", focusRequest = 0 }: { profileEmail?: string; focusRequest?: number }) {
   const c = usePhoneSetupController(profileEmail);
   const state = c.state;
   const pairingFlow = useRef<HTMLDivElement>(null);
-  // An enrolled organisation can turn remote access off; the desktop refuses
-  // new pairing and turning the companion on. Existing devices are listed as before.
+  const revealed = useRef(0);
+  const loaded = Boolean(state);
+  useEffect(() => {
+    if (!focusRequest) revealed.current = 0;
+    else if (revealed.current !== focusRequest && revealPhonePairing(pairingFlow.current)) revealed.current = focusRequest;
+  }, [focusRequest, loaded]);
   const managedPolicy = useStore().state.config?.managedPolicy;
   const remoteBlocked = managedPolicy?.remoteAccess === false ? t("policy.remoteBlocked", { organization: managedPolicy.organizationName }) : null;
   const managedBy = managedPolicy?.remoteAccess === false ? t("policy.managedBy", { organization: managedPolicy.organizationName }) : null;
@@ -184,7 +189,7 @@ export function CompanionSection({ profileEmail = "" }: { profileEmail?: string 
   return (
     <div className="flex flex-col gap-4">
       {remoteBlocked && <p role="status" className="text-[13px] leading-relaxed text-ink-secondary">{remoteBlocked}</p>}
-      <div ref={pairingFlow} tabIndex={-1} className="scroll-mt-4 rounded-xl ring-1 ring-accent/40 focus:outline-none">
+      <div ref={pairingFlow} tabIndex={-1} data-phone-pairing="computer" className="scroll-mt-4 rounded-xl ring-1 ring-accent/40 focus:outline-none">
         <Card title={pairingCopy.title} subtitle={pairingCopy.subtitle}>
           {(panelStatus || (pairedCount > 0 && c.hostedReady)) && (
             <div className="mb-4 flex items-center justify-between gap-3">
@@ -268,6 +273,18 @@ export function CompanionSection({ profileEmail = "" }: { profileEmail?: string 
                               companion.cloudDesktop(device.id, !device.cloudDesktopAccess),
                             )
                           }
+                        />
+                      </div>
+                      <div className="mt-3 flex items-center justify-between gap-3 border-t border-hairline/30 pt-3">
+                        <div>
+                          <div className="text-[12px] text-ink">{t("remote.devices.allowBrowser")}</div>
+                          <div className="mt-0.5 text-[11px] text-ink-secondary">{t("remote.devices.allowBrowserDetail")}</div>
+                        </div>
+                        <Switch
+                          checked={device.browserControlAccess === true}
+                          aria-label={t("remote.devices.browserAria", { name: device.name })}
+                          disabled={c.busy}
+                          onClick={() => void c.act((companion) => companion.browserControl(device.id, !device.browserControlAccess))}
                         />
                       </div>
                     </li>

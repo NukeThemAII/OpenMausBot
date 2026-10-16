@@ -1,7 +1,3 @@
-// A collapsed-by-default preview of the settings-derived prompt, built from
-// GET /api/bots/:id/system-prompt (server/system-prompt.ts's
-// previewSystemPrompt, the same builder a real turn uses). Pure
-// presentational: the dialog owns the fetch and the open/closed state.
 import { ChevronDown } from "lucide-react";
 
 import { cn } from "@/lib/cn";

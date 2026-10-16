@@ -61,11 +61,14 @@ export async function loadDesktopCapabilities(): Promise<DesktopCapabilities> {
   } catch {
     loaded = browserCapabilities;
   }
-  // An IPC push may deliver newer runtime readiness while the initial query is
-  // still pending. Never let that older response replace the pushed state.
+  // An IPC push may have delivered newer readiness meanwhile; never let this older response replace it.
   if (cacheRevision !== revisionAtStart && cached) return cached;
   cached = loaded;
   return cached;
+}
+
+export function desktopCapabilitiesNow(): DesktopCapabilities {
+  return cached ?? initialDesktopCapabilities();
 }
 
 export function cacheDesktopCapabilities(capabilities: DesktopCapabilities): DesktopCapabilities {

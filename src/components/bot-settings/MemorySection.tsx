@@ -1,15 +1,3 @@
-// Memory: what this bot believes, as a panel a person can read, fix, and
-// audit. Four regions: where the folder is (open it in Obsidian or the
-// file manager — it is plain markdown), a gauge that says out loud what
-// loadMemory() cuts silently, an editor for MEMORY.md and the topic files
-// that refuses to overwrite what the bot wrote while the person was
-// typing, and the journal of every change with one-click undo.
-//
-// Fetched when the section becomes active, not on mount: settings opens
-// for every bot and most visits never look at memory — and a re-activation
-// re-reads, so notes the bot wrote mid-session show up on the next look.
-// The dialog keeps this mounted while hidden so an unsaved draft survives
-// a visit to another section.
 import { FileText, FolderOpen, RotateCcw, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -44,7 +32,8 @@ import {
 } from "@/lib/memory";
 import { shortPath } from "@/lib/short-path";
 import { t } from "@/lib/i18n";
-import { ApiError, useStore, type Bot } from "@/state/store";
+import { roomMemoryCaptureEnabled } from "@/lib/feature-flags";
+import { api, ApiError, useStore, type Bot, type ConfigStatus } from "@/state/store";
 import { Switch } from "../SettingsPrimitives";
 import { useDesktopCapabilities } from "../DesktopCapabilities";
 import { inputCls } from "./field";
@@ -55,7 +44,6 @@ const quietButtonCls = "rounded-md px-2 py-1 text-[12.5px] text-ink-secondary ho
 interface Editing {
   path: string;
   text: string;
-  /** sha256 the server reported when the text was loaded; sent back on save. */
   hash: string;
   dirty: boolean;
   readOnly: boolean;
@@ -63,18 +51,12 @@ interface Editing {
 
 interface Conflict {
   path: string;
-  /** What is on disk now — the bot's version. */
   current: string;
   currentHash: string;
 }
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-/** On an OMB Cloud home: this bot's memory changed in a conversation the
- * owner did not write, so its turns cannot use the owner's lent Mac until
- * the owner has looked. It names the files that changed; one click accepts
- * them as shown (no confirmation), and the server refuses it if anything
- * changed since. */
 export function LendingReviewNotice({ changed, stale, busy, onReviewed }: { changed: readonly string[]; stale: boolean; busy: boolean; onReviewed: () => void }) {
   return (
     <div role="status" className="rounded-xl border border-danger/40 bg-card p-4">
@@ -110,11 +92,13 @@ export function MemorySection({ bot, active = true, onToggle }: { bot: Bot; acti
   const [newTopic, setNewTopic] = useState("");
   const [upkeep, setUpkeep] = useState<UpkeepStatus | null>(null);
   const [tidying, setTidying] = useState(false);
-  // OMB Cloud home: memory changed where the owner did not write.
   const [lendingReview, setLendingReview] = useState<LendingReview | null>(null);
   const [lendingReviewStale, setLendingReviewStale] = useState(false);
   const [reviewing, setReviewing] = useState(false);
-  const { dispatch } = useStore();
+  const { state, dispatch } = useStore();
+  const learnFromRooms = roomMemoryCaptureEnabled(state.config);
+  const [roomsSaving, setRoomsSaving] = useState(false);
+  const [roomsError, setRoomsError] = useState("");
 
   const refresh = async (openPath?: string) => {
     const [nextOverview, nextJournal, nextUpkeep] = await Promise.all([
@@ -136,7 +120,6 @@ export function MemorySection({ bot, active = true, onToggle }: { bot: Bot; acti
     if (!active) return;
     let cancelled = false;
     setError(null);
-    // a dirty draft survives a re-activation; everything else re-reads
     const keepDraft = editing?.dirty === true;
     refresh(keepDraft ? undefined : (editing?.path ?? MEMORY_INDEX)).catch((e: unknown) => {
       if (!cancelled) setError(errorText(e));
@@ -179,9 +162,6 @@ export function MemorySection({ bot, active = true, onToggle }: { bot: Bot; acti
     }
   };
 
-  /** Reload keeps the person's words: the draft moves under the editor
-   * as read-only text so nothing typed is lost, and the editor shows the
-   * bot's version. */
   const reloadFromConflict = () => {
     if (!conflict || !editing) return;
     setSavedDraft(editing.text);
@@ -247,6 +227,23 @@ export function MemorySection({ bot, active = true, onToggle }: { bot: Bot; acti
     setUpkeep((current) => (current ? { ...current, enabled } : current));
   };
 
+  const toggleRooms = async () => {
+    if (roomsSaving) return;
+    setRoomsSaving(true);
+    setRoomsError("");
+    try {
+      const config: ConfigStatus = await api("/api/config", {
+        method: "PATCH",
+        body: JSON.stringify({ features: { roomMemoryCapture: !learnFromRooms } }),
+      });
+      dispatch({ type: "configStatus", config });
+    } catch (cause) {
+      setRoomsError(cause instanceof Error ? cause.message : t("memory.learnFromRooms.error"));
+    } finally {
+      setRoomsSaving(false);
+    }
+  };
+
   const tidyNow = async () => {
     setTidying(true);
     setError(null);
@@ -308,7 +305,6 @@ export function MemorySection({ bot, active = true, onToggle }: { bot: Bot; acti
             setReviewing(true);
             markMemoryReviewed(bot.id, lendingReview.token)
               .then(() => { setLendingReview(null); setLendingReviewStale(false); })
-              // Changed again since it was shown: show what is there now.
               .catch((e: unknown) => {
                 if (e instanceof ApiError && e.status === 409) {
                   setLendingReviewStale(true);
@@ -329,6 +325,7 @@ export function MemorySection({ bot, active = true, onToggle }: { bot: Bot; acti
         tidying={tidying}
         onToggle={toggleUpkeep}
         onTidy={() => void tidyNow()}
+        rooms={{ enabled: learnFromRooms, saving: roomsSaving, error: roomsError, onToggle: () => void toggleRooms() }}
       />}
 
       {editing && (
@@ -445,14 +442,11 @@ export function MemorySection({ bot, active = true, onToggle }: { bot: Bot; acti
   );
 }
 
-/** A new topic's starting text: the header the topic index and recall read,
- * so the other words a person would use for it are one line to fill in. */
 export function topicTemplate(fileName: string): string {
   const title = fileName.replace(/\.md$/, "");
   return `---\ntitle: ${title}\ndescription: \naliases: []\n---\n\n`;
 }
 
-// ── presentational pieces (tested through renderToStaticMarkup) ─────────
 
 export function MemoryUpkeepCard({
   enabled,
@@ -460,12 +454,14 @@ export function MemoryUpkeepCard({
   tidying,
   onToggle,
   onTidy,
+  rooms,
 }: {
   enabled: boolean;
   status: UpkeepStatus | null;
   tidying: boolean;
   onToggle: () => void;
   onTidy: () => void;
+  rooms?: { enabled: boolean; saving: boolean; error: string; onToggle: () => void };
 }) {
   return (
     <div className="rounded-xl bg-card p-4">
@@ -481,11 +477,27 @@ export function MemoryUpkeepCard({
         </div>
         <Switch checked={enabled} aria-label="Memory upkeep" onClick={onToggle} />
       </div>
+      {enabled && rooms && (
+        <div className="mt-3 flex items-start justify-between gap-3 border-t border-hairline/40 pt-3">
+          <div className="min-w-0">
+            <div className="text-[13px] font-medium text-ink">{t("memory.learnFromRooms.title")}</div>
+            <p className="mt-0.5 text-[12.5px] leading-relaxed text-ink-secondary">{t("memory.learnFromRooms.subtitle")}</p>
+            {status && !status.modelSteps && (
+              <p className="mt-1 text-[12.5px] leading-relaxed text-ink-secondary">{t("memory.learnFromRooms.noModelSteps")}</p>
+            )}
+            {rooms.error && <p role="alert" className="mt-1 text-[12.5px] text-danger">{rooms.error}</p>}
+          </div>
+          <Switch
+            checked={rooms.enabled}
+            aria-label={t("memory.learnFromRooms.title")}
+            disabled={rooms.saving}
+            onClick={rooms.onToggle}
+            className="disabled:cursor-wait disabled:opacity-50"
+          />
+        </div>
+      )}
       {enabled && status && !status.modelSteps && (
-        <p className="mt-2 text-[12.5px] text-ink-secondary">
-          This bot's engine can't make the quick background model call upkeep uses, so it only archives expired notes and
-          merges exact duplicates. Claude and chat-model engines can do the rest.
-        </p>
+        <p className="mt-2 text-[12.5px] text-ink-secondary">{t("memory.upkeep.noModelSteps")}</p>
       )}
       {enabled && (
         <div className="mt-3 flex flex-wrap items-center gap-3">

@@ -1,6 +1,4 @@
-// Only the RFB WebSocket crosses the container boundary. The viewer page is
-// bundled with the app: serving container-controlled JavaScript on the app's
-// origin would give a bot access to the person's authenticated workspace.
+// Only the RFB WebSocket crosses the container boundary: container-controlled JavaScript on the app's origin would reach the person's workspace.
 import { createHash } from "node:crypto";
 import { request, ServerResponse, type IncomingMessage, type Server } from "node:http";
 import { Socket } from "node:net";
@@ -39,18 +37,14 @@ interface Upgrade { socket: Socket; head: Buffer; release: () => void; close: ()
 export function createDesktopViewer(deps: {
   target: (id: string) => DesktopTarget | undefined;
   live: (auth: RequestAuth) => boolean;
-  /** Bind a viewer to a control lease: a phone driving the Local VM directly,
-   * without the companion sidecar. Answers nothing unless `controlLeaseId`
-   * holds `botId`'s computer right now and the target is that computer;
-   * otherwise a probe that says whether the lease still holds. Shared and pool
-   * targets are refused because a bot hold cannot reserve their desktop. */
+  /** Binds a viewer to a control lease: answers only while `controlLeaseId` holds `botId`'s computer and the target is
+   * that computer. Shared and pool targets are refused: a bot hold cannot reserve their desktop. */
   lease?: (id: string, botId: string, controlLeaseId: string, threadId?: string) => (() => boolean) | undefined;
 }) {
   const upgrades = new Map<IncomingMessage, Upgrade>();
   let stopped = false;
 
-  /** Run upgrades through the very same authentication, hosted-workspace and
-   * maintenance gates as HTTP. Only this route can detach the response socket. */
+  /** Upgrades pass the same authentication, hosted-workspace and maintenance gates as HTTP. */
   function attach(server: Server, handle: (req: IncomingMessage, res: ServerResponse) => Promise<unknown>): void {
     server.on("upgrade", (req, socket, head) => {
       if (stopped || !(socket instanceof Socket)) { socket.destroy(); return; }
@@ -64,8 +58,7 @@ export function createDesktopViewer(deps: {
       try { path = new URL(req.url ?? "", "http://localhost").pathname; }
       catch { res.writeHead(400).end(); return; }
       if (!ROUTE.exec(path)?.[2]) { res.writeHead(404).end(); return; }
-      // Keep reading while auth/inspection awaits, so a closed tab's FIN is
-      // observed. Bound and preserve any eagerly sent WebSocket bytes.
+      // Keep reading while auth awaits, so a closed tab's FIN is observed; buffer any eagerly sent WebSocket bytes.
       const upgrade: Upgrade = { socket, head, release: () => socket.off("data", buffer), close: () => socket.destroy() };
       const buffer = (data: Buffer) => {
         if (upgrade.head.length + data.length > 64 * 1024) socket.destroy();
@@ -90,13 +83,9 @@ export function createDesktopViewer(deps: {
     if (!match) return PASS;
     res.setHeader("cache-control", "private, no-store");
     if (method !== "GET") return json(res, 405, { error: "method not allowed" });
-    // Also enforce at this boundary; the central gate defaults these paths
-    // to admin, like the existing Local VM status and control endpoints.
+    // Also enforced at this boundary: admin and same-origin only.
     if (!auth.scopes.includes("admin") || !isSameOrigin(req)) return json(res, 403, { error: "forbidden" });
-    // A viewer bound to a control lease: both names or neither, well formed,
-    // and holding before anything is inspected. Checked again with every
-    // liveness pass, so handing back closes the desktop within seconds. The
-    // conversation, when named, picks the VM seat the join picked.
+    // A lease-bound viewer: both names or neither, holding before anything is inspected, rechecked on every liveness pass.
     const botId = url.searchParams.get("botId");
     const controlLeaseId = url.searchParams.get("controlLeaseId");
     const threadId = url.searchParams.get("threadId") ?? undefined;
@@ -108,8 +97,7 @@ export function createDesktopViewer(deps: {
       return json(res, 400, { error: "botId, threadId or controlLeaseId is not valid" });
     }
     if (botId === null && threadId !== undefined) return json(res, 400, { error: "threadId needs botId and controlLeaseId" });
-    // Do not let a saved or constructed socket URL bypass the join refusal:
-    // a bot's control lease does not exclude other users of a shared desktop.
+    // A saved or constructed socket URL must not bypass the join refusal: a bot's lease does not exclude other users of a shared desktop.
     if (botId !== null && (match[1] === "local/shared" || match[1].startsWith("local/pool-"))) {
       return json(res, 409, { error: "Phone control requires a per-bot Local VM. Select per-bot mode in Settings → Computers." });
     }
@@ -143,8 +131,7 @@ export function createDesktopViewer(deps: {
       || typeof key !== "string" || !/^[A-Za-z0-9+/]{22}==$/.test(key)) {
       return json(res, 400, { error: "Invalid WebSocket handshake" });
     }
-    // Fixed host and path, port from an inspected managed container. Never
-    // forward cookies, bearer tokens, query parameters or forwarded headers.
+    // Fixed host and path, port from an inspected managed container. Never forward cookies, bearer tokens, query parameters or forwarded headers.
     const upstream = request({
       hostname: "127.0.0.1", port: connection.port, path: "/websockify",
       headers: { Upgrade: "websocket", Connection: "Upgrade", "Sec-WebSocket-Key": key, "Sec-WebSocket-Version": "13" },
@@ -204,14 +191,11 @@ export function createDesktopViewer(deps: {
 
   return {
     route, attach,
-    /** Close a session's viewers: all of them (sign-out, revocation), or only
-     * those it opened under a lease on one bot (that bot's hand-back). */
     closeForOwner: (owner: string, botId?: string) => {
       let closed = 0;
       for (const upgrade of upgrades.values()) {
         if (upgrade.owner !== owner || (botId !== undefined && upgrade.botId !== botId)) continue;
-        // A viewer already closed stays listed until its socket's close
-        // event, which arrives later on Windows: not closed or counted again.
+        // A closed viewer stays listed until its socket's close event, which arrives later on Windows.
         if (upgrade.socket.destroyed) continue;
         upgrade.close();
         closed++;

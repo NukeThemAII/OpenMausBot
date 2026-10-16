@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { ControlPlaneConfig } from "./config";
+import type { EndpointAccount } from "./config";
 import { tunnelActivity, type TunnelActivity } from "./tunnel-activity";
 
 export const MANAGED_COMPANION_ORIGIN_URL = "http://127.0.0.1:8812";
@@ -108,6 +108,8 @@ export class CloudflareAPIError extends Error {
   constructor(
     public readonly code: string,
     public readonly status: number | null = null,
+    /** Cloudflare's Retry-After (delay-seconds form only) on a 429, else null. */
+    public readonly retryAfterSeconds: number | null = null,
   ) {
     super(code);
     this.name = "CloudflareAPIError";
@@ -171,9 +173,10 @@ function providerErrorCode(value: unknown, status: number): string {
   return `cf_http_${status}`;
 }
 
+/** One account's API: its tunnels, and the DNS records of its one zone. */
 export class CloudflareAPI {
   constructor(
-    private readonly config: ControlPlaneConfig["cloudflare"],
+    private readonly config: Pick<EndpointAccount, "accountId" | "apiToken" | "zoneId">,
     private readonly fetcher: CloudflareFetch,
   ) {}
 
@@ -226,8 +229,13 @@ export class CloudflareAPI {
     if (response.status === 429) {
       // Cloudflare API limits are per user token and shared by every request
       // this Worker makes. A distinct code lets the cron stop early.
+      const retryAfter = response.headers.get("retry-after")?.trim() ?? "";
       await response.body?.cancel();
-      throw new CloudflareAPIError("cf_rate_limited", 429);
+      throw new CloudflareAPIError(
+        "cf_rate_limited",
+        429,
+        /^[0-9]{1,6}$/.test(retryAfter) ? Number(retryAfter) : null,
+      );
     }
 
     const mediaType = response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
@@ -299,6 +307,11 @@ export class CloudflareAPI {
       });
     }
     return { returned: result.length, skipped, totalCount, tunnels };
+  }
+
+  /** Undeleted tunnels in the whole account: what its tunnel quota counts. */
+  async countTunnels(): Promise<number | null> {
+    return (await this.listTunnelPage(1, 1)).totalCount;
   }
 
   /** Total DNS records in the zone, for the record-quota alert. */

@@ -1,9 +1,3 @@
-// Access: where this bot runs, its working folder, connected apps and
-// browser toggles, its webhooks, and the standing "always allowed" grants.
-// Works on/cloud backend/auto-start VPS, Working folder, Connected apps, and
-// Browser are moved verbatim from SettingsPanel.tsx; the connected-service
-// list, webhooks list, and always-allowed list (the first read-only view of
-// standing grants) are new.
 import { useEffect, useState } from "react";
 import { browserUnavailableReason } from "@/lib/feature-flags";
 import { ChevronDown, ChevronRight, FolderOpen, Plus } from "lucide-react";
@@ -14,16 +8,16 @@ import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 import type { LocaleKey } from "@/locales";
 import { mcpServersForBot, useMcpServers } from "@/lib/mcp-servers";
-import { placeOffered } from "@/lib/place";
+import { placeFacts, placeViewFor, usePlaceSeat } from "@/lib/place-view";
 import { shortPath } from "@/lib/short-path";
 import { useDesktopCapabilities } from "../DesktopCapabilities";
 import { CloudBackendPicker } from "../CloudBackendPicker";
 import { ConfirmDialog } from "../ConfirmDialog";
-import { LocalComputerAutoWarning } from "../LocalComputerAutoWarning";
 import { Switch } from "../SettingsPrimitives";
 import { ProposalStatus } from "./ProposalStatus";
 import { ToolSelectionCard } from "./ToolSelectionCard";
-import { preloadConnectedApps, type ConnectorInventory } from "../PluginsPanel";
+import { HIGHLEVEL_SLUG } from "@/lib/highlevel-sign-in";
+import { useBotApps } from "./useBotApps";
 import {
   classifyConnectorTool,
   connectorServiceAccess,
@@ -31,13 +25,13 @@ import {
   type ConnectorVerb,
 } from "@/lib/connector-grants";
 import { inputCls } from "./field";
+import type { ConnectorScope, ConnectorScopes } from "../../../shared/connector-scopes";
 import type { useBotSettingsDerived } from "./useBotSettingsDerived";
 
-/** Where a bot's shell tools run. Set per bot; each task pins its own copy
- * on its first turn (the server does the pinning — Claude keeps sessions
- * per project folder, so a folder must not move under a live task). The
- * PATCH is made directly rather than through updateBot: the server
- * validates the path and a rejected folder must not stick in local state. */
+/**
+ * Claude keeps sessions per project folder, so the server pins each task's folder on its first turn. PATCHed directly,
+ * not via updateBot: the server validates the path, and a rejected folder must not stick in local state.
+ */
 function WorkingFolder({ bot }: { bot: Bot }) {
   const { request: api } = useBotEditor();
   const { capabilities } = useDesktopCapabilities();
@@ -47,7 +41,7 @@ function WorkingFolder({ bot }: { bot: Bot }) {
   const [saving, setSaving] = useState(false);
   const canPick = Boolean(window.ogb?.pickFolder);
   const task = bot.tasks?.find((t) => t.threadId === bot.threadId);
-  const pinned = task?.cwd; // undefined = not yet, null = legacy home, string = folder
+  const pinned = task?.cwd;
   const pinnedElsewhere = pinned !== undefined && (pinned ?? undefined) !== bot.cwd;
 
   const save = async (cwd: string | null) => {
@@ -91,7 +85,6 @@ function WorkingFolder({ bot }: { bot: Bot }) {
           className="mt-3 flex items-center gap-2"
           onSubmit={(e) => {
             e.preventDefault();
-            // an emptied field clears the folder — the server wants null
             void save((draft ?? bot.cwd ?? "").trim() || null);
           }}
         >
@@ -116,9 +109,10 @@ function WorkingFolder({ bot }: { bot: Bot }) {
   );
 }
 
-/** Which app-wide MCP servers this bot mounts. Absent list = all enabled
- * (the pre-existing behavior); the first switch flip writes an explicit
- * list so later additions in Plugins do not silently reach this bot. */
+/**
+ * Absent list = all enabled; the first flip writes an explicit list so servers added later never silently reach this
+ * bot.
+ */
 function McpServersCard({ bot, patch }: { bot: Bot; patch: (patch: { mcpServers: string[] | null }) => void }) {
   const { dispatch } = useStore();
   const { servers, error, refresh } = useMcpServers();
@@ -195,10 +189,6 @@ interface ToolListing {
   description?: string;
 }
 
-/** Lazy, module-cached inventory of every grantable tool per service, read
- * from the same endpoint the bots' bridge relays through. Recent data
- * survives dialog reopens; a failed load degrades the per-tool editor to a
- * retry row while All-tools and remove keep working. */
 let connectorToolsCache: { at: number; services: Record<string, ToolListing[]> } | null = null;
 let connectorToolsRequest: Promise<Record<string, ToolListing[]>> | null = null;
 const CONNECTOR_TOOLS_CACHE_MS = 60_000;
@@ -229,12 +219,10 @@ const VERB_LABELS: Record<ConnectorVerb, LocaleKey> = {
   delete: "botAccess.grants.verb.delete",
 };
 
-/** Per-service tool grants under the Connected apps switch (issue #1738).
- * Each connected service row expands into the exact-name editor: search,
- * verb-class preset chips that expand to explicit names, and one-click All
- * tools per service or globally. A grants record this build cannot parse
- * renders as a read-only summary — never a guess that could destroy fields
- * a newer server understands. */
+/**
+ * A grants record this build cannot parse renders read-only, never a guess that could destroy fields a newer server
+ * understands.
+ */
 function ConnectorToolsGrants({
   bot,
   patch,
@@ -248,12 +236,10 @@ function ConnectorToolsGrants({
   const [search, setSearch] = useState("");
   const [tools, setTools] = useState<Record<string, ToolListing[]> | null>(null);
   const [toolsError, setToolsError] = useState<string | null>(null);
-  /** The explicit list a service had before "All tools", so the switch can
-   * toggle back and forth within one visit. */
   const [lastExplicit, setLastExplicit] = useState<Record<string, string[]>>({});
-  /** The first grant pending confirmation: saving it creates the grants
-   * record, which limits every other connected app to no tools, so the
-   * person confirms that transition before it lands. */
+  /**
+   * The first grant creates the grants record, which limits every other connected app to no tools: confirm it first.
+   */
   const [confirmFirstGrant, setConfirmFirstGrant] = useState<{ slug: string; tools: "*" | string[] } | null>(null);
 
   useEffect(() => {
@@ -507,6 +493,27 @@ function ConnectorToolsGrants({
   );
 }
 
+function RecordStepsRow({ on, browserOn, myChrome, onChange }: { on: boolean; browserOn: boolean; myChrome: boolean; onChange: (on: boolean) => void }) {
+  return (
+    <div className="mt-3 flex items-center justify-between gap-4 border-t border-hairline/40 pt-3">
+      <div>
+        <div className="text-[13.5px] font-medium text-ink">{t("botAccess.recordSteps.title")}</div>
+        <div className="mt-0.5 text-[12.5px] text-ink-secondary">
+          {!browserOn ? t("botAccess.recordSteps.needsBrowser") : on ? t("botAccess.recordSteps.on") : t("botAccess.recordSteps.off")}
+          {browserOn && on && myChrome ? ` ${t("botAccess.recordSteps.myChrome")}` : ""}
+        </div>
+      </div>
+      <Switch
+        checked={on && browserOn}
+        aria-label={t("botAccess.recordSteps.title")}
+        disabled={!browserOn}
+        onClick={() => onChange(!on)}
+        className="disabled:cursor-not-allowed"
+      />
+    </div>
+  );
+}
+
 export function AccessSection({
   bot,
   derived,
@@ -518,7 +525,6 @@ export function AccessSection({
   const { state, dispatch } = useStore();
   const {
     patch,
-    canUseVps,
     canUseConnectedApps,
     connectedAppsConfigured,
     connectedAppsEnabled,
@@ -529,91 +535,38 @@ export function AccessSection({
     browserFeature,
     browserAllowed,
     browserEnabled,
-    browserSelectable,
-    browserDisabledReason,
-    localSelectable,
-    localDisabledReason,
   } = derived;
   const browserInstallable = state.config?.browserEngine?.installable === true;
-  const [localAutoWarning, setLocalAutoWarning] = useState<string | null>(null);
-  const [inventory, setInventory] = useState<ConnectorInventory | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    void preloadConnectedApps().then((result) => {
-      if (!cancelled) setInventory(result);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const { capabilities } = useDesktopCapabilities();
+  const placeSeat = usePlaceSeat(state.config, capabilities.host?.platform ?? "other");
+  const worksOn = placeViewFor(placeFacts({
+    bot, place: bot.computer ?? "auto", seat: placeSeat, config: state.config, instances: state.instances,
+  }));
+  // The same list the Vault tab shows: Composio's connected accounts plus the native HighLevel connection.
+  const apps = useBotApps(bot);
+  const inventoryReady = apps.phase === "ready";
+  const connectedSlugs = apps.connectedSlugs;
+  const appLabels = Object.fromEntries(apps.apps.map((app) => [app.slug, app.label]));
 
   const webhooks = state.webhooks.filter((webhook) => webhook.botId === bot.id);
   const alwaysAllow = bot.alwaysAllow ?? [];
-  const connectedSlugs = inventory?.authoritative
-    ? Object.entries(inventory.services)
-        .filter(([, status]) => status.connected)
-        .map(([slug]) => slug)
-    : [];
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="rounded-xl bg-card p-4">
-        <div className="text-[15px] font-medium text-ink">Works on</div>
-        <div className="mt-0.5 text-[13px] text-ink-secondary">
-          Where this bot works{bot.computer ? "" : " (currently: auto)"}. Browser is the built-in browser tab only; no desktop.
-        </div>
+      <div className="rounded-xl bg-card p-4" data-testid="access-works-on">
+        <div className="text-[15px] font-medium text-ink">{t("access.worksOn", { name: bot.name, short: worksOn.short })}</div>
         <ProposalStatus bot={bot} kind="owner" />
-        <div className="mt-3 flex overflow-hidden rounded-lg border border-hairline/40">
-          {([
-            [null, "Auto"],
-            ["cloud", "Cloud"],
-            ["vm", "Local VM"],
-            ["local", "This computer"],
-            ["browser", "Browser"],
-            ["off", "Off"],
-          ] as const).filter(([mode]) => mode === null || mode === "off" || placeOffered(mode, state.config)).map(([mode, label], i) => (
-            <button
-              key={mode ?? "auto"}
-              disabled={(mode === "local" && !localSelectable) || (mode === "browser" && !browserSelectable)}
-              title={
-                mode === "local" && !localSelectable
-                  ? localDisabledReason ?? undefined
-                  : mode === "browser"
-                    ? browserSelectable ? "The built-in browser tab only; no desktop" : browserDisabledReason
-                    : mode === "off"
-                      ? "No computer and no built-in browser"
-                      : undefined
-              }
-              onClick={() => {
-                if ((mode === null && bot.computer === undefined) || mode === bot.computer) return;
-                if (mode === "local" && derived.approvalMode === "auto") setLocalAutoWarning(bot.id);
-                // a browser-only bot must actually have its browser: flip
-                // the per-bot switch on with the destination
-                else if (mode === "browser") patch({ computer: mode, browser: true });
-                else patch({ computer: mode });
-              }}
-              className={cn(
-                "flex-1 py-1.5 text-[13px] capitalize",
-                i > 0 && "border-l border-hairline/40",
-                ((mode === "local" && !localSelectable) || (mode === "browser" && !browserSelectable)) && "cursor-not-allowed opacity-40",
-                (mode === null ? bot.computer === undefined : bot.computer === mode)
-                  ? "bg-control text-ink"
-                  : "text-ink-secondary hover:bg-control/60 hover:text-ink",
-              )}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        {bot.computer === "off" && (
-          <div className="mt-3 rounded-lg bg-inset px-3 py-2.5 text-[11.5px] leading-relaxed text-ink-secondary">
-            <span className="font-medium text-ink">Off means no screen.</span>{" "}
-            This bot gets no computer and no built-in browser, so it cannot open a web page, click, or type
-            anywhere. Its connected apps, MCP servers, files and chat all still work.
-          </div>
-        )}
-        {(!bot.computer || bot.computer === "cloud") && (
+        <button
+          type="button"
+          onClick={() => {
+            dispatch({ type: "toggleSettings", open: false });
+            dispatch({ type: "toggleComputer", open: true });
+          }}
+          className="mt-3 rounded-lg bg-control px-3 py-1.5 text-[13px] text-ink hover:bg-raised-hover"
+        >
+          {t("place.action.openComputerPanel")}
+        </button>
+        {(!bot.computer || bot.computer === "cloud") && !state.config?.cloudHome && (
           <>
             {!bot.computer && (
               <div className="mt-3 rounded-lg bg-inset px-3 py-2.5 text-[11.5px] leading-relaxed text-ink-secondary">
@@ -623,7 +576,6 @@ export function AccessSection({
             )}
             <CloudBackendPicker
               value={bot.cloudBackend ?? "box"}
-              vpsSupported={canUseVps}
               onChange={(backend) => patch({ cloudBackend: backend })}
             />
             {!bot.computer && bot.cloudBackend === "vps" && (
@@ -683,8 +635,12 @@ export function AccessSection({
             className="disabled:cursor-not-allowed"
           />
         </div>
-        {connectedAppsEnabled && inventory?.authoritative && (
-          <ConnectorToolsGrants bot={bot} patch={patch} slugs={connectedSlugs} />
+        {connectedAppsEnabled && inventoryReady && (
+          <>
+            {!draft && <ConnectorScopesControl connectedSlugs={connectedSlugs} labels={appLabels} scopes={bot.connectorScopes} onChange={(connectorScopes) => patch({ connectorScopes })} />}
+            {/* Tool-level grants list Composio's tools; HighLevel's tools are scoped by read/write above. */}
+            <ConnectorToolsGrants bot={bot} patch={patch} slugs={connectedSlugs.filter((slug) => slug !== HIGHLEVEL_SLUG)} />
+          </>
         )}
         {connectedAppsEnabled && connectedAppsConfigured && (
           <button
@@ -703,37 +659,47 @@ export function AccessSection({
       <McpServersCard bot={bot} patch={patch} />
       <ToolSelectionCard key={bot.id} bot={bot} engineKind={derived.engine?.driverKind} />
 
-      <div className="flex items-center justify-between gap-4 rounded-xl bg-card p-4">
-        <div>
-          <div className="text-[15px] font-medium text-ink">Browser</div>
-          <div className="mt-0.5 text-[13px] text-ink-secondary">
-            {!desktopBrowser
-              ? browserBlockedOnWindows && !browserInstallable
-                ? "Not available on this Windows machine yet: install the browser engine with `openmausbot browser install`."
-                : browserUnavailableReason(state.config)
-              : !browserFeature
-                ? "The built-in browser is switched off under App Settings → Computers."
-                : !canUseBrowser
-                  ? "This bot's current model cannot use the built-in browser."
-                  : bot.computer === "off"
-                    ? "Works on is set to Off, so this bot has no browser. Pick another destination above to give it one."
-                    : browserEnabled
-                      ? "This bot has its own browser with its own logins."
-                      : "Keep the built-in browser unavailable to this bot."}
+      <div className="rounded-xl bg-card p-4">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <div className="text-[15px] font-medium text-ink">Browser</div>
+            <div className="mt-0.5 text-[13px] text-ink-secondary">
+              {!desktopBrowser
+                ? browserBlockedOnWindows && !browserInstallable
+                  ? "Not available on this Windows machine yet: install the browser engine with `openmausbot browser install`."
+                  : browserUnavailableReason(state.config)
+                : !browserFeature
+                  ? "The built-in browser is switched off under App Settings → Computers."
+                  : !canUseBrowser
+                    ? "This bot's current model cannot use the built-in browser."
+                    : bot.computer === "off"
+                      ? "Works on is set to Off, so this bot has no browser. Choose another place in the Computer panel to give it one."
+                      : browserEnabled
+                        ? "This bot has its own browser with its own logins."
+                        : "Keep the built-in browser unavailable to this bot."}
+            </div>
+            <ProposalStatus bot={bot} kind="owner" />
           </div>
-          <ProposalStatus bot={bot} kind="owner" />
+          <Switch
+            checked={browserEnabled && bot.computer !== "off"}
+            aria-label="Give this bot a built-in browser"
+            disabled={
+              bot.computer === "off" ||
+              (!browserEnabled && ((!desktopBrowser && !browserInstallable) || !browserFeature || !canUseBrowser))
+            }
+            onClick={() => patch({ browser: !browserAllowed })}
+            title={bot.computer === "off" ? "Works on is set to Off, so this bot has no browser" : undefined}
+            className="disabled:cursor-not-allowed"
+          />
         </div>
-        <Switch
-          checked={browserEnabled && bot.computer !== "off"}
-          aria-label="Give this bot a built-in browser"
-          disabled={
-            bot.computer === "off" ||
-            (!browserEnabled && ((!desktopBrowser && !browserInstallable) || !browserFeature || !canUseBrowser))
-          }
-          onClick={() => patch({ browser: !browserAllowed })}
-          title={bot.computer === "off" ? "Works on is set to Off, so this bot has no browser" : undefined}
-          className="disabled:cursor-not-allowed"
-        />
+        {!draft && (
+          <RecordStepsRow
+            on={bot.recordBrowserSteps === true}
+            browserOn={browserEnabled && bot.computer !== "off"}
+            myChrome={state.config?.browserEngine?.myChrome === true && (state.config?.browserProfiles ?? []).some((profile) => profile.id === bot.browserProfile && profile.browser === "chrome")}
+            onChange={(recordBrowserSteps) => patch({ recordBrowserSteps })}
+          />
+        )}
       </div>
 
       {!draft && <div className="rounded-xl bg-card p-4">
@@ -789,16 +755,42 @@ export function AccessSection({
         )}
       </div>}
 
-      <LocalComputerAutoWarning
-        open={localAutoWarning !== null}
-        onCancel={() => setLocalAutoWarning(null)}
-        onConfirm={() => {
-          const target = localAutoWarning;
-          setLocalAutoWarning(null);
-          if (!target) return;
-          dispatch({ type: "updateBot", botId: target, patch: { computer: "local", acknowledgeLocalAuto: true } });
-        }}
-      />
     </div>
   );
+}
+
+function ConnectorScopesControl({ connectedSlugs, labels = {}, scopes, onChange }: {
+  connectedSlugs: string[];
+  /** display names by slug; a slug without one shows as itself */
+  labels?: Record<string, string>;
+  scopes: ConnectorScopes | undefined;
+  onChange: (scopes: ConnectorScopes | null) => void;
+}) {
+  const limited = scopes !== undefined;
+  const slugs = [...new Set([...connectedSlugs, ...Object.keys(scopes?.apps ?? {})])].sort();
+  const setScope = (slug: string, scope: ConnectorScope | null) => {
+    const apps = { ...scopes?.apps };
+    if (scope) apps[slug] = scope;
+    else delete apps[slug];
+    onChange({ apps });
+  };
+  return <div className="mt-3">
+    <div className="flex items-center justify-between gap-4">
+      <div className="text-[13px] text-ink-secondary">
+        {limited ? "Only the apps allowed below, at the level set for each. Everything else is off for this bot." : "No app-level limits. The tool grants below still apply."}
+      </div>
+      <Switch checked={limited} aria-label="Limit this bot to specific apps" onClick={() => onChange(limited ? null : { apps: {} })} />
+    </div>
+    {limited && <div className="mt-2 flex flex-col divide-y divide-hairline/20 rounded-lg bg-inset">
+      {!slugs.length && <div className="px-3 py-2 text-[11.5px] text-ink-secondary">No apps connected yet. Connect one, then allow it here.</div>}
+      {slugs.map((slug) => <div key={slug} className="flex flex-wrap items-center justify-between gap-3 px-3 py-1.5">
+        <span className="min-w-0 text-[13px] text-ink">{labels[slug] ?? slug}{!connectedSlugs.includes(slug) && <span className="ml-2 text-[10.5px] text-ink-secondary">not connected</span>}</span>
+        <div className="flex shrink-0 gap-0.5 rounded-md bg-card p-0.5" role="group" aria-label={`${slug} access`}>
+          {([[null, "Off", "This bot cannot use it."], ["read", "Read", "Search, fetch, and list only."], ["write", "Read & write", "Tool grants and sending limits still apply."]] as const).map(([value, label, hint]) =>
+            <button key={label} type="button" title={hint} aria-pressed={(scopes?.apps[slug] ?? null) === value} onClick={() => setScope(slug, value)}
+              className={cn("rounded px-2 py-0.5 text-[11.5px] font-medium", (scopes?.apps[slug] ?? null) === value ? "bg-raised text-ink" : "text-ink-secondary hover:text-ink")}>{label}</button>)}
+        </div>
+      </div>)}
+    </div>}
+  </div>;
 }

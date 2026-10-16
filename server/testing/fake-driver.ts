@@ -1,6 +1,4 @@
-// In-memory ProviderDriver for registry/bus tests. Queue-free and
-// deliberately tiny: tests reach into the returned handle to emit
-// canonical events as if the provider produced them.
+// In-memory ProviderDriver for registry/bus tests: tests emit canonical events through the returned handle.
 import type {
   DriverCreateInput,
   EffortLevel,

@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { currentCall } from "./call";
 import {
-  applyCaption, checkLiveSignIn, configureLiveMedia, dismissKeyPrompt, endNotice, handleLiveCallKey, hangUpLiveCall, isLiveCallRunning, liveCallShortcut,
-  liveMedia, onLiveStreamConnected, onServerCall, resetLiveMedia, setLiveMuted, startLiveCall, subscribeLiveMedia,
+  applyCaption, checkLiveSignIn, configureLiveMedia, dismissStartPrompt, endNotice, handleLiveCallKey, hangUpLiveCall, isLiveCallRunning, liveCallShortcut,
+  liveMedia, onLiveStreamConnected, onServerCall, resetLiveMedia, setLiveMuted, startLiveCall, subscribeLiveMedia, takeLiveCallAction,
 } from "./live-call-media";
 import { ApiError } from "@/state/store";
 
@@ -14,7 +14,6 @@ class FakeChannel {
   onmessage: ((event: { data: string }) => void) | null = null;
   send(data: string) { this.sent.push(data); }
   close() { this.readyState = "closed"; }
-  /** the channel's own connection finishes */
   open() { this.readyState = "open"; this.onopen?.(); }
 }
 class FakePeer {
@@ -35,7 +34,6 @@ class FakePeer {
   removeEventListener() {}
   close() { this.closed = true; }
 }
-/** A peer still gathering network candidates until the test says it is done. */
 class GatheringPeer extends FakePeer {
   iceGatheringState = "gathering";
   waiting: (() => void) | null = null;
@@ -48,7 +46,6 @@ const call = { callId: "c1", botId: "b1", threadId: "t1", client: "desktop", voi
 let peer: FakePeer;
 let track: FakeTrack;
 let request: ReturnType<typeof vi.fn>;
-/** The call ids this window asked the harness to end, in order. */
 const endRequests = () =>
   request.mock.calls.filter(([path]) => path === "/api/live/call/end").map(([, init]) => JSON.parse(String(init.body)).callId);
 
@@ -62,19 +59,23 @@ beforeEach(() => {
     throw new Error(`unexpected ${path}`);
   });
   resetLiveMedia();
-  configureLiveMedia({
-    getUserMedia: async () => ({ getTracks: () => [track], getAudioTracks: () => [track] }) as unknown as MediaStream,
-    createPeer: () => peer as unknown as RTCPeerConnection,
-    request: request as never,
-    playRemote: () => {},
-    stopRemote: () => {},
-    iceTimeoutMs: 50,
-  });
+  configureLiveMedia(fakes());
 });
+const fakes = () => ({
+  getUserMedia: async () => ({ getTracks: () => [track], getAudioTracks: () => [track] }) as unknown as MediaStream,
+  createPeer: () => peer as unknown as RTCPeerConnection,
+  request: request as never,
+  playRemote: () => {},
+  stopRemote: () => {},
+  iceTimeoutMs: 50,
+});
+const windowIs = (dictation: Partial<DesktopCapabilities["dictation"]>) => () =>
+  ({ dictation: { available: false, engine: "none", onDevice: false, ...dictation } }) as DesktopCapabilities;
 afterEach(() => { resetLiveMedia(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe("live call media", () => {
   it("sends the offer as a desktop call and applies the answer", async () => {
+    configureLiveMedia({ ...fakes(), capabilities: windowIs({ available: true, engine: "apple-speech", onDevice: true }) });
     await startLiveCall({ botId: "b1", threadId: "t1" });
     expect(request).toHaveBeenCalledWith("/api/live/session", expect.objectContaining({ method: "POST" }));
     const body = JSON.parse(String(request.mock.calls[0][1].body));
@@ -86,6 +87,23 @@ describe("live call media", () => {
     expect(liveMedia().phase).toBe("live");
   });
 
+  it.each([
+    ["the Mac app's own page", "desktop", { available: true, engine: "apple-speech", onDevice: true }],
+    ["My Cloud in the desktop app", "desktop", { reasonCode: "remote-server" }],
+    ["the Windows app", "desktop", { reasonCode: "unsupported-platform" }],
+    ["a web browser", "web", { reasonCode: "desktop-app-required" }],
+  ] as const)("from %s, starts a %s call", async (_where, client, dictation) => {
+    configureLiveMedia({ ...fakes(), capabilities: windowIs(dictation) });
+    await startLiveCall({ botId: "b1", threadId: "t1" });
+    expect(JSON.parse(String(request.mock.calls[0][1].body)).client).toBe(client);
+  });
+
+  it("in a web browser, with no desktop app around it, starts a web call", async () => {
+    vi.stubGlobal("window", {});
+    await startLiveCall({ botId: "b1", threadId: "t1" });
+    expect(JSON.parse(String(request.mock.calls[0][1].body)).client).toBe("web");
+  });
+
   it("asks for a key and releases the microphone", async () => {
     request.mockRejectedValueOnce(new ApiError("Add an OpenAI API key to use Live calls.", 409, { needsKey: true }));
     await startLiveCall({ botId: "b1", threadId: "t1" });
@@ -94,16 +112,37 @@ describe("live call media", () => {
     expect(currentCall()).toBeNull();
   });
 
+  it("shows the Pro prompt, never the key form, and releases the microphone", async () => {
+    request.mockRejectedValueOnce(new ApiError("Live calls from your phone need a Pro plan.", 402, { needsPro: true }));
+    await startLiveCall({ botId: "b1", threadId: "t1" });
+    expect(liveMedia()).toMatchObject({ phase: "idle", needsPro: true, needsKey: false, botId: "b1", threadId: "t1", notice: null, action: null });
+    expect(track.stopped).toBe(true);
+    expect(peer.closed).toBe(true);
+    expect(currentCall()).toBeNull();
+    expect(endRequests()).toEqual([]);
+    await startLiveCall({ botId: "b1", threadId: "t1" });
+    expect(liveMedia()).toMatchObject({ phase: "starting", needsPro: false, callId: "c1" });
+  });
+
   it("says who is on the line when another call runs", async () => {
     const other = { ...call, callId: "c0", client: "ios", status: "live" } as const;
     request.mockRejectedValueOnce(new ApiError("A Live call is already running.", 409, { activeCall: other }));
     await startLiveCall({ botId: "b1", threadId: "t1" });
     expect(liveMedia()).toMatchObject({ phase: "failed", busyWith: other });
     expect(track.stopped).toBe(true);
-    // the harness also runs on Ubuntu: "computer", not "Mac"
-    request.mockRejectedValueOnce(new ApiError("A Live call is already running.", 409, { activeCall: { ...other, client: "desktop" } }));
+    request.mockRejectedValueOnce(new ApiError("A Live call is already running.", 409, { activeCall: { ...other, client: "web" } }));
     await startLiveCall({ botId: "b1", threadId: "t1" });
-    expect(liveMedia().notice).toBe("Another Live call is running on this computer. Hang up there first.");
+    expect(liveMedia().notice).toBe("Another Live call is running in a web browser. Hang up there first.");
+  });
+
+  it.each([
+    ["the desktop app's own window", { available: true, engine: "apple-speech", onDevice: true }],
+    ["a web browser on another machine", { reasonCode: "desktop-app-required" }],
+  ] as const)("in %s, says a desktop app's call is running in the desktop app", async (_where, dictation) => {
+    configureLiveMedia({ ...fakes(), capabilities: windowIs(dictation) });
+    request.mockRejectedValueOnce(new ApiError("A Live call is already running.", 409, { activeCall: { ...call, callId: "c0", client: "desktop", status: "live" } }));
+    await startLiveCall({ botId: "b1", threadId: "t1" });
+    expect(liveMedia().notice).toBe("Another Live call is running in the desktop app. Hang up there first.");
   });
 
   it("releases media when the server ends the call", async () => {
@@ -216,33 +255,30 @@ describe("live call media", () => {
     expect(endNotice("idle")).toEqual({ text: "Call ended after a long silence.", dropped: false });
     expect(endNotice("sideband-lost")).toEqual({ text: "Call dropped.", dropped: true });
     expect(endNotice("hung-up").dropped).toBe(false);
-    // a retry cannot help a call whose sign-in ended
     expect(endNotice("signed-out")).toEqual({ text: "Call ended: you were signed out.", dropped: false });
   });
 
   it("shows the harness's own words first, keeping the reason's drop and retry", async () => {
     await startLiveCall({ botId: "b1", threadId: "t1" });
     onServerCall({ ...call, status: "ended", endReason: "signed-out", error: "The call has ended because the sign-in that started it has ended." });
-    expect(liveMedia()).toMatchObject({ phase: "ended", notice: "The call has ended because the sign-in that started it has ended.", canRetry: false });
+    expect(liveMedia()).toMatchObject({ phase: "ended", notice: "The call has ended because the sign-in that started it has ended.", action: null });
 
     peer = new FakePeer();
     track = new FakeTrack();
     request.mockImplementationOnce(async () => ({ call: { ...call, callId: "c2" }, transport: { type: "webrtc", sdp: "answer" } }));
     await startLiveCall({ botId: "b1", threadId: "t1" });
     onServerCall({ ...call, callId: "c2", status: "ended", endReason: "sideband-lost", error: "The call connection to OpenAI dropped." });
-    expect(liveMedia()).toMatchObject({ phase: "failed", notice: "The call connection to OpenAI dropped.", canRetry: true });
+    expect(liveMedia()).toMatchObject({ phase: "failed", notice: "The call connection to OpenAI dropped.", action: "retry" });
   });
 
-  // Try again only where a retry can help: never for a busy line, a blocked
-  // microphone, a window without WebRTC, or a refused sign-in.
   describe("Try again", () => {
     it("is offered for a dropped call", async () => {
       await startLiveCall({ botId: "b1", threadId: "t1" });
       onServerCall({ ...call, status: "ended", endReason: "connection-lost" });
-      expect(liveMedia()).toMatchObject({ phase: "failed", canRetry: true });
+      expect(liveMedia()).toMatchObject({ phase: "failed", action: "retry" });
     });
 
-    it("is not offered when the microphone is blocked", async () => {
+    it("is offered when the computer blocked the microphone", async () => {
       configureLiveMedia({
         getUserMedia: async () => { throw new DOMException("denied", "NotAllowedError"); },
         createPeer: () => peer as unknown as RTCPeerConnection,
@@ -250,34 +286,32 @@ describe("live call media", () => {
         iceTimeoutMs: 50,
       });
       await startLiveCall({ botId: "b1", threadId: "t1" });
-      expect(liveMedia()).toMatchObject({ phase: "failed", notice: expect.stringContaining("microphone is blocked"), canRetry: false });
+      expect(liveMedia()).toMatchObject({ phase: "failed", notice: expect.stringContaining("microphone is blocked"), action: "retry" });
     });
 
     it("is not offered while another call holds the line, or in a window without WebRTC", async () => {
       const other = { ...call, callId: "c0", client: "ios", status: "live" } as const;
       request.mockRejectedValueOnce(new ApiError("A Live call is already running.", 409, { activeCall: other }));
       await startLiveCall({ botId: "b1", threadId: "t1" });
-      expect(liveMedia()).toMatchObject({ phase: "failed", canRetry: false });
+      expect(liveMedia()).toMatchObject({ phase: "failed", action: null });
       resetLiveMedia();
       await startLiveCall({ botId: "b1", threadId: "t1" });
-      expect(liveMedia()).toMatchObject({ phase: "failed", canRetry: false });
+      expect(liveMedia()).toMatchObject({ phase: "failed", action: null });
     });
 
     it("is not offered when the harness refuses this window's sign-in", async () => {
       request.mockRejectedValueOnce(new ApiError("unauthorized: this session has expired or was revoked; pair this device again", 401));
       await startLiveCall({ botId: "b1", threadId: "t1" });
-      expect(liveMedia()).toMatchObject({ phase: "failed", notice: expect.stringContaining("expired or was revoked"), canRetry: false });
+      expect(liveMedia()).toMatchObject({ phase: "failed", notice: expect.stringContaining("expired or was revoked"), action: null });
     });
 
     it("is offered when OpenAI refused the call", async () => {
       request.mockRejectedValueOnce(new ApiError("OpenAI is limiting Live sessions right now (rate limit or quota). Try again in a moment.", 429));
       await startLiveCall({ botId: "b1", threadId: "t1" });
-      expect(liveMedia()).toMatchObject({ phase: "failed", canRetry: true });
+      expect(liveMedia()).toMatchObject({ phase: "failed", action: "retry" });
     });
   });
 
-  // A revoked or signed-out browser sign-in cannot receive the harness's end
-  // frame (its event stream is cut), so this window checks for itself.
   describe("a sign-in that ends mid-call", () => {
     const refuseSignIn = () => request.mockImplementation(async (path: string) => {
       if (path === "/api/live/call") throw new ApiError("unauthorized: this session has expired or was revoked; pair this device again", 401);
@@ -289,7 +323,7 @@ describe("live call media", () => {
       onServerCall({ ...call, status: "live" });
       refuseSignIn();
       await checkLiveSignIn();
-      expect(liveMedia()).toMatchObject({ phase: "ended", notice: "Call ended: you were signed out.", canRetry: false });
+      expect(liveMedia()).toMatchObject({ phase: "ended", notice: "Call ended: you were signed out.", action: null });
       expect(track.stopped).toBe(true);
       expect(peer.channel.sent.map((sent) => JSON.parse(sent).type)).toContain("session.close");
       expect(currentCall()).toBeNull();
@@ -329,9 +363,6 @@ describe("live call media", () => {
     });
   });
 
-  // Non-trickle ICE: OpenAI takes one offer. Gathering that has not finished
-  // in time sends what it found, as the phones do; a call whose audio then
-  // never connects is dropped by the 20 s wait instead.
   it("sends the offer with the candidates gathered so far when gathering runs long", async () => {
     peer = new GatheringPeer();
     await startLiveCall({ botId: "b1", threadId: "t1" });
@@ -342,9 +373,6 @@ describe("live call media", () => {
     expect(currentCall()).toBe("b1");
   });
 
-  // Going live needs both halves: the harness attached to the session, and
-  // this window's own data channel open. The clock starts then, on this
-  // computer's clock.
   it("goes live when the harness has attached and the data channel is open, and times the call from then", async () => {
     vi.useFakeTimers({ now: 1_000_000 });
     peer.channel.readyState = "connecting";
@@ -366,8 +394,6 @@ describe("live call media", () => {
     expect(liveMedia().startedAt).toEqual(expect.any(Number));
   });
 
-  // A status this window does not know counts as running (ruling 11), so the
-  // computer's side has attached: only "connecting" and "ended" say otherwise.
   it("counts any status but connecting and ended as the computer's attach", async () => {
     await startLiveCall({ botId: "b1", threadId: "t1" });
     onServerCall({ ...call, status: "connecting" });
@@ -404,8 +430,7 @@ describe("live call media", () => {
       transport: { type: "webrtc", sdp: "answer" },
     }));
     await startLiveCall({ botId: "b1", threadId: "t1" });
-    // the harness's own words come first, as on the phones
-    expect(liveMedia()).toMatchObject({ phase: "failed", notice: "The call could not connect to OpenAI.", canRetry: true });
+    expect(liveMedia()).toMatchObject({ phase: "failed", notice: "The call could not connect to OpenAI.", action: "retry" });
     expect(peer.remote).toBeNull();
     expect(track.stopped).toBe(true);
     expect(currentCall()).toBeNull();
@@ -423,7 +448,11 @@ describe("live call media", () => {
   it("explains a window without microphone support", async () => {
     resetLiveMedia();
     await startLiveCall({ botId: "b1", threadId: "t1" });
-    expect(liveMedia()).toMatchObject({ phase: "failed", notice: "Live calls need microphone and WebRTC support, which this window does not have." });
+    expect(liveMedia()).toMatchObject({
+      phase: "failed",
+      notice: "Live calls need a microphone, and this window can't use one. Open OpenMausBot at a secure https address to make the call.",
+      action: null,
+    });
     expect(currentCall()).toBeNull();
   });
 
@@ -436,7 +465,6 @@ describe("live call media", () => {
     expect(liveMedia()).toMatchObject({ phase: "idle", notice: null });
     expect(track.stopped).toBe(true);
 
-    // a new call starts before the old hang-up's reply arrives
     const first = track;
     peer = new FakePeer();
     track = new FakeTrack();
@@ -468,10 +496,19 @@ describe("live call media", () => {
   it("drops the key prompt only for the bot it was left for", async () => {
     request.mockRejectedValueOnce(new ApiError("Add an OpenAI API key to use Live calls.", 409, { needsKey: true }));
     await startLiveCall({ botId: "b1", threadId: "t1" });
-    dismissKeyPrompt("b2");
+    dismissStartPrompt("b2");
     expect(liveMedia()).toMatchObject({ needsKey: true, botId: "b1" });
-    dismissKeyPrompt("b1");
+    dismissStartPrompt("b1");
     expect(liveMedia()).toMatchObject({ phase: "idle", needsKey: false, botId: null });
+  });
+
+  it("drops the Pro prompt only for the bot it was left for", async () => {
+    request.mockRejectedValueOnce(new ApiError("Live calls from your phone need a Pro plan.", 402, { needsPro: true }));
+    await startLiveCall({ botId: "b1", threadId: "t1" });
+    dismissStartPrompt("b2");
+    expect(liveMedia()).toMatchObject({ needsPro: true, botId: "b1" });
+    dismissStartPrompt("b1");
+    expect(liveMedia()).toMatchObject({ phase: "idle", needsPro: false, botId: null });
   });
 
   it("plays blocked audio on the next click and clears the hint", async () => {
@@ -525,9 +562,6 @@ describe("live call media", () => {
   });
 });
 
-// "Hanging up…" and a quiet end belong to the window whose Hang up asked for
-// them. Any other end keeps the call's title while the call ends, then says
-// why in the reason's words.
 describe("ending a call", () => {
   const live = async () => {
     await startLiveCall({ botId: "b1", threadId: "t1" });
@@ -537,12 +571,11 @@ describe("ending a call", () => {
 
   it("keeps a call another device hangs up on screen while it ends, then says Call ended.", async () => {
     await live();
-    // the iPhone's remote bar hangs this window's call up
     onServerCall({ ...call, status: "ending" });
     expect(liveMedia()).toMatchObject({ phase: "ending", hangingUp: false, notice: null });
     expect(track.stopped).toBe(true);
     onServerCall({ ...call, status: "ended", endReason: "hung-up" });
-    expect(liveMedia()).toMatchObject({ phase: "ended", notice: "Call ended.", canRetry: false, hangingUp: false });
+    expect(liveMedia()).toMatchObject({ phase: "ended", notice: "Call ended.", action: null, hangingUp: false });
     expect(track.stopped).toBe(true);
     expect(currentCall()).toBeNull();
   });
@@ -552,7 +585,7 @@ describe("ending a call", () => {
     onServerCall({ ...call, status: "ending" });
     expect(liveMedia()).toMatchObject({ phase: "ending", hangingUp: false });
     onServerCall({ ...call, status: "ended", endReason: "idle" });
-    expect(liveMedia()).toMatchObject({ phase: "ended", notice: "Call ended after a long silence.", canRetry: false });
+    expect(liveMedia()).toMatchObject({ phase: "ended", notice: "Call ended after a long silence.", action: null });
   });
 
   it("stops capturing as soon as OpenAI closes the call, before the reason grace period", async () => {
@@ -601,7 +634,6 @@ describe("waiting for a Live call's audio to connect", () => {
 
   it("drops a call whose audio never connects, 20 s after the answer", async () => {
     await startLiveCall({ botId: "b1", threadId: "t1" });
-    // the harness is live on its own line to OpenAI; this window's audio is not
     onServerCall({ ...call, status: "live" });
     await vi.advanceTimersByTimeAsync(19_999);
     expect(liveMedia()).toMatchObject({ phase: "live", notice: null });
@@ -633,7 +665,6 @@ describe("waiting for a Live call's audio to connect", () => {
   it("keeps a call whose audio connected before the answer finished applying", async () => {
     peer.setRemoteDescription = async (description) => {
       peer.remote = description.sdp;
-      // the state change is reported before this promise resolves
       peer.connectionState = "connected";
       peer.onconnectionstatechange!();
     };
@@ -647,7 +678,6 @@ describe("waiting for a Live call's audio to connect", () => {
   it("does not drop, or end again, a call hung up before 20 s", async () => {
     await startLiveCall({ botId: "b1", threadId: "t1" });
     await vi.advanceTimersByTimeAsync(15_000);
-    // the harness confirms the hang-up only after the 20 s mark
     let confirm!: (value: unknown) => void;
     request.mockImplementationOnce(() => new Promise((resolve) => { confirm = resolve; }));
     const hanging = hangUpLiveCall();
@@ -667,7 +697,6 @@ describe("waiting for a Live call's audio to connect", () => {
     await vi.advanceTimersByTimeAsync(20_000);
     expect(liveMedia().phase).toBe("failed");
 
-    // Try again, on a fresh connection
     peer = new FakePeer();
     track = new FakeTrack();
     request.mockImplementationOnce(async () => ({ call: { ...call, callId: "c2" }, transport: { type: "webrtc", sdp: "answer" } }));
@@ -693,7 +722,6 @@ describe("waiting for a Live call's audio to connect", () => {
     track = new FakeTrack();
     request.mockImplementationOnce(async () => ({ call: { ...call, callId: "c2" }, transport: { type: "webrtc", sdp: "answer" } }));
     await startLiveCall({ botId: "b1", threadId: "t1" });
-    // the first call's answer finishes applying only now
     applied();
     await first;
     peer.connectionState = "connected";
@@ -710,5 +738,152 @@ describe("waiting for a Live call's audio to connect", () => {
     await vi.advanceTimersByTimeAsync(25_000);
     expect(liveMedia()).toMatchObject({ phase: "failed", notice: "Call dropped." });
     expect(endRequests()).toEqual([]);
+  });
+});
+
+describe("a blocked microphone", () => {
+  const APP_REFUSED = "The app didn't let this page use the microphone. Open it in your web browser to make the Live call.";
+  const COMPUTER = "The microphone is blocked. Allow microphone access for this app in your computer's privacy settings, then try again.";
+  const BROWSER = "The microphone is blocked. Allow it for this site in your browser, then try again.";
+  const blockedIn = (
+    dictation: Partial<DesktopCapabilities["dictation"]>,
+    { reason = "NotAllowedError", pageMic }: { reason?: string; pageMic?: "allowed" | "refused" } = {},
+  ) => configureLiveMedia({
+    getUserMedia: async () => { throw new DOMException("denied", reason); },
+    createPeer: () => peer as unknown as RTCPeerConnection,
+    request: request as never,
+    iceTimeoutMs: 50,
+    capabilities: windowIs(dictation),
+    pageMicrophone: async () => pageMic,
+  });
+
+  it("refused by this app on a server's page, sends the call to the web browser", async () => {
+    blockedIn({ reasonCode: "remote-server" }, { pageMic: "refused" });
+    await startLiveCall({ botId: "b1", threadId: "t1" });
+    expect(liveMedia()).toMatchObject({ phase: "failed", notice: APP_REFUSED, action: "open-in-browser" });
+  });
+
+  it("on a server's page in an older desktop app that does not say, sends the call to the web browser", async () => {
+    blockedIn({ reasonCode: "remote-server" });
+    await startLiveCall({ botId: "b1", threadId: "t1" });
+    expect(liveMedia()).toMatchObject({ phase: "failed", notice: APP_REFUSED, action: "open-in-browser" });
+  });
+
+  it("on a plain-http server's page, which has no microphone at all, offers no web browser", async () => {
+    const pageMicrophone = vi.fn(async () => "refused" as const);
+    configureLiveMedia({
+      createPeer: () => peer as unknown as RTCPeerConnection,
+      request: request as never,
+      capabilities: () => ({ dictation: { available: false, engine: "none", onDevice: false, reasonCode: "remote-server" } }) as DesktopCapabilities,
+      pageMicrophone,
+    });
+    await startLiveCall({ botId: "b1", threadId: "t1" });
+    expect(liveMedia()).toMatchObject({ phase: "failed", notice: "Live calls need a microphone, and this window can't use one. Open OpenMausBot at a secure https address to make the call.", action: null });
+    expect(liveMedia().notice).not.toMatch(/browser/i);
+    expect(pageMicrophone).not.toHaveBeenCalled();
+  });
+
+  it("allowed by this app on the person's Cloud, points at the computer's settings, then Try again", async () => {
+    blockedIn({ reasonCode: "remote-server" }, { pageMic: "allowed" });
+    await startLiveCall({ botId: "b1", threadId: "t1" });
+    expect(liveMedia()).toMatchObject({ phase: "failed", notice: COMPUTER, action: "retry" });
+  });
+
+  it("in a web browser, points at the site's microphone permission, then Try again", async () => {
+    blockedIn({ reasonCode: "desktop-app-required" });
+    await startLiveCall({ botId: "b1", threadId: "t1" });
+    expect(liveMedia()).toMatchObject({ phase: "failed", notice: BROWSER, action: "retry" });
+  });
+
+  it.each([
+    ["the Mac app", { available: true, engine: "apple-speech", onDevice: true }, "allowed"],
+    ["the Windows app", { reasonCode: "unsupported-platform" }, "allowed"],
+    ["an older Mac app", { available: true, engine: "apple-speech", onDevice: true }, undefined],
+  ] as const)("in %s's own window, points at the computer's settings, then Try again", async (_where, dictation, pageMic) => {
+    blockedIn(dictation, { pageMic });
+    await startLiveCall({ botId: "b1", threadId: "t1" });
+    expect(liveMedia()).toMatchObject({ phase: "failed", notice: COMPUTER, action: "retry" });
+  });
+
+  it.each([
+    ["another server's page", { reasonCode: "remote-server" }],
+    ["a web browser", { reasonCode: "desktop-app-required" }],
+    ["the Windows app", { reasonCode: "unsupported-platform" }],
+  ] as const)("with no microphone at all, in %s, asks for one, then Try again", async (_where, dictation) => {
+    blockedIn(dictation, { reason: "NotFoundError", pageMic: "refused" });
+    await startLiveCall({ botId: "b1", threadId: "t1" });
+    expect(liveMedia()).toMatchObject({ phase: "failed", notice: "No microphone was found. Connect one, then try again.", action: "retry" });
+  });
+
+  it("Try again starts the call again", async () => {
+    blockedIn({ reasonCode: "desktop-app-required" });
+    await startLiveCall({ botId: "b1", threadId: "t1" });
+    expect(liveMedia().action).toBe("retry");
+    configureLiveMedia({
+      getUserMedia: async () => ({ getTracks: () => [track], getAudioTracks: () => [track] }) as unknown as MediaStream,
+      createPeer: () => peer as unknown as RTCPeerConnection,
+      request: request as never,
+      iceTimeoutMs: 50,
+    });
+    takeLiveCallAction();
+    await vi.waitFor(() => expect(liveMedia()).toMatchObject({ phase: "starting", callId: "c1", botId: "b1", threadId: "t1", notice: null }));
+    expect(request).toHaveBeenCalledWith("/api/live/session", expect.objectContaining({ method: "POST" }));
+  });
+
+  it("Open in browser opens this very page in the web browser", async () => {
+    vi.stubGlobal("location", { href: "https://omb-u-0123456789ab.fly.dev/?bot=b1" });
+    const openInBrowser = vi.fn();
+    configureLiveMedia({
+      getUserMedia: async () => { throw new DOMException("denied", "NotAllowedError"); },
+      capabilities: () => ({ dictation: { available: false, engine: "none", onDevice: false, reasonCode: "remote-server" } }) as DesktopCapabilities,
+      pageMicrophone: async () => "refused",
+      openInBrowser,
+    });
+    await startLiveCall({ botId: "b1", threadId: "t1" });
+    takeLiveCallAction();
+    expect(openInBrowser).toHaveBeenCalledExactlyOnceWith("https://omb-u-0123456789ab.fly.dev/?bot=b1");
+    expect(request).not.toHaveBeenCalledWith("/api/live/session", expect.anything());
+  });
+
+  it("asks the desktop app through permStatus, and opens the page as a link", async () => {
+    const open = vi.fn();
+    const permStatus = vi.fn(async () => ({ mic: "granted", pageMic: "refused" }));
+    vi.stubGlobal("window", { ogb: { speechStop: vi.fn(async () => {}), permStatus }, open });
+    vi.stubGlobal("location", { href: "https://omb-u-0123456789ab.fly.dev/" });
+    configureLiveMedia({
+      getUserMedia: async () => { throw new DOMException("denied", "NotAllowedError"); },
+      capabilities: () => ({ dictation: { available: false, engine: "none", onDevice: false, reasonCode: "remote-server" } }) as DesktopCapabilities,
+    });
+    await startLiveCall({ botId: "b1", threadId: "t1" });
+    expect(permStatus).toHaveBeenCalledOnce();
+    expect(liveMedia()).toMatchObject({ notice: APP_REFUSED, action: "open-in-browser" });
+    takeLiveCallAction();
+    expect(open).toHaveBeenCalledExactlyOnceWith("https://omb-u-0123456789ab.fly.dev/", "_blank", "noopener,noreferrer");
+  });
+
+  it("treats a desktop app that cannot answer as one that does not say", async () => {
+    const permStatus = vi.fn(async () => { throw new Error("no handler"); });
+    vi.stubGlobal("window", { ogb: { speechStop: vi.fn(async () => {}), permStatus } });
+    configureLiveMedia({
+      getUserMedia: async () => { throw new DOMException("denied", "NotAllowedError"); },
+      capabilities: () => ({ dictation: { available: true, engine: "apple-speech", onDevice: true } }) as DesktopCapabilities,
+    });
+    await startLiveCall({ botId: "b1", threadId: "t1" });
+    expect(liveMedia()).toMatchObject({ phase: "failed", notice: COMPUTER, action: "retry" });
+  });
+
+  it("a call hung up while the app is asked about its microphone stays hung up", async () => {
+    let answer!: (pageMic: "refused") => void;
+    configureLiveMedia({
+      getUserMedia: async () => { throw new DOMException("denied", "NotAllowedError"); },
+      capabilities: () => ({ dictation: { available: false, engine: "none", onDevice: false, reasonCode: "remote-server" } }) as DesktopCapabilities,
+      pageMicrophone: () => new Promise((resolve) => { answer = resolve; }),
+    });
+    const starting = startLiveCall({ botId: "b1", threadId: "t1" });
+    await vi.waitFor(() => expect(answer).toBeDefined());
+    await hangUpLiveCall();
+    answer("refused");
+    await starting;
+    expect(liveMedia()).toMatchObject({ phase: "idle", notice: null, action: null });
   });
 });

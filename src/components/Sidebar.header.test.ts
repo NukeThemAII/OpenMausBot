@@ -1,7 +1,3 @@
-// Density is an occasional preference chosen in Settings → Appearance; the
-// sidebar header keeps only its frequent controls (collapse, activity, add),
-// and Simple mode keeps only add. The header is one row on the traffic
-// lights' line: [lights] [drag space] [server switcher] [buttons].
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -97,13 +93,11 @@ describe("sidebar top row", () => {
     expect(end).toBeGreaterThan(start);
     return html.slice(start, end);
   };
-  /** The class list of the first element carrying `attribute`. */
   const classesOf = (html: string, attribute: string) => {
     const match = new RegExp(`${attribute}(?:="[^"]*")? class="([^"]*)"`).exec(html);
     expect(match, attribute).not.toBeNull();
     return match![1].split(" ");
   };
-  /** Where the lights' space, the slot (drag spacer + switcher), the switcher and the buttons start in the row. */
   const order = (row: string) => ({
     lights: row.indexOf("data-traffic-light-space"),
     slot: row.indexOf("data-sidebar-top-slot"),
@@ -118,7 +112,6 @@ describe("sidebar top row", () => {
     desktop();
     const html = render();
     const row = topRow(html);
-    // Twice the lights' centre line tall, so centred controls share that line.
     expect(MAC_TRAFFIC_LIGHT_CENTER_Y).toBe(23);
     expect(row).toMatch(/^data-sidebar-top-row="true" class="[^"]*\bitems-center\b[^"]*" style="-webkit-app-region:drag;height:46px"/);
     const { lights, slot, spacer, switcher, buttons } = order(row);
@@ -127,36 +120,29 @@ describe("sidebar top row", () => {
     expect(spacer).toBeGreaterThan(slot);
     expect(switcher).toBeGreaterThan(spacer);
     expect(buttons).toBeGreaterThan(switcher);
-    // Simple keeps only "+", so the switcher sits right beside it.
     expect(row.slice(buttons).match(/<button/g)).toHaveLength(advanced ? 3 : 1);
-    // 16px in on the left like the lights; 8px on the right, so the last
-    // button sits near the sidebar's edge. `relative` anchors the switcher's
-    // error note to the row; without it the note drops to the sidebar's foot.
     const rowClasses = classesOf(row, "data-sidebar-top-row");
     expect(rowClasses).toEqual(expect.arrayContaining(["relative", "pl-4", "pr-2"]));
     expect(rowClasses).not.toContain("px-4");
-    // The lights end 76px in on macOS 26; their space ends 12px past them,
-    // so nothing clickable (nor its hover background) reaches them.
     expect(classesOf(row, "data-traffic-light-space")).toEqual(expect.arrayContaining(["w-[72px]", "shrink-0"]));
-    // The slot between the lights and the buttons is the size container the
-    // switcher reads. Its spacer is empty (so it stays a drag region) and
-    // takes the slack.
     expect(classesOf(row, "data-sidebar-top-slot")).toEqual(expect.arrayContaining(["@container/sidebar-top", "min-w-0", "flex-1"]));
-    expect(row).toContain('<div data-sidebar-top-spacer="true" class="min-w-0 flex-1"></div>');
-    // The switcher is capped and gives way first; the buttons never shrink.
+    expect(row).toContain('<div data-sidebar-top-spacer="true" class="min-w-0 flex-1 @min-[96px]/sidebar-top:min-w-6"></div>');
     const switcherClasses = classesOf(row, "data-sidebar-top-switcher");
     expect(switcherClasses).toEqual(expect.arrayContaining(["min-w-0", "max-w-[140px]"]));
     expect(switcherClasses).not.toContain("flex-1");
     expect(classesOf(row, "data-sidebar-top-buttons")).toEqual(expect.arrayContaining(["shrink-0", "gap-0.5"]));
-    // Only the switcher's button opts out of the drag region; it clips
-    // rather than spilling onto the buttons in the narrowest rows, and its
-    // title and label keep the whole name.
     expect(row).toMatch(/aria-label="Switch server: Servers"[^>]*title="Servers"[^>]*class="[^"]*\bh-7\b[^"]*\boverflow-hidden\b[^"]*\btext-\[12\.5px\][^"]*" style="-webkit-app-region:no-drag"/);
-    // A slot narrower than 164px, the 140px cap plus a 24px drag gap (macOS
-    // Advanced at 320px leaves 121px), shows icon + chevron only, so the
-    // switcher never fills the slot up to the lights.
-    expect(row).toContain('<span class="min-w-0 truncate @max-[164px]/sidebar-top:hidden">Servers</span>');
-    // No second, full-width switcher row beneath the header.
+    expect(row).toContain('<span class="min-w-0 truncate @max-[96px]/sidebar-top:hidden">Servers</span>');
+    expect(row).toContain("focus-visible:outline-2");
+    expect(html).toContain('title="New or share"');
+    if (advanced) {
+      expect(row).toContain('title="Collapse to avatars"');
+      expect(row).toContain('aria-label="Collapse sidebar to avatars"');
+      expect(row).toContain('title="Active Threads"');
+    } else {
+      expect(html).not.toContain('title="Collapse to avatars"');
+      expect(html).not.toContain('title="Active Threads"');
+    }
     expect(html.match(/Switch server:/g)).toHaveLength(1);
   });
 
@@ -200,5 +186,54 @@ describe("sidebar top row", () => {
     expect(classesOf(row, "data-traffic-light-space")).toEqual(["h-5", "w-full"]);
     expect(classesOf(row, "data-sidebar-top-buttons")).toEqual(["relative", "flex", "shrink-0", "items-center", "flex-col", "gap-1"]);
     expect(html.match(/Switch server:/g)).toHaveLength(1);
+  });
+});
+
+describe("sidebar glass head and foot", () => {
+  it.each(["comfortable", "compact", "icons"] as const)(
+    "puts the top row and search in the glass head, the places in the glass foot, and the list between at %s density",
+    (density) => {
+      fixture.density = density;
+      const html = render();
+      const at = (marker: string) => {
+        const index = html.indexOf(marker);
+        expect(index, marker).toBeGreaterThan(-1);
+        return index;
+      };
+      const head = at('data-glass-bar="top"');
+      const topRow = at("data-sidebar-top-row");
+      const search = at('aria-label="Search bots and messages"');
+      const list = at('class="glass-scroller ');
+      const foot = at('data-glass-bar="bottom"');
+      const places = at('data-sidebar-nav="routines"');
+      expect(head).toBeLessThan(topRow);
+      expect(topRow).toBeLessThan(search);
+      expect(search).toBeLessThan(list);
+      expect(list).toBeLessThan(foot);
+      expect(foot).toBeLessThan(places);
+      expect(html.match(/data-glass-frame=""/g)).toHaveLength(1);
+      expect(at("data-glass-frame")).toBeLessThan(head);
+    },
+  );
+});
+
+describe("sidebar foot in Simple mode", () => {
+  it.each(["comfortable", "compact"] as const)("keeps only the profile row, with Apps at its end (%s)", (density) => {
+    fixture.advanced = false;
+    fixture.density = density;
+    const html = render();
+    const foot = html.indexOf('data-glass-bar="bottom"');
+    expect(html).not.toContain('data-sidebar-nav="routines"');
+    expect(html).not.toContain('data-sidebar-nav="triggers"');
+    expect(html.match(/data-sidebar-nav="apps"/g)).toHaveLength(1);
+    expect(html.indexOf('data-sidebar-nav="apps"')).toBeGreaterThan(foot);
+  });
+
+  it("keeps Routines and Triggers in Advanced mode, and still one Apps", () => {
+    fixture.advanced = true;
+    const html = render();
+    expect(html).toContain('data-sidebar-nav="routines"');
+    expect(html).toContain('data-sidebar-nav="triggers"');
+    expect(html.match(/data-sidebar-nav="apps"/g)).toHaveLength(1);
   });
 });

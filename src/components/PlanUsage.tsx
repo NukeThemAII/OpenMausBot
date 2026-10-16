@@ -1,5 +1,3 @@
-// Settings → Usage: remaining subscription allowance. This is not the token
-// ledger below it — each provider reports its own 5-hour and weekly windows.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, RefreshCw } from "lucide-react";
 import { api } from "@/state/store";

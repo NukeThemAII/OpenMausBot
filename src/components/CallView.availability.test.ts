@@ -2,10 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import { callCapabilityHelp } from "@/lib/call-capability";
 
-function capabilities(dictation: DesktopCapabilities["dictation"]): DesktopCapabilities {
+function capabilities(
+  dictation: DesktopCapabilities["dictation"],
+  platform: DesktopCapabilities["host"]["platform"] = "darwin",
+): DesktopCapabilities {
   return {
     host: {
-      platform: "darwin",
+      platform,
       label: "macOS",
       session: "unknown",
       packaged: true,
@@ -31,38 +34,54 @@ describe("call capability guidance", () => {
     }), true)).toBeNull();
   });
 
-  it("sends a hosted workspace view to the native workspace menu", () => {
-    expect(callCapabilityHelp(capabilities({
+  it("says where taking turns works on a server's page in the Mac app, with no trip there", () => {
+    const help = callCapabilityHelp(capabilities({
       available: false,
       engine: "none",
       onDevice: false,
       reasonCode: "remote-server",
-    }), false)).toEqual({
-      label: "Calls are available on This computer",
-      reason: "You're viewing a server. Calls use the microphone and on-device speech recognition on your Mac.",
-      action: "choose-local-workspace",
+    }), false);
+    expect(help).toEqual({
+      label: "Calls where you take turns work on This computer",
+      reason: "They listen with your Mac's own speech recognition, which only This computer can use.",
+    });
+    expect(help).not.toHaveProperty("action");
+  });
+
+  it.each(["win32", "linux"] as const)("sends nobody on %s to This computer, which can't take turns either", (platform) => {
+    const help = callCapabilityHelp(capabilities({
+      available: false,
+      engine: "none",
+      onDevice: false,
+      reasonCode: "remote-server",
+    }, platform), false);
+    expect(help).toEqual({
+      label: "Calls where you take turns need the Mac app",
+      reason: "They listen with on-device speech recognition, which only the Mac app has.",
     });
   });
 
-  it("tells a browser user to open the installed macOS app", () => {
+  it("tells a browser user only taking turns needs the Mac app", () => {
     const help = callCapabilityHelp(capabilities({
       available: false,
       engine: "none",
       onDevice: false,
       reasonCode: "desktop-app-required",
-    }), false);
-    expect(help?.label).toBe("Calls need the macOS desktop app");
-    expect(help).not.toHaveProperty("action");
+    }, "other"), false);
+    expect(help).toEqual({
+      label: "Calls where you take turns need the Mac app",
+      reason: "They listen with on-device speech recognition, which only the Mac app has.",
+    });
   });
 
-  it("explains that native calls are not supported on a non-Mac desktop", () => {
+  it("says only taking turns needs the Mac app on a non-Mac desktop", () => {
     const help = callCapabilityHelp(capabilities({
       available: false,
       engine: "none",
       onDevice: false,
       reasonCode: "unsupported-platform",
-    }), false);
-    expect(help?.label).toBe("Calls currently need macOS");
+    }, "win32"), false);
+    expect(help?.label).toBe("Calls where you take turns need the Mac app");
     expect(help).not.toHaveProperty("action");
   });
 

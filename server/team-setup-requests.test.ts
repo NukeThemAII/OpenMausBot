@@ -60,6 +60,39 @@ function harness(caps?: Record<string, { driverKind: string; agentsMcp: boolean 
 const specialist = (key: string, section: string, modelSelection = { instanceId: "claude", model: "sonnet" }) => ({ action: "create", key,
   fields: { name: key, title: "Specialist", soul: "Finish the assigned work.", section, modelSelection } });
 
+describe("a specialist the Chief suggests", () => {
+  const suggest = (h: ReturnType<typeof harness>, name: string) => h.service.suggest({ botId: h.chief.id, threadId: h.chief.threadId, suggestion: true,
+    plan: { reason: "The work needs a checker", operations: [specialist(name, "Work")] } });
+
+  it("always waits on a card with Add bot and Not now, even at Full Access", async () => {
+    const h = harness(); h.autoApply.mockReturnValue(true);
+    const card = suggest(h, "Theo");
+    expect(card).toMatchObject({ state: "pending", applied: false, title: "Add @Theo to the team?" });
+    expect(card.detail).toContain("@Clive is suggesting this. You did not ask for it.");
+    expect(h.messages.at(-1)?.card).toMatchObject({ options: ["Add bot", "Not now"], teamSetupRequest: { suggestion: true } });
+    expect(h.apply).not.toHaveBeenCalled();
+    expect((await h.resolve(card.requestId))?.result.state).toBe("applied");
+    expect(h.store.bot(h.apply.mock.calls[0]![0].operations[0]!.botId)).toMatchObject({ name: "Theo" });
+  });
+
+  it("keeps one suggestion open per conversation and remembers Not now", async () => {
+    const h = harness();
+    const first = suggest(h, "Theo");
+    expect(() => suggest(h, "Una")).toThrow(/already waiting/);
+    expect((await h.submit([specialist("Asked", "Work")])).state).toBe("pending");
+    expect((await h.resolve(first.requestId, "deny"))?.result.state).toBe("denied");
+    expect(() => suggest(h, "Una")).toThrow(/not now/);
+    expect(h.apply).not.toHaveBeenCalled();
+  });
+
+  it("lets a new suggestion follow one the user applied", async () => {
+    const h = harness();
+    const first = suggest(h, "Theo");
+    await h.resolve(first.requestId);
+    expect(suggest(h, "Una").title).toBe("Add @Una to the team?");
+  });
+});
+
 describe("reviewed Chief team setup", () => {
   it("reviews promotion in an authorized team without changing anything on denial", async () => {
     const h = harness(); h.peer.section = "Engineering";
@@ -163,8 +196,6 @@ describe("reviewed Chief team setup", () => {
     const h = harness();
     const card = h.propose([{ action: "update", botId: h.peer.id, fields: { modelSelection: { instanceId: "claude", model: "sonnet", variant: "stable" } } }]);
     expect(card.detail).toContain("Default engine/model:");
-    // A variant-only change must render as a real before-and-after, never
-    // an identical pair with the variant silently stripped.
     expect(card.detail).toContain("claude/sonnet (no variant) → claude/sonnet (variant stable)");
   });
   it("coalesces each bot's fields into one review and applies once with a durable receipt", async () => {
@@ -215,7 +246,6 @@ describe("reviewed Chief team setup", () => {
   it.each(["target", "chief", "team", "scope", "busy", "source"])("cancels a %s change while the review was open, without any batch mutation", async (change) => {
     const h = harness();
     const request = h.propose([{ action: "update", botId: h.peer.id, fields: { title: "Researcher", section: "Engineering" } }, specialist("Mira", "Research")], ["Research"]);
-    // A touched field: scoped revision (#1791) ignores drift on untouched fields.
     if (change === "target") h.peer.title = "newer user edit";
     if (change === "chief") h.chief.chiefOfStaff = false;
     if (change === "team") h.teams.push("Research");
@@ -225,8 +255,6 @@ describe("reviewed Chief team setup", () => {
     const before = structuredClone(h.store.bots);
     expect((await h.resolve(request.requestId))?.result.state).toBe("cancelled");
     expect(h.store.bots).toEqual(before); expect(h.apply).not.toHaveBeenCalled();
-    // The card settles as expired, not as a denial nobody made: options
-    // gone, one held line explaining that the setup must be re-proposed.
     expect(h.messages[0].card?.expired).toBe(true);
     expect(h.messages[0].card?.options).toEqual([]);
     expect(h.messages[0].card?.answered).toBeUndefined();
@@ -459,7 +487,7 @@ describe("Full Access team setup", () => {
     h.targetBusy.mockImplementation((id, sourceThreadId) => Boolean(h.store.bot(id)?.busy) && sourceThreadId !== h.chief.threadId);
     expect(await h.submit([{ action: "update", botId: h.chief.id, fields: { title: "Updated Chief" } }])).toMatchObject({ state: "applied" });
     expect(h.targetBusy).toHaveBeenCalledWith(h.chief.id, h.chief.threadId);
-    h.targetBusy.mockReturnValue(true); // Sibling work remains busy after excluding the source.
+    h.targetBusy.mockReturnValue(true);
     expect(await h.submit([{ action: "update", botId: h.chief.id, fields: { title: "Must not apply" } }])).toMatchObject({ state: "cancelled", applied: false });
     expect(h.chief.title).toBe("Updated Chief");
     h.peer.busy = true;

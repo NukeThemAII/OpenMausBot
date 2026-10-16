@@ -1,6 +1,3 @@
-// The harness's part in a provider's permission request: pass it through.
-// These pin that nothing here judges an action, that Full access is the one
-// synthesized answer, and that every note a card can show has a catalog key.
 import { describe, expect, it, vi } from "vitest";
 
 import englishCatalog from "../src/locales/en.json" with { type: "json" };
@@ -36,6 +33,12 @@ describe("Full access delivery", () => {
 });
 
 describe("autoVerdict", () => {
+  it("never uses a saved command grant to silently send on the person's behalf", () => {
+    for (const mode of ["ask", "edits", "auto", "custom"] as const) {
+      expect(autoVerdict(mode, "mcp__composio__GMAIL_SEND_DRAFT", { commandAllowed: true })).toEqual({ approve: null, source: "outbound-guard" });
+    }
+    expect(autoVerdict("full", "GMAIL_SEND_EMAIL").source).toBe("full-access");
+  });
   it("applies an explicit exact command grant without changing Full or answering questions/elevations", () => {
     for (const mode of ["ask", "edits", "auto", "custom"] as const) {
       expect(autoVerdict(mode, "Bash", { commandAllowed: true }).source).toBe("command-allowlist");
@@ -44,6 +47,17 @@ describe("autoVerdict", () => {
       expect(autoVerdict(mode, "AskUserQuestion", { commandAllowed: true }).approve).toBeNull();
     }
     expect(autoVerdict("full", "Bash", { commandAllowed: true, requiresExplicitApproval: true }).source).toBe("full-access");
+  });
+  it("applies an exact saved MCP read grant without bypassing outbound or sandbox guards", () => {
+    for (const mode of ["ask", "edits", "auto", "custom"] as const) {
+      expect(autoVerdict(mode, "mcp__linear__list_issues", { toolAllowed: true })).toEqual({
+        approve: "approved mcp__linear__list_issues (always allowed)",
+        source: "tool-allowlist",
+      });
+      expect(autoVerdict(mode, "mcp__linear__list_issues", { toolAllowed: true, requiresExplicitApproval: true }).approve).toBeNull();
+      expect(autoVerdict(mode, "mcp__linear__create_comment", { toolAllowed: true }).approve).toBeNull();
+      expect(autoVerdict(mode, "AskUserQuestion", { toolAllowed: true }).approve).toBeNull();
+    }
   });
   it("answers only for Full access, and then answers everything", () => {
     expect(autoVerdict("full", "Bash")).toEqual({ approve: "approved Bash (full access)", source: "full-access" });
@@ -71,6 +85,42 @@ describe("autoVerdict", () => {
         .toEqual({ approve: null, source: "explicit-approval-block" });
     }
   });
+
+  it("allows a web search under Approve for me, by the tool's bare name", () => {
+    for (const tool of ["WebSearch", "web_search", "mcp__claude__WebSearch", "search_web"]) {
+      expect(autoVerdict("auto", tool), tool).toEqual({
+        approve: `approved ${tool} (web search)`,
+        source: "web-search",
+      });
+    }
+  });
+
+  it("still cards a fetch, a bare search, and a command under Approve for me", () => {
+    for (const tool of ["WebFetch", "web_fetch", "fetch", "search", "Bash"]) {
+      expect(autoVerdict("auto", tool), tool).toEqual({ approve: null, source: "native-approval" });
+    }
+  });
+
+  it("does not grant a web search in Ask, Edits, or Custom", () => {
+    expect(autoVerdict("ask", "WebSearch")).toEqual({ approve: null, source: "no-grant" });
+    expect(autoVerdict("edits", "WebSearch")).toEqual({ approve: null, source: "no-grant" });
+    expect(autoVerdict("custom", "WebSearch")).toEqual({ approve: null, source: "native-approval" });
+  });
+
+  it("lets Full access, a sandbox block, and a saved command beat the web-search grant", () => {
+    expect(autoVerdict("full", "WebSearch")).toEqual({
+      approve: "approved WebSearch (full access)",
+      source: "full-access",
+    });
+    expect(autoVerdict("auto", "WebSearch", { requiresExplicitApproval: true })).toEqual({
+      approve: null,
+      source: "explicit-approval-block",
+    });
+    expect(autoVerdict("auto", "WebSearch", { commandAllowed: true })).toEqual({
+      approve: "approved WebSearch (saved command)",
+      source: "command-allowlist",
+    });
+  });
 });
 
 describe("approvalModeForOrigin", () => {
@@ -87,27 +137,24 @@ describe("held notes", () => {
   it("explains a provider's own request and a sandbox change, and nothing else", () => {
     expect(approvalHeldNote({ source: "native-approval", permission: true })).toBe("approval.held.native");
     expect(approvalHeldNote({ source: "explicit-approval-block", permission: true })).toBe("approval.held.sandbox");
+    expect(approvalHeldNote({ source: "web-search", permission: true })).toBeUndefined();
     expect(approvalHeldNote({ source: "no-grant", permission: true })).toBeUndefined();
     expect(approvalHeldNote({ source: undefined, permission: true })).toBeUndefined();
-    // questions are never held for a mode reason
     expect(approvalHeldNote({ source: "native-approval", permission: false })).toBeUndefined();
     expect(approvalHeldReason({ source: "native-approval", permission: true }))
       .toBe("The provider requires your approval for this action.");
   });
 
-  it("has a catalog entry for every note, so the client can translate by key", () => {
-    for (const [key, text] of Object.entries(HELD_NOTE)) {
-      expect(englishCatalog[key as keyof typeof englishCatalog], key).toBe(text);
-    }
+  // Both ways: the client translates every note by key, and a catalog note the server no longer sends describes behaviour that has gone.
+  it("the catalog's held notes are exactly the ones the server sends", () => {
+    const catalog = Object.fromEntries(Object.entries(englishCatalog).filter(([key]) => key.startsWith("approval.held.")));
+    expect(catalog).toEqual(HELD_NOTE);
   });
 });
 
 describe("tools that ask a person", () => {
-  // A question normally arrives typed as a question and never reaches a
-  // verdict. This is the backstop for the path where one arrives typed as a
-  // permission: no mode may answer it, because approving does not answer
-  // anything — the CLI runs the tool with no answers and the model is told
-  // "The user did not answer the questions."
+  // The backstop for a question arriving typed as a permission: approving runs the tool with no answers, and the model is
+  // told "The user did not answer the questions."
   const modes = ["ask", "edits", "auto", "custom", "full"] as const;
 
   it("never answers AskUserQuestion for the person, even under Full access", () => {
@@ -120,7 +167,6 @@ describe("tools that ask a person", () => {
     for (const mode of modes) {
       expect(autoVerdict(mode, "ask_user").approve, mode).toBeNull();
       expect(autoVerdict(mode, "mcp__ogb__ask_user").approve, mode).toBeNull();
-      expect(autoVerdict(mode, "omb-ask").approve, mode).toBeNull();
     }
   });
 
@@ -140,7 +186,6 @@ describe("delegatedApprovalMode", () => {
   it("passes an Approve-for-me or Auto-accept-edits Chief's level on too", () => {
     expect(delegatedApprovalMode({ ...base, senderMode: "auto" })).toBe("auto");
     expect(delegatedApprovalMode({ ...base, senderMode: "edits" })).toBe("edits");
-    // A Chief's own Custom config reads as Approve for me for a teammate.
     expect(delegatedApprovalMode({ ...base, senderMode: "custom", recipientDriverKind: "codex" })).toBe("auto");
   });
   it("passes nothing on from an ordinary bot, a Chief on Ask, or a bot to itself", () => {
@@ -156,9 +201,8 @@ describe("delegatedApprovalMode", () => {
     expect(delegatedApprovalMode({ ...base, recipientMode: "custom", recipientDriverKind: "codex" })).toBeNull();
   });
   it("steps down to the next level the teammate's engine has", () => {
-    // No Full mode (hermes): the Chief's Full becomes Approve for me.
-    expect(delegatedApprovalMode({ ...base, recipientDriverKind: "hermes" })).toBe("auto");
-    expect(delegatedApprovalMode({ ...base, recipientDriverKind: undefined })).toBe("auto");
+    expect(delegatedApprovalMode({ ...base, recipientDriverKind: "hermesAgent" })).toBe("full");
+    expect(delegatedApprovalMode({ ...base, recipientDriverKind: undefined })).toBe("full");
     // Codex has no Auto-accept edits (its Ask already writes the workspace).
     expect(delegatedApprovalMode({ ...base, senderMode: "edits", recipientDriverKind: "codex" })).toBeNull();
     expect(delegatedApprovalMode({ ...base, senderMode: "auto", recipientDriverKind: "codex" })).toBe("auto");

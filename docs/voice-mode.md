@@ -79,7 +79,7 @@ call behind an invisible card.
 ~100–250ms, against an agent turn of 5–60s. The agent dominates by 50–100x, so
 voice choice is a quality decision, not a latency one. The way to make a call
 feel conversational is to put the bot you call on a fast model and let it
-delegate real work to specialists over `ask_bot` — no new machinery required.
+hand real work to specialists with `coordinate_bots` — no new machinery required.
 
 ## Rejected
 
@@ -94,7 +94,12 @@ delegate real work to specialists over `ask_bot` — no new machinery required.
 
 ## Known gaps
 
-- **Calls are macOS-only**, because dictation is. The voice half works everywhere.
+- **Take-turns calls are macOS-only**, because dictation is. The voice half
+  works everywhere. Live calls (GPT-Live, `server/live-call.ts`) need no
+  dictation, so they work in the desktop app on any computer and on the
+  phones, with the person's own OpenAI key. A Cloud's page, in a web browser
+  or the desktop app, runs the same code, but no Live call has been made end
+  to end on a real Cloud yet.
 - **Rooms don't speak yet**, though per-bot voices already exist (`bot.voice`).
 - **No spend meter.** ElevenLabs bills per character. Auto-speak is off by
   default partly for that reason, but the app should eventually show usage.

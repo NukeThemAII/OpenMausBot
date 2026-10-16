@@ -1,6 +1,3 @@
-// A bot's working folder — where its shell tools run. Validated here, once,
-// so a bad path is refused at PATCH time with a reason the settings panel
-// can show, rather than surfacing later as a driver spawn failure.
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";

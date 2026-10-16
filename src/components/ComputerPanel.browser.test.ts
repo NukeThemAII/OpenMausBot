@@ -17,7 +17,7 @@ vi.mock("@/lib/interface-mode", () => ({ useAdvancedMode: () => true, setAdvance
 vi.mock("@/state/store", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/state/store")>(),
   useStore: () => ({
-    state: { config: { box: { configured: false }, ...fixture.config }, instances: [], computerControl: {}, screens: {}, routines: [], routineRuns: [] },
+    state: { config: { box: { configured: false }, ...fixture.config }, instances: [], computerControl: {}, routines: [], routineRuns: [] },
     dispatch: vi.fn(),
     flushBotPatches: vi.fn(),
   }),
@@ -47,8 +47,9 @@ describe("Browser panel installation access", () => {
 
   it("does not offer an install on unsupported hosts and still shows a ready engine", () => {
     expect(render({ features: { browser: true }, browserEngine: { kind: "unavailable", installable: false } })).not.toContain("Browser engine not installed");
-    // A ready browser waits for the owner check before opening a live stream.
-    expect(render({ features: { browser: true }, browserEngine: { kind: "engine" } })).toContain("Loading browser…");
+    const ready = render({ features: { browser: true }, browserEngine: { kind: "engine" } });
+    expect(ready).toContain("Opening the live browser…");
+    expect(ready).not.toMatch(/Loading browser…|Only admins/);
   });
 
   it("keeps Chrome setup failure and progress visible even when the binary exists", () => {
@@ -65,22 +66,16 @@ describe("Browser panel installation access", () => {
 
 describe("Computer panel on a narrow screen", () => {
   it("covers the window below md instead of docking a 400px column", () => {
-    // A phone reaches this panel through the browser (remote access). Docked
-    // at its stored width it pushed the chat to zero and ran off the right
-    // edge, where `body { overflow: hidden }` cut it off. Below md it takes
-    // the window like the settings and inspector panels do; the inline width
-    // still sizes it beside the chat on wider screens.
     const markup = render({});
     const aside = /<aside class="([^"]*)"/.exec(markup)!;
     expect(aside[1].split(" ")).toEqual(expect.arrayContaining(["max-md:absolute", "max-md:inset-0", "max-md:z-40", "max-md:w-full!"]));
-    // Nothing to drag against when the panel is the whole window.
     const separator = /<div role="separator"[^>]*class="([^"]*)"/.exec(markup)!;
     expect(separator[1].split(" ")).toContain("max-md:hidden");
   });
 });
 
 describe("Computer panel Works on", () => {
-  const places = (markup: string) => [...markup.matchAll(/<span>(Auto|Cloud|Local VM|This computer|Browser|Off)<\/span>/g)].map((match) => match[1]);
+  const places = (markup: string) => [...markup.matchAll(/<span>(Auto|Cloud computer|Local VM|This computer|Browser|Off)<\/span>/g)].map((match) => match[1]);
   const computerTab = (config: FeatureFlagConfig & { cloudHome?: boolean }) => {
     fixture.view.current = "computer";
     try { return render(config); } finally { fixture.view.current = "browser"; }
@@ -88,14 +83,14 @@ describe("Computer panel Works on", () => {
 
   it("lists this computer and a Local VM on a desktop or self-hosted server", () => {
     const markup = computerTab({});
-    expect(places(markup)).toEqual(["Auto", "Cloud", "Local VM", "This computer", "Browser", "Off"]);
+    expect(places(markup)).toEqual(["Auto", "Cloud computer", "Local VM", "This computer", "Browser", "Off"]);
     expect(markup).toContain("Choose where this bot can use a computer.</p>");
   });
 
-  it("lists neither on an OMB Cloud home, and says why", () => {
+  it("lists neither on My Cloud, and says why", () => {
     const markup = computerTab({ cloudHome: true });
-    expect(places(markup)).toEqual(["Auto", "Cloud", "Browser", "Off"]);
-    expect(markup).toContain("Bots on your OMB Cloud work in the cloud; to let them use your Mac, turn on Let my Cloud use this Mac");
+    expect(places(markup)).toEqual(["Auto", "Cloud computer", "Browser", "Off"]);
+    expect(markup).toContain("Choose where this bot works. To let it use your computer, turn on Let My Cloud use this computer");
   });
 });
 

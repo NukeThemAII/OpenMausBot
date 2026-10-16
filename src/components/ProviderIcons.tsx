@@ -1,5 +1,3 @@
-// Provider brand marks, keyed by driver kind. Official logos only.
-import { Monitor } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/cn";
 import { HermesMark } from "./HermesMark";
@@ -39,11 +37,6 @@ export function CodexMark({ size = 16, className }: IconProps) {
   );
 }
 
-export function ComputerMark({ size = 16, className }: IconProps) {
-  return <Monitor size={size} className={cn("text-ink-secondary", className)} />;
-}
-
-/** Official Kimi mark (Moonshot). */
 export function KimiMark({ size = 16, className }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" className={cn("fill-[var(--color-ink)]", className)} aria-hidden>
@@ -71,7 +64,6 @@ export function DroidMark({ size = 16, className }: IconProps) {
   );
 }
 
-/** Official Google Antigravity mark. */
 export function AntigravityMark({ size = 16, className }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" className={cn("fill-[var(--color-ink)]", className)} aria-hidden>
@@ -83,7 +75,6 @@ export function AntigravityMark({ size = 16, className }: IconProps) {
   );
 }
 
-/** Official OpenCode mark. */
 export function OpenCodeMark({ size = 16, className }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" className={cn("fill-[var(--color-ink)]", className)} aria-hidden>
@@ -92,7 +83,6 @@ export function OpenCodeMark({ size = 16, className }: IconProps) {
   );
 }
 
-/** Official Qwen mark. */
 export function QwenMark({ size = 16, className }: IconProps) {
   const grad = "omb-qwen-mark";
   return (
@@ -116,12 +106,10 @@ export function QwenMark({ size = 16, className }: IconProps) {
 export function PiMark({ size = 16, className }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 800 800" className={cn("fill-[var(--color-ink)]", className)} aria-hidden>
-      {/* P shape: outer boundary clockwise, inner hole counter-clockwise */}
       <path
         fillRule="evenodd"
         d="M165.29 165.29 H517.36 V400 H400 V517.36 H282.65 V634.72 H165.29 Z M282.65 282.65 V400 H400 V282.65 Z"
       />
-      {/* i dot */}
       <path d="M517.36 400 H634.72 V634.72 H517.36 Z" />
     </svg>
   );
@@ -136,6 +124,9 @@ export function ProviderMark({ driverKind, size, className }: IconProps & { driv
       return <ClaudeMark size={size} className={className} />;
     case "mistral":
       return <PresetProviderMark preset="mistral" size={size} className={className} />;
+    case "meta":
+    case "museCode":
+      return <PresetProviderMark preset="meta" size={size} className={className} />;
     case "codex":
       return <CodexMark size={size} className={className} />;
     case "kimiAgent":
@@ -152,8 +143,6 @@ export function ProviderMark({ driverKind, size, className }: IconProps & { driv
       return <QwenMark size={size} className={className} />;
     case "hermesAgent":
       return <HermesMark size={size} className={className} />;
-    case "boxAgent":
-      return <ComputerMark size={size} className={className} />;
     case "piAgent":
       return <PiMark size={size} className={className} />;
     default:

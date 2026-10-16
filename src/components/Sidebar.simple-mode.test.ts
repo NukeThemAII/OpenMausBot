@@ -1,10 +1,14 @@
-import { Children, createElement, isValidElement, type KeyboardEvent, type MouseEvent, type ReactElement, type ReactNode } from "react";
+import { Children, createElement, isValidElement, type KeyboardEvent, type MemoExoticComponent, type MouseEvent, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AppState, Bot, Group } from "@/state/store";
+import { initialState, type AppState, type Bot, type Group } from "@/state/store";
 import type { SidebarDensity } from "@/lib/sidebar-preferences";
 
-const fixture = vi.hoisted(() => ({ showThreads: true, state: {} as Partial<AppState>, dispatch: vi.fn() }));
+const fixture = vi.hoisted(() => ({ advanced: false, showThreads: true, state: {} as Partial<AppState>, dispatch: vi.fn() }));
+vi.mock("@/lib/interface-mode", async (original) => ({
+  ...await original<typeof import("@/lib/interface-mode")>(),
+  useAdvancedMode: () => fixture.advanced,
+}));
 vi.mock("@/lib/thread-preferences", () => ({ useShowThreads: () => fixture.showThreads }));
 vi.mock("./DesktopCapabilities", () => ({ useDesktopCapabilities: () => ({}) }));
 vi.mock("react-dom", () => ({ createPortal: (node: ReactNode) => node }));
@@ -13,7 +17,7 @@ vi.mock("@/state/store", async (importOriginal) => {
   return { ...original, useStore: () => ({ state: { ...original.initialState, ...fixture.state }, dispatch: fixture.dispatch }) };
 });
 
-import { BotContextMenu, BotListItem, BotThreadList, GroupListItem } from "./Sidebar";
+import { BotContextMenu, BotListItem, BotThreadList, botRowProps, GroupListItem, PinnedBotCircle, type BotRowProps } from "./Sidebar";
 import { SidebarBotActivity, sidebarBotActivityTasks } from "./SidebarBotActivity";
 
 const bot: Bot = {
@@ -31,7 +35,10 @@ const bot: Bot = {
   ],
 };
 const densities: SidebarDensity[] = ["comfortable", "compact", "icons"];
-const rowProps = (density: SidebarDensity) => ({ bot, density, onMenu: vi.fn() });
+const botRow = (BotListItem as MemoExoticComponent<(props: BotRowProps) => ReactNode>).type;
+const pinnedCircle = (PinnedBotCircle as MemoExoticComponent<(props: BotRowProps) => ReactNode>).type;
+const rowProps = (density: SidebarDensity, candidate: Bot = bot, query = "") =>
+  botRowProps({ ...initialState, ...fixture.state }, fixture.dispatch, candidate, { density, quiet: false, query, onMenu: vi.fn() });
 
 type ElementProps = { children?: ReactNode; onClick?: (event: MouseEvent) => void; onKeyDown?: (event: KeyboardEvent) => void; [key: string]: unknown };
 function findElement(tree: ReactNode, attribute: string, value: string): ReactElement<ElementProps> | undefined {
@@ -44,6 +51,7 @@ function findElement(tree: ReactNode, attribute: string, value: string): ReactEl
 }
 
 beforeEach(() => {
+  fixture.advanced = false;
   fixture.showThreads = true;
   fixture.state = { bots: [bot], selectedId: "other-bot", activeView: "chat", pendingQueued: { queued: [{ queueId: "q", text: "next" }] } };
   fixture.dispatch.mockClear();
@@ -54,18 +62,35 @@ beforeEach(() => {
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe("bot-first sidebar", () => {
+  it.each([false, true])("uses the selected mode for bot and room tool previews (advanced: %s)", (advanced) => {
+    fixture.advanced = advanced;
+    fixture.showThreads = false;
+    const messages: Bot["messages"] = [{ id: "step", role: "bot", kind: "activity", at: 1, tool: { name: "mcp__omb__computer_batch", ok: true } }];
+    const candidate = { ...bot, messages, tasks: [], projects: [] };
+    const group: Group = { id: "room", threadId: "room-thread", name: "Team", memberIds: [bot.id], messages, defaultResponder: { kind: "mentions" }, bulletin: "", unread: false, createdAt: 1 };
+    const expected = advanced ? "mcp__omb__computer_batch" : "Use the computer";
+    const other = advanced ? "Use the computer" : "mcp__omb__computer_batch";
+    for (const markup of [
+      renderToStaticMarkup(createElement(BotListItem, rowProps("comfortable", candidate))),
+      renderToStaticMarkup(createElement(GroupListItem, { group, density: "comfortable", onMenu: vi.fn() })),
+    ]) {
+      expect(markup).toContain(expected);
+      expect(markup).not.toContain(other);
+    }
+  });
+
   it.each([
     { enabled: true, density: "comfortable", size: 32, spacing: ["gap-2", "py-2", "pl-6"] },
     { enabled: true, density: "compact", size: 26, spacing: ["gap-1.5", "py-1", "pl-6"] },
     { enabled: true, density: "icons", size: 44, spacing: ["justify-center", "px-1", "py-1.5"] },
-    { enabled: false, density: "comfortable", size: 56, spacing: ["gap-3", "py-2.5", "pl-2"] },
-    { enabled: false, density: "compact", size: 40, spacing: ["gap-2", "py-1.5", "pl-2"] },
+    { enabled: false, density: "comfortable", size: 44, spacing: ["gap-3", "py-2", "pl-2.5"] },
+    { enabled: false, density: "compact", size: 36, spacing: ["gap-2.5", "py-1.5", "pl-2"] },
     { enabled: false, density: "icons", size: 44, spacing: ["justify-center", "px-1", "py-1.5"] },
   ] as const)("sizes bot portraits and row spacing in $density density with threads $enabled", ({ enabled, density, size, spacing }) => {
     fixture.showThreads = enabled;
     for (const avatar of [{}, { avatarUrl: "/api/attachments/portrait.png", avatarCrop: "circle" as const }]) {
       let tree: ReactNode;
-      function Capture() { tree = BotListItem({ ...rowProps(density), bot: { ...bot, ...avatar } }); return tree; }
+      function Capture() { tree = botRow(rowProps(density, { ...bot, ...avatar })); return tree; }
       const markup = renderToStaticMarkup(createElement(Capture));
       const row = findElement(tree, "data-sidebar-bot-row", bot.id)!;
       expect(String(row.props.className).split(" ")).toEqual(expect.arrayContaining([...spacing]));
@@ -79,12 +104,11 @@ describe("bot-first sidebar", () => {
     it.each(densities)(`opens the last selected conversation on mouse or keyboard, %s density, threads ${enabled ? "on" : "off"}`, (density) => {
       fixture.showThreads = enabled;
       let tree: ReactNode;
-      function Capture() { tree = BotListItem(rowProps(density)); return tree; }
+      function Capture() { tree = botRow(rowProps(density)); return tree; }
       renderToStaticMarkup(createElement(Capture));
       const row = findElement(tree, "data-sidebar-bot-row", bot.id)!;
       row.props.onClick!({ type: "click", target: {} } as MouseEvent);
       expect(fixture.dispatch).toHaveBeenCalledExactlyOnceWith({ type: "select", id: bot.id });
-      // Selection reuses bot.threadId; it must not create or switch a task.
       expect(bot.threadId).toBe("last-selected");
       for (const key of ["Enter", " "]) {
         fixture.dispatch.mockClear();
@@ -95,6 +119,45 @@ describe("bot-first sidebar", () => {
       }
     });
   }
+
+  it("keeps the queued dot small", () => {
+    const queuedBot: Bot = {
+      ...bot,
+      unread: false,
+      projects: [],
+      tasks: [{ threadId: "queued", title: "Next job", createdAt: 5 }],
+    };
+    const markup = renderToStaticMarkup(createElement(BotListItem, rowProps("comfortable", queuedBot)));
+    const queuedDot = markup.match(/<span[^>]*data-testid="queued-dot"[^>]*>/)?.[0] ?? "";
+    expect(queuedDot).toContain("size-2.5");
+    expect(queuedDot).toContain("bg-ink-secondary");
+    expect(queuedDot).not.toContain("size-4");
+    expect(queuedDot).not.toContain("size-5");
+    expect(markup).toContain('class="truncate">Queued</span>');
+    expect(markup).not.toContain("font-semibold text-warning");
+    expect(markup).not.toContain("waiting-dot");
+  });
+
+  it.each(densities)("opens the thread the person last wrote in when threads are hidden, %s density", (density) => {
+    const used = { ...bot, mainThreadId: "idle-history" };
+    for (const enabled of [false, true]) {
+      fixture.showThreads = enabled;
+      const opened = enabled ? { type: "select", id: bot.id } : { type: "switchTask", botId: bot.id, threadId: "idle-history" };
+      const trees: ReactNode[] = [];
+      function Capture() { const tree = [botRow(rowProps(density, used)), pinnedCircle(rowProps(density, used))]; trees.push(...tree); return tree; }
+      renderToStaticMarkup(createElement(Capture));
+      for (const tree of trees) {
+        const row = findElement(tree, "data-sidebar-bot-row", bot.id)!;
+        fixture.dispatch.mockClear();
+        row.props.onClick!({ type: "click", target: {} } as MouseEvent);
+        expect(fixture.dispatch).toHaveBeenCalledExactlyOnceWith(opened);
+        if (!row.props.onKeyDown) continue;
+        fixture.dispatch.mockClear();
+        row.props.onKeyDown({ key: "Enter", preventDefault: vi.fn() } as unknown as KeyboardEvent);
+        expect(fixture.dispatch).toHaveBeenCalledExactlyOnceWith(opened);
+      }
+    }
+  });
 
   it.each(densities)("keeps selection separate from expansion in %s density", (density) => {
     fixture.state.selectedId = bot.id;
@@ -121,18 +184,18 @@ describe("bot-first sidebar", () => {
   });
 
   it("removes child controls and portals from a retained hidden folder list", () => {
-    const markup = renderToStaticMarkup(createElement(BotThreadList, { bot, selected: true, hidden: true }));
+    const markup = renderToStaticMarkup(createElement(BotThreadList, { ...rowProps("comfortable"), selected: true, hidden: true }));
     expect(markup).toContain('hidden=""');
     expect(markup).not.toContain("<button");
     expect(markup).not.toContain("data-sidebar-thread-row");
-    const shown = renderToStaticMarkup(createElement(BotThreadList, { bot, selected: true }));
+    const shown = renderToStaticMarkup(createElement(BotThreadList, { ...rowProps("comfortable"), selected: true }));
     expect(shown).toContain('data-sidebar-folder-row="private-folder"');
     expect(shown).toContain('data-sidebar-thread-row="idle-history"');
   });
 
   it("only hides thread/folder creation in the bot context menu", () => {
     const render = () => renderToStaticMarkup(createElement(BotContextMenu, {
-      menu: { botId: bot.id, x: 0, y: 0 }, onClose: vi.fn(), onArchive: vi.fn(), onDelete: vi.fn(), onMoveToSection: vi.fn(), onNewFolder: vi.fn(),
+      menu: { botId: bot.id, x: 0, y: 0 }, onClose: vi.fn(), onArchive: vi.fn(), onDelete: vi.fn(), onMoveToSection: vi.fn(), onNewFolder: vi.fn(), onNewTaskFolder: vi.fn(),
     }));
     const enabled = render();
     expect(enabled).toContain("New thread");
@@ -145,11 +208,56 @@ describe("bot-first sidebar", () => {
     expect(disabled).toContain("Move to team");
   });
 
+  it("Edit profile opens the panel without naming a section", () => {
+    let tree: ReactNode;
+    // Called inside a render so its hooks run and the returned tree carries the items' handlers.
+    function Capture() {
+      tree = BotContextMenu({
+        menu: { botId: bot.id, x: 0, y: 0 }, onClose: vi.fn(), onArchive: vi.fn(), onDelete: vi.fn(), onMoveToSection: vi.fn(), onNewFolder: vi.fn(), onNewTaskFolder: vi.fn(),
+      });
+      return tree;
+    }
+    const editProfile = () => {
+      const items: ReactElement<ElementProps>[] = [];
+      const walk = (node: ReactNode) => {
+        for (const child of Children.toArray(node)) {
+          if (!isValidElement<ElementProps>(child)) continue;
+          if (child.props.role === "menuitem") items.push(child);
+          walk(child.props.children);
+        }
+      };
+      walk(tree);
+      return items.find((item) => Children.toArray(item.props.children).includes("Edit Profile"))!;
+    };
+    const render = () => renderToStaticMarkup(createElement(Capture));
+
+    render();
+    editProfile().props.onClick!({} as MouseEvent);
+    expect(fixture.dispatch.mock.calls).toEqual([
+      [{ type: "select", id: bot.id }],
+      [{ type: "toggleSettings", open: true }],
+    ]);
+
+    fixture.dispatch.mockClear();
+    fixture.state.settingsOpen = true;
+    render();
+    editProfile().props.onClick!({} as MouseEvent);
+    expect(fixture.dispatch.mock.calls).toEqual([[{ type: "select", id: bot.id }]]);
+
+    vi.stubGlobal("window", { innerWidth: 1024, innerHeight: 768, ogb: { remoteClient: { active: true } } });
+    fixture.dispatch.mockClear();
+    fixture.state.settingsOpen = false;
+    render();
+    editProfile().props.onClick!({} as MouseEvent);
+    expect(fixture.dispatch.mock.calls).toEqual([
+      [{ type: "select", id: bot.id }],
+      [{ type: "toggleSettings", open: true }],
+    ]);
+  });
+
   it("reveals a matching sole thread when searching a bot", () => {
     const single = { ...bot, projects: [], tasks: [bot.tasks![0]], unread: false };
-    const markup = renderToStaticMarkup(createElement(BotListItem, {
-      bot: single, density: "comfortable", query: "last selected", onMenu: vi.fn(),
-    }));
+    const markup = renderToStaticMarkup(createElement(BotListItem, rowProps("comfortable", single, "last selected")));
     expect(markup).toContain('data-sidebar-thread-row="last-selected"');
   });
 
@@ -162,12 +270,10 @@ describe("bot-first sidebar", () => {
     fixture.state.selectedId = group.id;
     const markup = renderToStaticMarkup(createElement(GroupListItem, { group, density: "comfortable", onMenu: vi.fn() }));
     expect(markup).toContain('data-sidebar-thread-row="group-thread"');
-    // New thread is an icon on the room row, disabled while the room works
     expect(markup).toContain('aria-label="New thread"');
     expect(markup).toContain('aria-label="Collapse Planning threads"');
     const working = renderToStaticMarkup(createElement(GroupListItem, { group: { ...group, working: true }, density: "comfortable", onMenu: vi.fn() }));
     expect(working).toMatch(/<button type="button" disabled="" aria-label="New thread"/);
-    // a room with one thread is that thread: no disclosure, no duplicate row
     const single = renderToStaticMarkup(createElement(GroupListItem, { group: { ...group, tasks: [group.tasks![0]] }, density: "comfortable", onMenu: vi.fn() }));
     expect(single).not.toContain("Planning threads");
     expect(single).not.toContain('data-sidebar-thread-row=');
@@ -202,7 +308,7 @@ describe("activity-only escape hatch", () => {
 
   it("switches directly to the requested work and offers no thread-management actions", () => {
     let tree: ReactNode;
-    function Capture() { tree = SidebarBotActivity({ bot, density: "comfortable" }); return tree; }
+    function Capture() { tree = SidebarBotActivity({ bot, rowThreadId: bot.threadId, density: "comfortable", pendingQueued: fixture.state.pendingQueued!, dispatch: fixture.dispatch }); return tree; }
     const markup = renderToStaticMarkup(createElement(Capture));
     findElement(tree, "data-sidebar-activity-row", "approval")!.props.onClick!({} as MouseEvent);
     expect(fixture.dispatch).toHaveBeenCalledExactlyOnceWith({ type: "switchTask", botId: bot.id, threadId: "approval" });
@@ -213,9 +319,27 @@ describe("activity-only escape hatch", () => {
 
   it("removes selected and settled activity but keeps unread completed replies", () => {
     const selected = { ...bot, threadId: "approval", tasks: bot.tasks!.map((task) => task.threadId === "working" ? { ...task, busy: false, activity: "idle" as const } : task) };
-    const markup = renderToStaticMarkup(createElement(SidebarBotActivity, { bot: selected, density: "compact" }));
+    const markup = renderToStaticMarkup(createElement(SidebarBotActivity, { bot: selected, rowThreadId: selected.threadId, density: "compact", pendingQueued: fixture.state.pendingQueued!, dispatch: fixture.dispatch }));
     expect(markup).not.toContain('data-sidebar-activity-row="approval"');
     expect(markup).not.toContain('data-sidebar-activity-row="working"');
     expect(markup).toContain('data-sidebar-activity-row="unread"');
+  });
+
+  it("lists a reply in the thread a bot was left on, since its row opens the main thread", () => {
+    const left: Bot = { ...bot, threadId: "left-behind", mainThreadId: "main-chat", tasks: [
+      { threadId: "left-behind", title: "Routine report", createdAt: 1, unread: true },
+      { threadId: "main-chat", title: "Main chat", createdAt: 2, unread: true },
+    ] };
+    const rows = () => {
+      const markup = renderToStaticMarkup(createElement(BotListItem, rowProps("comfortable", left)));
+      return ["left-behind", "main-chat"].filter((threadId) => markup.includes(`data-sidebar-activity-row="${threadId}"`));
+    };
+    fixture.showThreads = false;
+    expect(rows()).toEqual(["left-behind"]);
+    fixture.state.selectedId = left.id;
+    expect(rows()).toEqual(["main-chat"]);
+    fixture.showThreads = true;
+    fixture.state.selectedId = "other-bot";
+    expect(rows()).toEqual(["main-chat"]);
   });
 });

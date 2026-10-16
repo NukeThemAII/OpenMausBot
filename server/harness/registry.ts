@@ -1,13 +1,9 @@
-// Provider instance registry — port of upstream's ProviderInstanceRegistryLive
-// behavior, minus Effect: config map → live instances; unknown driver or
-// config-decode failure becomes an UNAVAILABLE SHADOW SNAPSHOT instead of a
-// startup failure (that behavior is what makes settings forward/backward
-// compatible — do not remove it); dispose tears an instance down without
-// touching its siblings.
+// Provider instance registry — port of upstream's ProviderInstanceRegistryLive behavior, minus Effect.
 import { findCliCandidates } from "../env-path.ts";
 import { installNpmEngine, npmAvailable, serverInstallFor } from "../engine-install.ts";
 import type {
   AnyProviderDriver,
+  EngineAccess,
   InstanceConfigMap,
   InstanceId,
   ProviderAuthenticationStart,
@@ -20,7 +16,6 @@ export interface ShadowInstance {
   instanceId: InstanceId;
   driverKind: string;
   displayName: string | undefined;
-  /** Raw `config.cli` from disk — an override exists only if this is set. */
   cli: string | undefined;
   shadow: true;
   reason: string;
@@ -30,14 +25,13 @@ export type RegistryEntry =
   | { instanceId: InstanceId; live: ProviderInstance; shadow?: undefined }
   | { instanceId: InstanceId; live?: undefined; shadow: ShadowInstance };
 
-/** The driver's install descriptor plus what this machine can do about it. */
 function withServerInstall(install: AnyProviderDriver["install"], npmPresent: boolean): AnyProviderDriver["install"] {
-  const server = install ? serverInstallFor(install, npmPresent) : null;
-  return server ? { ...install, server } : install;
+  if (!install) return undefined;
+  const server = serverInstallFor(install, npmPresent);
+  const platform = process.platform === "darwin" || process.platform === "linux" || process.platform === "win32" ? process.platform : undefined;
+  return { ...install, platform, ...(server ? { server } : {}) };
 }
 
-/** The `cli` field off a driver's default config, when it has one — the
- * placeholder an override input shows when nothing is set. */
 function cliDefaultOf(driver: AnyProviderDriver | undefined): string | undefined {
   if (!driver) return undefined;
   try {
@@ -48,8 +42,6 @@ function cliDefaultOf(driver: AnyProviderDriver | undefined): string | undefined
   }
 }
 
-/** Raw `config.cli` straight from disk — shadow snapshots can't decode, so
- * this is the only faithful way to echo back what was configured. */
 function cliOfRaw(raw: unknown): string | undefined {
   const cli = (raw as { cli?: unknown } | undefined)?.cli;
   return typeof cli === "string" && cli ? cli : undefined;
@@ -57,14 +49,10 @@ function cliOfRaw(raw: unknown): string | undefined {
 
 export class ProviderRegistry {
   private byId = new Map<InstanceId, RegistryEntry>();
-  /** decoded per-instance `cli` overrides, for describe() — drivers spawn
-   * from their own config; this map only reports what was configured */
   private cliByInstance = new Map<InstanceId, string>();
+  private lastSnapshots = new Map<InstanceId, ProviderSnapshot>();
   private driversByKind: Map<string, AnyProviderDriver>;
-  /** Where Settings-driven npm installs go; the data directory by default. */
   private readonly enginesBaseDir: string | undefined;
-  /** Whether npm is on this machine; injectable because the PATH scan also
-   * looks in standard install locations, which tests cannot empty. */
   private readonly npmPresent: () => boolean;
 
   constructor(drivers: readonly AnyProviderDriver[], options: { enginesBaseDir?: string; npmAvailable?: () => boolean } = {}) {
@@ -74,52 +62,69 @@ export class ProviderRegistry {
   }
 
   async load(configs: InstanceConfigMap, decorate?: (instance: ProviderInstance) => ProviderInstance) {
-    for (const [instanceId, entry] of Object.entries(configs)) {
-      // Account edits replace only their own process/session state.
-      await this.dispose(instanceId);
-      const driver = this.driversByKind.get(entry.driver);
-      if (!driver) {
-        this.byId.set(instanceId, {
+    const slots = [...this.byId.keys()];
+    const loaded = await Promise.all(
+      Object.entries(configs).map(async ([instanceId, entry]) => {
+        const ready = await this.createEntry(instanceId, entry, decorate);
+        this.byId.set(instanceId, ready);
+        return ready;
+      }),
+    );
+    // Config order, not completion order; an entry a dispose replaced meanwhile is not this load's to place.
+    const placed = new Set(loaded.filter((entry) => this.byId.get(entry.instanceId) === entry).map((entry) => entry.instanceId));
+    const entries = new Map(this.byId);
+    this.byId.clear();
+    for (const id of [...slots, ...[...entries.keys()].filter((id) => !placed.has(id)), ...placed]) {
+      const entry = entries.get(id);
+      if (entry && !this.byId.has(id)) this.byId.set(id, entry);
+    }
+  }
+
+  private async createEntry(
+    instanceId: InstanceId,
+    entry: InstanceConfigMap[string],
+    decorate?: (instance: ProviderInstance) => ProviderInstance,
+  ): Promise<RegistryEntry> {
+    await this.dispose(instanceId);
+    const driver = this.driversByKind.get(entry.driver);
+    if (!driver) {
+      return {
+        instanceId,
+        shadow: {
           instanceId,
-          shadow: {
-            instanceId,
-            driverKind: entry.driver,
-            displayName: entry.displayName,
-            cli: cliOfRaw(entry.config),
-            shadow: true,
-            reason: `unknown driver "${entry.driver}" — kept as configured, unavailable here`,
-          },
-        });
-        continue;
-      }
-      try {
-        const config = entry.config === undefined ? driver.defaultConfig() : driver.decodeConfig(entry.config);
-        // Override detection is on the RAW config, never the decoded one:
-        // decodeConfig fills in the driver default ("claude", "codex", …),
-        // so reading `cli` there would flag every instance as overridden.
-        const rawCli = cliOfRaw(entry.config);
-        if (rawCli) this.cliByInstance.set(instanceId, rawCli);
-        const live = await driver.create({
+          driverKind: entry.driver,
+          displayName: entry.displayName,
+          cli: cliOfRaw(entry.config),
+          shadow: true,
+          reason: `unknown driver "${entry.driver}" — kept as configured, unavailable here`,
+        },
+      };
+    }
+    try {
+      const config = entry.config === undefined ? driver.defaultConfig() : driver.decodeConfig(entry.config);
+      // The RAW config: decodeConfig fills in the driver default, which would flag every instance as overridden.
+      const rawCli = cliOfRaw(entry.config);
+      if (rawCli) this.cliByInstance.set(instanceId, rawCli);
+      const live = await driver.create({
+        instanceId,
+        displayName: entry.displayName ?? driver.metadata.displayName,
+        environment: entry.environment ?? {},
+        enabled: entry.enabled ?? true,
+        config,
+      });
+      return { instanceId, live: decorate ? decorate(live) : live };
+    } catch (e) {
+      return {
+        instanceId,
+        shadow: {
           instanceId,
+          driverKind: entry.driver,
           displayName: entry.displayName ?? driver.metadata.displayName,
-          environment: entry.environment ?? {},
-          enabled: entry.enabled ?? true,
-          config,
-        });
-        this.byId.set(instanceId, { instanceId, live: decorate ? decorate(live) : live });
-      } catch (e) {
-        this.byId.set(instanceId, {
-          instanceId,
-          shadow: {
-            instanceId,
-            driverKind: entry.driver,
-            displayName: entry.displayName ?? driver.metadata.displayName,
-            cli: cliOfRaw(entry.config),
-            shadow: true,
-            reason: e instanceof Error ? e.message : String(e),
-          },
-        });
-      }
+          cli: cliOfRaw(entry.config),
+          shadow: true,
+          reason: e instanceof Error ? e.message : String(e),
+        },
+      };
     }
   }
 
@@ -127,8 +132,16 @@ export class ProviderRegistry {
     return this.byId.get(instanceId)?.live ?? null;
   }
 
-  /** The configured executable for instance-scoped maintenance actions.
-   * This deliberately comes from the registry/config, never an HTTP body. */
+  lastSnapshot(instanceId: InstanceId): ProviderSnapshot | undefined {
+    return this.byId.get(instanceId)?.live ? this.lastSnapshots.get(instanceId) : undefined;
+  }
+
+  access(instanceId: InstanceId): EngineAccess | undefined {
+    const entry = this.byId.get(instanceId);
+    return entry ? this.driversByKind.get(entry.shadow?.driverKind ?? entry.live!.driverKind)?.metadata.access ?? "subscription" : undefined;
+  }
+
+  /** From the registry's config, never an HTTP body. */
   cliTarget(instanceId: InstanceId): { driverKind: string; cli: string | null } | null {
     const entry = this.byId.get(instanceId);
     if (!entry) return null;
@@ -155,9 +168,6 @@ export class ProviderRegistry {
     return true;
   }
 
-  /** A driver's own installer (a managed download) first; otherwise the
-   * app's npm prefix, when the driver's install one-liner is an npm package
-   * and npm is on PATH. False means Settings has nothing to offer here. */
   async installRuntime(instanceId: InstanceId): Promise<boolean> {
     const entry = this.byId.get(instanceId);
     if (!entry) return false;
@@ -196,10 +206,7 @@ export class ProviderRegistry {
     return true;
   }
 
-  /** instance snapshots for the model picker: id, driver, models, health */
   async describe() {
-    // Multiple instances may share a driver. Scan each default binary once
-    // per response instead of repeating filesystem work for every row.
     const candidatesByName = new Map<string, string[]>();
     const candidatesFor = (driver: AnyProviderDriver | undefined): string[] => {
       const name = cliDefaultOf(driver);
@@ -222,13 +229,10 @@ export class ProviderRegistry {
             snapshot: { state: "unavailable", reason: entry.shadow.reason } satisfies ProviderSnapshot,
             models: { default: "", options: [] },
             capabilities: { computerMcp: false, agentsMcp: false, localComputerMcp: false },
-            // an unknown driver has no driver record, hence no install path
             access: driver?.metadata.access ?? "subscription",
             install: withServerInstall(driver?.install, npmPresent),
             cli: entry.shadow.cli,
             cliDefault: cliDefaultOf(driver),
-            // a shadow is exactly the "your CLI is broken, pick another"
-            // case where the detected-path dropdown matters most
             cliCandidates: candidatesFor(driver),
           };
         }
@@ -239,6 +243,8 @@ export class ProviderRegistry {
         } catch (e) {
           snapshot = { state: "unavailable", reason: e instanceof Error ? e.message : String(e) };
         }
+        // Only while this is still the live instance: a reload may have replaced it during the read.
+        if (this.byId.get(inst.instanceId)?.live === inst) this.lastSnapshots.set(inst.instanceId, snapshot);
         return {
           instanceId: inst.instanceId,
           driverKind: inst.driverKind,
@@ -256,8 +262,8 @@ export class ProviderRegistry {
             modelVariants: inst.adapter.capabilities.modelVariants === true,
             queueing: inst.adapter.capabilities.queueing === true,
             localComputerMcp: inst.adapter.capabilities.localComputerMcp === true,
-            cloudComputerMcp: inst.adapter.capabilities.cloudComputerMcp === true,
             approvalReview: inst.reviewPermission !== undefined,
+            backgroundText: inst.generateText !== undefined || inst.generateMemoryText !== undefined,
           },
           access: driver?.metadata.access ?? "subscription",
           install: withServerInstall(driver?.install, npmPresent),
@@ -268,15 +274,11 @@ export class ProviderRegistry {
                   : inst.getAuthentication
                     ? "device-code" as const // a code to enter at the provider's page (Codex)
                     : "browser" as const), // a link and a callback URL (managed engines)
-                // the browser may remove the stored sign-in to switch accounts
                 signOut: inst.signOut !== undefined,
               }
             : undefined,
           cli: this.cliByInstance.get(inst.instanceId),
           cliDefault: cliDefaultOf(driver),
-          // every copy of the driver's default binary on the augmented PATH —
-          // the dropdown's "detected" entries. Snapshotted per describe() so a
-          // newly installed CLI shows up on the next refresh.
           cliCandidates: candidatesFor(driver),
         };
       }),
@@ -287,12 +289,14 @@ export class ProviderRegistry {
     await Promise.allSettled(this.instances().map((i) => i.dispose()));
     this.byId.clear();
     this.cliByInstance.clear();
+    this.lastSnapshots.clear();
   }
 
   async dispose(instanceId: InstanceId) {
     const entry = this.byId.get(instanceId);
     this.byId.delete(instanceId);
     this.cliByInstance.delete(instanceId);
+    this.lastSnapshots.delete(instanceId);
     await entry?.live?.dispose();
   }
 }

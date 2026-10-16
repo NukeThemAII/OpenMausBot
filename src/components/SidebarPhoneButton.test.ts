@@ -101,11 +101,12 @@ describe("sidebar phone status", () => {
     });
   });
 
-  it("opens Settings directly on the internal Remote access section", () => {
+  it("opens Settings directly on the internal Remote access section, at the phone pairing", () => {
     expect(phoneSettingsAction()).toEqual({
       type: "toggleAppSettings",
       open: true,
       section: "companion",
+      phonePairing: true,
     });
   });
 });
@@ -165,7 +166,7 @@ describe("SidebarPhoneStatusButton", () => {
     });
 
     expect(markup).toContain('data-sidebar-density="compact"');
-    expect(markup).toContain("size-10");
+    expect(markup).toContain("size-[46px]");
     expect(markup).toContain("shrink-0");
   });
 });

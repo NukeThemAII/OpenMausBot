@@ -1,8 +1,4 @@
-// Contract test for the agent-to-agent comms MCP proxy (agents-proxy.ts):
-// spawn it exactly the way a driver's mcpServers entry does (process.execPath
-// + entry file + env) against a scripted stub of the harness's /api/internal
-// endpoints, and drive the MCP stdio surface end to end. No shebang, no
-// shell — plain node child, so this runs on every OS like index.test.ts.
+// Spawns the agents proxy exactly as a driver's mcpServers entry does, against a stub of /api/internal.
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import { dirname, join } from "node:path";
@@ -11,12 +7,10 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { childEnv } from "../testing/omb-env.ts";
 import { ToolResults } from "../tool-results.ts";
 import { waitForExit } from "../testing/cleanup.ts";
-import type { PeerDeliveryReceipt } from "../peer-delivery.ts";
 
 const PROXY = join(dirname(fileURLToPath(import.meta.url)), "agents-proxy.ts");
 const TOKEN = "test-comms-token";
 
-// scripted harness stub
 let stub: Server;
 let stubPort = 0;
 let lastAuth: string | undefined;
@@ -24,7 +18,6 @@ const savedToolResults = new ToolResults();
 const savedOwner = { botId: "bot-asker", threadId: "thread-asker" };
 let failSavingResult = false;
 let savedResultWrites = 0;
-let lastAskBody: any = null;
 let lastCoordinateBody: any = null;
 let coordinateResponse: unknown = { ok: true };
 let lastRoomsQuery = "";
@@ -44,13 +37,13 @@ let roomsResponse: unknown = {
     { id: "room-launch", name: "Launch", members: ["Asker", "Helper"] },
   ],
 };
-/** What the stub harness returns from /api/internal/ask-bot. */
-type StubAskResponse = { botName?: string; text?: string; busy?: boolean; timeout?: boolean; waitedMs?: number; taskId?: string; toBotName?: string; error?: string; receipt?: PeerDeliveryReceipt };
-let askResponse: StubAskResponse = { botName: "Helper", text: "hi from helper" };
-let lastDelegateBody: any = null;
-let lastDelegationUrl: string | null = null;
-let delegationStatusResponse: unknown = { status: "done", toBotName: "Helper", result: "All done." };
-let delegateResponse: unknown = { queued: true, message: "Delegation queued." };
+const DONE_ASSIGNMENT = {
+  assignment: { id: "task-earlier123", botId: "bot-helper", botName: "Helper", status: "completed", outcome: "done", result: "All done.", mode: "work", reply: "resume" },
+  children: [], inbox: [],
+};
+let lastAssignmentStatusUrl: string | null = null;
+let assignmentStatusResponse: unknown = DONE_ASSIGNMENT;
+let assignmentStatusCode = 200;
 let lastThreadBody: any = null;
 let threadCalls = 0;
 let threadResponse: unknown = { threadId: "thread-new", title: "QA: PR #1", botId: "bot-asker", botName: "Asker", self: true, state: "running", limit: 3 };
@@ -61,6 +54,9 @@ let lastCreateBody: any = null;
 let lastCreateRoomBody: unknown = null;
 let lastManageRoomBody: unknown = null;
 let lastCredentialBody: any = null;
+let lastSignInBody: any = null;
+let lastFillBody: any = null;
+let fillAnswer: { ok: boolean; text: string } = { ok: true, text: "Filled the username and the password for alice on example.com." };
 let lastRoutineQuery = "";
 let routinesResponse: unknown = {
   now: "2026-08-28T10:30:00.000Z",
@@ -91,7 +87,7 @@ let lastSessionSearchUrl = "";
 let lastSessionReadUrl = "";
 let lastMemoryBody: any = null;
 let lastMemoryLogBody: any = null;
-let memoryResponse: unknown = { ok: true, text: "- new fact", truncated: false, bytes: 10 };
+let memoryResponse: unknown = { ok: true, truncated: false };
 let memoryStatus = 200;
 let sessionSearchResponse: unknown = {
   hits: [
@@ -117,6 +113,14 @@ let skillsResponse: unknown = {
       enabled: true,
       source: "learn:conversation",
       editable: true,
+    },
+    {
+      name: "team-cut",
+      description: "SHARED LEARNED INSTRUCTIONS",
+      enabled: true,
+      source: "learn:conversation",
+      editable: true,
+      revision: "0123456789ab",
     },
   ],
   staged: [{ name: "pending-skill", action: "create", gist: "UNREVIEWED GIST", source: "UNREVIEWED SOURCE" }],
@@ -240,16 +244,6 @@ beforeAll(async () => {
       });
       return;
     }
-    if (req.method === "POST" && req.url === "/api/internal/ask-bot") {
-      let data = "";
-      req.on("data", (c) => (data += c));
-      req.on("end", () => {
-        lastAskBody = JSON.parse(data);
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify(askResponse));
-      });
-      return;
-    }
     if (req.method === "POST" && req.url === "/api/internal/coordinate-bots") {
       let data = "";
       req.on("data", (c) => (data += c));
@@ -260,20 +254,10 @@ beforeAll(async () => {
       });
       return;
     }
-    if (req.method === "POST" && req.url === "/api/internal/delegate-bot") {
-      let data = "";
-      req.on("data", (c) => (data += c));
-      req.on("end", () => {
-        lastDelegateBody = JSON.parse(data);
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify(delegateResponse));
-      });
-      return;
-    }
-    if (req.method === "GET" && req.url?.startsWith("/api/internal/delegations/")) {
-      lastDelegationUrl = req.url;
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify(delegationStatusResponse));
+    if (req.method === "GET" && req.url?.startsWith("/api/internal/assignment-status")) {
+      lastAssignmentStatusUrl = req.url;
+      res.writeHead(assignmentStatusCode, { "content-type": "application/json" });
+      res.end(JSON.stringify(assignmentStatusResponse));
       return;
     }
     if (req.method === "POST" && req.url === "/api/internal/threads") {
@@ -334,6 +318,26 @@ beforeAll(async () => {
         lastCredentialBody = JSON.parse(data);
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ messageId: "msg-key", label: "OpenCode API key" }));
+      });
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/internal/request-sign-in") {
+      let data = "";
+      req.on("data", (c) => (data += c));
+      req.on("end", () => {
+        lastSignInBody = JSON.parse(data);
+        res.writeHead(201, { "content-type": "application/json" });
+        res.end(JSON.stringify({ messageId: "msg-sign-in", site: "example.com", place: "browser" }));
+      });
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/internal/fill-login") {
+      let data = "";
+      req.on("data", (c) => (data += c));
+      req.on("end", () => {
+        lastFillBody = JSON.parse(data);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify(fillAnswer));
       });
       return;
     }
@@ -446,10 +450,7 @@ beforeAll(async () => {
   child = spawn(process.execPath, [PROXY], {
     env: {
       ...childEnv(),
-      // Recalled lines are dated on the machine's own clock, so the proxy runs
-      // in a fixed zone here — otherwise every expectation below would depend
-      // on where the test happens to run. +05:30 also keeps the half-hour
-      // offset visible in the times.
+      // Recalled lines are dated on the machine's clock, so the proxy runs in a fixed zone (+05:30).
       TZ: "Asia/Kolkata",
       OMB_HARNESS_URL: `http://127.0.0.1:${stubPort}`,
       OMB_BOT_ID: "bot-asker",
@@ -458,6 +459,8 @@ beforeAll(async () => {
       OMB_TURN_DEPTH: "0",
       OMB_SKILL_AUTHORING_ENABLED: "1",
       OMB_SHARED_COMPUTERS_ENABLED: "1",
+      // A Chief's turn, so the Chief-only team tools are mounted too.
+      OMB_CHIEF_OF_STAFF: "1",
     },
     stdio: ["pipe", "pipe", "inherit"],
   });
@@ -486,10 +489,17 @@ describe("agents-proxy MCP surface", () => {
     const list = await rpc("tools/list");
     for (const tool of new Set(proposalCases.map(entry => entry.tool))) {
       const description = list.result.tools.find((entry: { name: string }) => entry.name === tool).description;
-      expect(description).toContain("granted Full Access may apply the change immediately");
+        // Team setup applies only at Full access; a bot's own routines, skills and profile at any level.
+      if (tool === "propose_team_setup" || tool === "propose_bot_deletion") {
+        expect(description).toContain("granted Full Access may apply the change immediately");
+        expect(description).toContain("Never claim success from the permission mode alone");
+      } else {
+        expect(description).toContain("a change to your own routines, skills, profile or model applies immediately");
+        expect(description).toContain("a change for another bot may wait for the person's confirmation");
+        expect(description).toContain("Never claim success without an applied result");
+      }
       expect(description).toContain("If applied, continue the requested work without another confirmation");
       expect(description).toContain("Only a pending result requires ending the turn");
-      expect(description).toContain("Never claim success from the permission mode alone");
       expect(description).toContain("does not elevate another bot's execution permissions");
     }
     const credential = list.result.tools.find((entry: { name: string }) => entry.name === "request_credential");
@@ -605,24 +615,25 @@ describe("agents-proxy MCP surface", () => {
 
   it("answers the MCP handshake and lists the agents tools", async () => {
     const init = await rpc("initialize", { protocolVersion: "2024-11-05" });
-    expect(init.result.serverInfo.name).toContain("agents");
+    expect(init.result.serverInfo.name).toBe("openmausbot-agents");
     const list = await rpc("tools/list");
     expect(list.result.tools.map((t: { name: string }) => t.name)).toEqual([
       "tool_result_read",
       "list_shared_computers",
       "shared_computer",
+      "list_room_targets",
+      "coordinate_bots",
+      "assignment_status",
       "list_bots",
       "list_rooms",
-      "ask_bot",
-      "delegate_bot",
-      "check_delegation",
-      "wait_delegation",
       "select_computer",
       "list_threads",
       "close_thread",
       "start_thread",
       "vm_exec",
       "attach_file",
+      "show_widget",
+      "update_widget",
       "post_to_room",
       "create_bot",
       "list_team_setup",
@@ -631,6 +642,8 @@ describe("agents-proxy MCP surface", () => {
       "create_room",
       "manage_room",
       "request_credential",
+      "request_sign_in",
+      "fill_login",
       "memory_update",
       "retry_thread",
       "memory_log",
@@ -641,19 +654,32 @@ describe("agents-proxy MCP surface", () => {
       "propose_routine_action",
       "propose_profile",
       "propose_model",
+      "propose_team_memory",
       "skills_list",
       "skill_manage",
+      "add_mcp_server",
     ]);
-    const ask = list.result.tools.find((tool: { name: string }) => tool.name === "ask_bot");
-    const delegate = list.result.tools.find((tool: { name: string }) => tool.name === "delegate_bot");
-    const wait = list.result.tools.find((tool: { name: string }) => tool.name === "wait_delegation");
-    const credential = list.result.tools.find((tool: { name: string }) => tool.name === "request_credential");
-    expect(ask.description).toContain("Brief synchronous consultation");
-    expect(ask.description).toContain("slow replies become asynchronous delegations");
-    expect(ask.description).toContain("Do not use for assigning work");
-    expect(delegate.description).toContain("DEFAULT FOR ASSIGNING WORK");
-    expect(delegate.description).toContain("delivered automatically");
-    expect(wait.description).toContain("Never call it in the same turn as delegate_bot");
+    const tool = (name: string) => list.result.tools.find((entry: { name: string }) => entry.name === name);
+    const coordinate = tool("coordinate_bots");
+    expect(coordinate.description).toContain("The one way to hand work on");
+    expect(coordinate.description).toContain("consult true asks a question");
+    expect(coordinate.description).toContain('reply "none" is a one-way notice');
+    expect(coordinate.description).toContain("never call assignment_status in the same turn");
+    expect(Object.keys(coordinate.inputSchema.properties)).toEqual(["group_id", "bot_ids", "message", "reason", "rework", "thread", "reply", "consult", "done_when"]);
+    expect(coordinate.inputSchema.properties.thread.enum).toEqual(["standing", "new"]);
+    expect(coordinate.inputSchema.properties.reply.enum).toEqual(["resume", "none"]);
+    expect(coordinate.inputSchema.properties.consult.type).toBe("boolean");
+    const status = tool("assignment_status");
+    expect(status.description).toContain("Read-only");
+    expect(status.description).toContain("never needs this to wait");
+    expect(status.inputSchema.properties.wait_ms).toMatchObject({ type: "integer", minimum: 0, maximum: 240_000 });
+    expect(status.inputSchema.required ?? []).toEqual([]);
+    expect(JSON.stringify(list.result.tools)).not.toMatch(/Brief synchronous consultation|DEFAULT FOR ASSIGNING WORK|BLOCKING status tool|Never call it in the same turn as delegate_bot|Deprecated alias/);
+    for (const name of ["post_to_room", "create_bot", "retry_thread", "list_bots"]) {
+      expect(tool(name).description, name).toContain("coordinate_bots");
+      expect(tool(name).description, name).not.toMatch(/\b(delegate_bot|ask_bot)\b/);
+    }
+    const credential = tool("request_credential");
     expect(credential.description).toContain("freshly QR-paired mobile app show a secure entry card");
     expect(credential.description).toContain("Never claim a secure field opened unless this request succeeds");
   });
@@ -708,7 +734,7 @@ describe("agents-proxy MCP surface", () => {
     const readNames = [
       "tool_result_read",
       "list_shared_computers",
-      "list_bots", "list_rooms", "check_delegation", "wait_delegation", "list_threads",
+      "assignment_status", "list_bots", "list_rooms", "list_threads",
       "list_team_setup",
       "session_search", "session_read", "list_routines", "skills_list",
     ];
@@ -723,8 +749,6 @@ describe("agents-proxy MCP surface", () => {
           openWorldHint: false,
         });
       } else {
-        // Proposals and credential requests create durable cards; they are
-        // writes even though a later confirmation applies the requested change.
         expect(tool.annotations).toBeUndefined();
       }
     }
@@ -735,10 +759,6 @@ describe("agents-proxy MCP surface", () => {
     const create = list.result.tools.find((t: { name: string }) => t.name === "propose_routine");
     expect(create.inputSchema.required).toEqual(["name", "instructions", "schedule"]);
     const schedule = create.inputSchema.properties.schedule;
-    // No composition keywords anywhere in the tool surface: several agent
-    // CLIs flatten or drop oneOf/anyOf/const when converting MCP tools for
-    // their model API, and a model that never saw the branches guesses
-    // shapes forever (the 0.1.38 field failure).
     expect(JSON.stringify(create.inputSchema)).not.toMatch(/"oneOf"|"anyOf"|"allOf"|"const"/);
     expect(schedule.type).toBe("object");
     expect(schedule.required).toEqual(["type"]);
@@ -759,6 +779,7 @@ describe("agents-proxy MCP surface", () => {
     expect(create.inputSchema.properties).not.toHaveProperty("duration_minutes");
     expect(create.inputSchema.properties.timeout_minutes).toMatchObject({ minimum: 5, maximum: 240 });
     expect(create.inputSchema.properties.continuity).toMatchObject({ type: "boolean" });
+    expect(create.inputSchema.properties.run_on_startup).toMatchObject({ type: "boolean" });
     expect(create.inputSchema.properties.clear_timeout.type).toBe("boolean");
     expect(schedule.properties.every_minutes).toMatchObject({ minimum: 5, maximum: 1_440 });
     expect(schedule.properties.window_start.type).toBe("string");
@@ -775,8 +796,8 @@ describe("agents-proxy MCP surface", () => {
     const text = res.result.content[0].text;
     expect(text).toContain("Helper");
     expect(text).toContain("bot-helper");
-    expect(text).toContain("Assign work with delegate_bot");
-    expect(text).toContain("Use ask_bot only for a short answer");
+    expect(text).toContain("Use coordinate_bots for concrete work or, with consult: true, for advice, then end your turn.");
+    expect(text).not.toMatch(/\b(delegate_bot|ask_bot)\b/);
     expect(lastAuth).toBe(`Bearer ${TOKEN}`);
   });
 
@@ -792,7 +813,6 @@ describe("agents-proxy MCP surface", () => {
       const text = (await callTool("list_bots", {})).result.content[0].text;
       expect(text).toContain("[id: bot-helper, model: fake-model, waiting on the user]");
       expect(text).toContain("[id: bot-quill, model: fake-model]");
-      // an older server that only sends busy still reads as before
       expect(text).toContain("[id: bot-old, model: fake-model, busy]");
     } finally {
       agentsResponse = DEFAULT_AGENTS;
@@ -812,9 +832,7 @@ describe("agents-proxy MCP surface", () => {
     expect(text).toContain("Launch");
     expect(text).toContain("members: Asker, Helper");
     expect(text).toContain("room-ops");
-    // the id is useless without the tool that consumes it
     expect(text).toContain("post_to_room");
-    // and the model must not expect a reply it will never get
     expect(text).toContain("does not start anyone's turn");
     expect(lastRoomsQuery).toContain("fromBotId=bot-asker");
     expect(lastRoomsQuery).toContain("fromThreadId=thread-asker-routine");
@@ -828,8 +846,6 @@ describe("agents-proxy MCP surface", () => {
   });
 
   it("names a room the bot is in but cannot post into, with the reason and no id", async () => {
-    // the person can see the bot in that room, so "no room" would be a lie;
-    // the reason travels to the model, an id it could retry against does not
     roomsResponse = {
       rooms: [],
       unpostable: [{ name: "Planning", reason: "that room includes @Scout, who is outside your section — tell the user what you wanted to post there instead" }],
@@ -848,8 +864,6 @@ describe("agents-proxy MCP surface", () => {
     expect(res.result.isError).toBeFalsy();
     expect(res.result.content[0].text).toContain("Posted in Launch");
     expect(res.result.content[0].text).toContain("expect no reply");
-    // the room id is the only thing the model chooses; who is posting comes
-    // from the env the harness injected, never from the tool arguments
     expect(lastPostBody).toEqual({
       fromBotId: "bot-asker",
       fromThreadId: "thread-asker-routine",
@@ -891,7 +905,6 @@ describe("agents-proxy MCP surface", () => {
     expect(res.result.isError).toBeFalsy();
     expect(res.result.content[0].text).toContain("Attached report.pdf");
     expect(res.result.content[0].text).toContain("48639 bytes");
-    // who is attaching comes from the harness capability, never from arguments
     expect(lastAttachBody).toEqual({ path: "/home/cua/workspace/report.pdf", name: "Q3 report.pdf" });
     await callTool("attach_file", { path: "clip.mp4" });
     expect(lastAttachBody).toEqual({ path: "clip.mp4" });
@@ -908,8 +921,6 @@ describe("agents-proxy MCP surface", () => {
   });
 
   it("hands a harness refusal to the model verbatim", async () => {
-    // the budget's wording is the whole point of it — it must not be
-    // reworded into something that reads like "try again"
     postResponse = { error: "This room has already taken 2 bot posts. Do not retry this call." };
     const res = await callTool("post_to_room", { group_id: "room-launch", message: "after the cap" });
     expect(res.result.isError).toBe(true);
@@ -917,178 +928,45 @@ describe("agents-proxy MCP surface", () => {
     postResponse = { ok: true, messageId: "msg-1", roomName: "Launch" };
   });
 
-  it("stops a turn at three posts and says so without another round trip", async () => {
+  it("counts no posts of its own: a proxy serving several turns leaves the per-turn limit to the harness", async () => {
     const before = postCalls;
-    // one post is already spent by the test above
-    for (let i = 0; i < 2; i++) {
+    for (let i = 0; i < 4; i++) {
       const ok = await callTool("post_to_room", { group_id: "room-launch", message: `update ${i}` });
       expect(ok.result.isError).toBeFalsy();
     }
-    expect(postCalls).toBe(before + 2);
-    const capped = await callTool("post_to_room", { group_id: "room-launch", message: "one more" });
-    expect(capped.result.isError).toBe(true);
-    expect(capped.result.content[0].text).toMatch(/do not retry/i);
-    // the refusal is the proxy's own: the harness was never asked
-    expect(postCalls).toBe(before + 2);
+    expect(postCalls).toBe(before + 4);
   });
 
-  it("ask_bot forwards sender + depth and returns the reply", async () => {
-    askResponse = { botName: "Helper", text: "hi from helper" };
-    const res = await callTool("ask_bot", { bot_id: "bot-helper", message: "ping" });
-    expect(res.result.content[0].text).toContain("Helper replied:");
-    expect(res.result.content[0].text).toContain("hi from helper");
-    expect(lastAskBody).toMatchObject({
-      fromBotId: "bot-asker",
-      fromThreadId: "thread-asker-routine",
-      toBotId: "bot-helper",
-      message: "ping",
-      depth: 0,
-    });
-  });
-
-  it("renders a busy peer as a clean answer, not an error", async () => {
-    askResponse = { busy: true };
-    const res = await callTool("ask_bot", { bot_id: "bot-helper", message: "ping" });
-    expect(res.result.content[0].text).toContain("busy");
-    expect(res.result.isError).toBeFalsy();
-  });
-
-  it("turns a busy+queued reply into delegation guidance with the task id", async () => {
-    askResponse = { busy: true, taskId: "task-9", toBotName: "Helper" };
-    const res = await callTool("ask_bot", { bot_id: "bot-helper", message: "ping" });
-    const text = res.result.content[0].text;
-    expect(text).toContain("Helper is busy");
-    expect(text).toContain("queued as a delegation");
-    expect(text).toContain("task-9");
-    expect(text).toContain("check_delegation");
-    expect(text).toContain("delivered to this conversation automatically");
-    expect(text).not.toContain("wait_delegation");
-    expect(res.result.isError).toBeFalsy();
-
-    lastDelegationUrl = null;
-    const check = await callTool("check_delegation", { task_id: "task-9" });
-    expect(check.result.isError).toBe(true);
-    expect(check.result.content[0].text).toContain("delegated during this turn");
-    expect(check.result.content[0].text).toContain("Finish your response now");
-    expect(lastDelegationUrl).toBeNull();
-  });
-
-  it.each([[15_000, "15 seconds"], [240_000, "4 minutes"]])("renders a timeout conversion after %s ms with the task id and guidance", async (waitedMs, duration) => {
-    askResponse = { timeout: true, taskId: "task-42", toBotName: "Helper", waitedMs };
-    const res = await callTool("ask_bot", { bot_id: "bot-helper", message: "ping" });
-    const text = res.result.content[0].text;
-    expect(text).toContain(`Helper is still working after ${duration}`);
-    expect(text).toContain("converted to a delegation");
-    expect(text).toContain("task-42");
-    expect(text).toContain("check_delegation");
-    expect(text).toContain("delivered to this conversation automatically");
-    expect(text).not.toContain("wait_delegation");
-    expect(res.result.isError).toBeFalsy();
-
-    lastDelegationUrl = null;
-    const wait = await callTool("wait_delegation", { task_id: "task-42", timeout_seconds: 240 });
-    expect(wait.result.isError).toBe(true);
-    expect(wait.result.content[0].text).toContain("delegated during this turn");
-    expect(wait.result.content[0].text).toContain("delivered to this conversation automatically");
-    expect(lastDelegationUrl).toBeNull();
-  });
-
-  it("surfaces the harness's depth refusal as a tool error", async () => {
-    askResponse = { error: "message chains are limited to one hop" };
-    const res = await callTool("ask_bot", { bot_id: "bot-helper", message: "ping" });
-    expect(res.result.isError).toBe(true);
-    expect(res.result.content[0].text).toContain("one hop");
-  });
-
-  it("appends the ask_bot delivery receipt after the reply prose", async () => {
-    askResponse = {
-      botName: "Helper", text: "hi from helper",
-      receipt: { botId: "bot-helper", botName: "Helper", outcome: "injected", detail: "the teammate's turn ran to completion" },
-    };
-    const res = await callTool("ask_bot", { bot_id: "bot-helper", message: "ping" });
-    const text = res.result.content[0].text;
-    expect(text).toContain("Helper replied:");
-    expect(text).toContain("Delivery to Helper: injected — the teammate's turn ran to completion");
-  });
-
-  it("renders a failed receipt on a busy ask the queue refused, without claiming delivery", async () => {
-    askResponse = {
-      busy: true,
-      receipt: {
-        botId: "bot-helper", botName: "Helper", outcome: "failed",
-        detail: "the teammate was busy and the delegation queue refused the fallback — the message was not delivered",
-      },
-    };
-    const res = await callTool("ask_bot", { bot_id: "bot-helper", message: "ping" });
-    const text = res.result.content[0].text;
-    expect(text).toContain("busy");
-    expect(text).toContain("Delivery to Helper: failed");
-    expect(text).toContain("the message was not delivered");
-    expect(res.result.isError).toBeFalsy();
-  });
-
-  it("keeps a dispatch failure honest: the prose reads like a reply, the receipt says failed", async () => {
-    askResponse = {
-      botName: "Helper", text: "(couldn't start that bot: provider offline)",
-      receipt: {
-        botId: "bot-helper", botName: "Helper", outcome: "failed",
-        detail: "the teammate's turn could not start — the message was not delivered",
-      },
-    };
-    const res = await callTool("ask_bot", { bot_id: "bot-helper", message: "ping" });
-    const text = res.result.content[0].text;
-    expect(text).toContain("(couldn't start that bot: provider offline)");
-    expect(text).toContain("Delivery to Helper: failed — the teammate's turn could not start");
-    expect(res.result.isError).toBeFalsy();
-  });
-
-  it("forwards the source thread when queueing a delegation", async () => {
-    delegateResponse = { queued: true, message: "Delegation queued." };
-    const res = await callTool("delegate_bot", {
-      bot_id: "bot-helper",
-      message: "take this",
-      reason: "follow-up",
-    });
-    expect(res.result.content[0].text).toContain("Delegation queued");
-    expect(lastDelegateBody).toMatchObject({
-      fromBotId: "bot-asker",
-      fromThreadId: "thread-asker-routine",
-      toBotId: "bot-helper",
-      message: "take this",
-      reason: "follow-up",
-      depth: 0,
-    });
-  });
-
-  it("returns queue refusal guidance to the agent as a tool error", async () => {
-    delegateResponse = { error: "delegation chains are limited to one hop — do this one yourself" };
-    const res = await callTool("delegate_bot", { bot_id: "bot-helper", message: "take this" });
-    expect(res.result.isError).toBe(true);
-    expect(res.result.content[0].text).toContain("do this one yourself");
-  });
-
-  it("appends the delegate_bot delivery receipt under the queue guidance", async () => {
-    delegateResponse = {
-      queued: true, taskId: "task-77", message: "Delegation queued.",
-      receipt: {
-        botId: "bot-helper", botName: "Helper", outcome: "queued", taskId: "task-77",
-        detail: "the teammate's turn runs after your current turn finishes",
-      },
-    };
-    const res = await callTool("delegate_bot", { bot_id: "bot-helper", message: "take this" });
-    const text = res.result.content[0].text;
-    expect(text).toContain("Delegation queued");
-    expect(text).toContain("Delivery to Helper: queued — the teammate's turn runs after your current turn finishes");
-  });
-
-  it("start_thread: tells the model what a thread is for and what it is not for", async () => {
+  it("start_thread: a job on yourself, with the one bot_id it accepts, and the teammate case pointed at coordinate_bots", async () => {
     const list = await rpc("tools/list");
     const start = list.result.tools.find((tool: { name: string }) => tool.name === "start_thread");
     expect(start.inputSchema.required).toEqual(["title", "message"]);
     expect(Object.keys(start.inputSchema.properties)).toEqual(["title", "message", "bot_id", "folder"]);
-    expect(start.description).toContain("Leave bot_id out to open it on yourself");
-    expect(start.description).toContain("Do not use it for a question you need answered right now");
+    expect(start.inputSchema.properties.bot_id).toEqual({ type: "string", enum: ["bot-asker"], description: "Leave out, or use your own bot ID. For teammates use coordinate_bots." });
+    expect(start.description).toContain("Open a separate job on yourself");
+    expect(start.description).toContain('use coordinate_bots for teammates (thread "new" opens a fresh thread on them)');
     expect(start.description).toContain("do not retry it");
+    expect(start.description).not.toMatch(/\b(delegate_bot|ask_bot)\b/);
+  });
+
+  it("start_thread on a teammate is a hand-off into a fresh thread: the receipt's thread and assignment id, no deprecation line", async () => {
+    const previous = threadResponse;
+    threadResponse = { receipts: [{ botId: "bot-helper", botName: "Helper", outcome: "queued", detail: "handed to the coordinator; the teammate's turn has not started yet", requestId: "asg-peer-9", threadId: "thread-peer" }],
+      message: "End your turn after sending all work." };
+    try {
+      const res = await callTool("start_thread", { title: "QA: PR #9", message: "Review the login fix.", bot_id: "bot-helper" });
+      const text = res.result.content[0].text;
+      expect(res.result.isError).toBeFalsy();
+      expect(text).toContain("Opened thread #QA: PR #9 on @Helper [thread id: thread-peer]. It starts when this turn ends, like any handoff.");
+      expect(text).toContain("(assignment id: asg-peer-9)");
+      expect(text).toContain("do not check or wait for it in this turn");
+      expect(text).not.toMatch(/Deprecated|alias/);
+      expect(lastThreadBody).toEqual({
+        fromBotId: "bot-asker", fromThreadId: "thread-asker-routine", title: "QA: PR #9", message: "Review the login fix.", depth: 0, toBotId: "bot-helper",
+      });
+    } finally {
+      threadResponse = previous;
+    }
   });
 
   it("start_thread on yourself forwards the sender and says whether it runs or waits in line", async () => {
@@ -1127,20 +1005,15 @@ describe("agents-proxy MCP surface", () => {
     expect(refused.result.content[0].text).toContain("title must fit on one line");
   });
 
-  it("stops a turn at five opened threads and tells the model not to retry", async () => {
-    // three threads were already opened above (the refusal did not count)
+  it("counts no threads of its own: a proxy serving several turns leaves the per-turn limit to the harness", async () => {
+    // three threads were already opened above
     threadResponse = { threadId: "thread-n", title: "More", botId: "bot-asker", botName: "Asker", self: true, state: "running", limit: 3 };
-    for (let i = 0; i < 2; i++) {
+    const before = threadCalls;
+    for (let i = 0; i < 3; i++) {
       const ok = await callTool("start_thread", { title: `More ${i}`, message: "go" });
       expect(ok.result.isError).toBeFalsy();
     }
-    const before = threadCalls;
-    const capped = await callTool("start_thread", { title: "One more", message: "go" });
-    expect(capped.result.isError).toBe(true);
-    expect(capped.result.content[0].text).toMatch(/do not retry/i);
-    expect(capped.result.content[0].text).toContain("which threads you still wanted to open");
-    // the refusal is the proxy's own: the harness was never asked
-    expect(threadCalls).toBe(before);
+    expect(threadCalls).toBe(before + 3);
   });
 
   it("lets a Chief create a bounded specialist through the harness", async () => {
@@ -1228,6 +1101,41 @@ describe("agents-proxy MCP surface", () => {
     expect(JSON.stringify(lastCredentialBody)).not.toContain("secret");
   });
 
+  it("asks for a sign-in with only the site and the bot's reason, and ends the turn", async () => {
+    const res = await callTool("request_sign_in", { site: " https://example.com/login ", reason: "The report is behind a login." });
+    expect(res.result.isError).toBeFalsy();
+    expect(res.result.content[0].text).toContain("The person was asked to sign in to example.com on your built-in browser.");
+    expect(res.result.content[0].text).toContain("Your turn ends now");
+    expect(res.result.content[0].text).toContain("resumes you when they finish or decline");
+    expect(res.result.content[0].text).toContain("Never ask for the password or a code in chat");
+    expect(lastSignInBody).toEqual({
+      fromBotId: "bot-asker",
+      fromThreadId: "thread-asker-routine",
+      site: "https://example.com/login",
+      reason: "The report is behind a login.",
+    });
+    lastSignInBody = null;
+    expect((await callTool("request_sign_in", { site: "  " })).result.isError).toBe(true);
+    expect(lastSignInBody).toBeNull();
+  });
+
+  it("fills a saved login with at most a username and a submit choice, and hands the harness's status through, a refusal as an error", async () => {
+    const filled = await callTool("fill_login", {});
+    expect(filled.result.isError).toBeFalsy();
+    expect(filled.result.content[0].text).toBe("Filled the username and the password for alice on example.com.");
+    expect(lastFillBody).toEqual({ fromBotId: "bot-asker", fromThreadId: "thread-asker-routine" });
+    fillAnswer = { ok: false, text: "No saved login for accounts.example.com." };
+    const refused = await callTool("fill_login", { username: " bob " });
+    expect(refused.result.isError).toBe(true);
+    expect(refused.result.content[0].text).toBe("No saved login for accounts.example.com.");
+    expect(lastFillBody).toEqual({ fromBotId: "bot-asker", fromThreadId: "thread-asker-routine", username: "bob" });
+    fillAnswer = { ok: true, text: "Filled the username and the password for alice on example.com." };
+    await callTool("fill_login", { submit: false });
+    expect(lastFillBody).toEqual({ fromBotId: "bot-asker", fromThreadId: "thread-asker-routine", submit: false });
+    await callTool("fill_login", { submit: true });
+    expect(lastFillBody).toEqual({ fromBotId: "bot-asker", fromThreadId: "thread-asker-routine" });
+  });
+
   it("rejects credential ids outside the fixed allowlist locally", async () => {
     lastCredentialBody = null;
     const res = await callTool("request_credential", { credential_id: "arbitrary.config.path" });
@@ -1235,89 +1143,118 @@ describe("agents-proxy MCP surface", () => {
     expect(lastCredentialBody).toBeNull();
   });
 
-  it("hands back the task id and rejects sequential same-turn status calls", async () => {
-    delegateResponse = {
-      queued: true,
-      taskId: "task-abc123",
-      message: "Delegation queued — @Helper will pick it up after your current turn finishes.",
-    };
-    const res = await callTool("delegate_bot", { bot_id: "bot-helper", message: "do the thing" });
-    expect(res.result.content[0].text).toContain("Task id: task-abc123");
-    expect(res.result.content[0].text).toContain("delivered to this conversation automatically");
-    expect(res.result.content[0].text).toContain("Do not check or wait for it in this turn");
-    expect(res.result.content[0].text).not.toContain("wait_delegation");
-
-    lastDelegationUrl = null;
-    for (const name of ["check_delegation", "wait_delegation"]) {
-      const status = await callTool(name, { task_id: "task-abc123", timeout_seconds: 240 });
-      expect(status.result.isError).toBe(true);
-      expect(status.result.content[0].text).toContain("delegated during this turn");
-      expect(status.result.content[0].text).toContain("Finish your response now");
-      expect(status.result.content[0].text).toContain("delivered to this conversation automatically");
-    }
-    expect(lastDelegationUrl).toBeNull();
-    delegateResponse = { queued: true, message: "Delegation queued." };
-  });
-
-  it("check/wait_delegation: flat schemas, guided errors, and the read-back wire", async () => {
+  it("assignment_status keeps a flat schema", async () => {
     const list = await rpc("tools/list");
-    for (const name of ["check_delegation", "wait_delegation"]) {
-      const tool = list.result.tools.find((t: { name: string }) => t.name === name);
-      expect(JSON.stringify(tool.inputSchema)).not.toMatch(/"(oneOf|anyOf|allOf|const|format)":/);
-    }
-
-    lastDelegationUrl = null;
-    const bad = await callTool("check_delegation", { task_id: "!" });
-    expect(bad.result.isError).toBe(true);
-    expect(bad.result.content[0].text).toContain('"task_id"');
-    expect(lastDelegationUrl).toBeNull(); // guidance is free
-
-    const done = await callTool("check_delegation", { task_id: "task-earlier123" });
-    expect(done.result.content[0].text).toContain("@Helper finished task task-earlier123");
-    expect(done.result.content[0].text).toContain("All done.");
-    expect(lastDelegationUrl).toContain("/api/internal/delegations/task-earlier123?");
-    expect(lastDelegationUrl).toContain("wait_ms=0");
-    expect(lastDelegationUrl).toContain("fromBotId=bot-asker");
-
-    delegationStatusResponse = { status: "queued", toBotName: "Helper" };
-    const waiting = await callTool("wait_delegation", { task_id: "task-earlier123", timeout_seconds: 45 });
-    expect(waiting.result.content[0].text).toContain("still queued");
-    expect(waiting.result.content[0].text).toContain("after 45s");
-    expect(lastDelegationUrl).toContain("wait_ms=45000");
-    delegationStatusResponse = { status: "done", toBotName: "Helper", result: "All done." };
+    const tool = list.result.tools.find((t: { name: string }) => t.name === "assignment_status");
+    expect(JSON.stringify(tool.inputSchema)).not.toMatch(/"(oneOf|anyOf|allOf|const|format)":/);
   });
 
-  it("check_delegation explains a queued handoff: who it is waiting on, and when it expires", async () => {
-    delegationStatusResponse = {
-      status: "queued",
-      toBotName: "Helper",
-      targetStatus: "waiting-on-user",
-      expiresInMs: 5 * 3_600_000 - 1,
-    };
+  it("assignment_status relays the harness's refusal to read an assignment handed out this turn", async () => {
+    // Which turn made it is the harness's to know: a warm proxy serves many.
+    assignmentStatusCode = 409;
+    assignmentStatusResponse = { error: "Assignment asg-abc123 was handed out during this turn. Finish your response now so the teammate can work; its result returns to this conversation and resumes you. Do not check or wait for it until a later turn." };
     try {
-      const text = (await callTool("check_delegation", { task_id: "task-later456" })).result.content[0].text;
-      expect(text).toContain("still queued");
-      expect(text).toContain("@Helper is waiting on the user, so it goes through after they answer.");
-      expect(text).toContain("It expires if not picked up within 5 hours.");
+      lastAssignmentStatusUrl = null;
+      const status = await callTool("assignment_status", { id: "asg-abc123", wait_ms: 240_000 });
+      expect(status.result.isError).toBe(true);
+      expect(status.result.content[0].text).toContain("handed out during this turn");
+      expect(status.result.content[0].text).toContain("Finish your response now");
+      expect(lastAssignmentStatusUrl).toBe("/api/internal/assignment-status?id=asg-abc123&wait_ms=240000");
     } finally {
-      delegationStatusResponse = { status: "done", toBotName: "Helper", result: "All done." };
+      assignmentStatusCode = 200;
+      assignmentStatusResponse = DONE_ASSIGNMENT;
     }
   });
 
-  it("check_delegation never says 'within 0 hours' once a queued handoff's expiry has already elapsed", async () => {
-    delegationStatusResponse = {
-      status: "queued",
-      toBotName: "Helper",
-      targetStatus: "working",
-      expiresInMs: 0,
+  it("assignment_status says when the assignment is parked on a question for the person", async () => {
+    assignmentStatusResponse = {
+      assignment: { id: "asg-later456", botId: "bot-helper", botName: "Helper", status: "needs_input", question: "May I delete the old branch?" },
+      children: [], inbox: [],
     };
     try {
-      const text = (await callTool("check_delegation", { task_id: "task-later456" })).result.content[0].text;
-      expect(text).not.toContain("within 0 hours");
-      expect(text).toContain("past its 24-hour limit");
-      expect(text).toContain("will expire the next time it cannot be delivered");
+      const text = (await callTool("assignment_status", { id: "asg-later456" })).result.content[0].text;
+      expect(text).toContain("Assignment asg-later456 → @Helper: waiting on the person");
+      expect(text).toContain('It is parked on a question for the person: "May I delete the old branch?". Nothing moves until the person answers it in that thread; tell them and do not keep checking.');
     } finally {
-      delegationStatusResponse = { status: "done", toBotName: "Helper", result: "All done." };
+      assignmentStatusResponse = DONE_ASSIGNMENT;
+    }
+  });
+
+  it("assignment_status with no id lists every outstanding assignment, one line each", async () => {
+    assignmentStatusResponse = { outstanding: [
+      { id: "asg-1", botId: "bot-helper", botName: "Helper", status: "running" },
+      { id: "asg-2", botId: "bot-quill", botName: "Quill", status: "needs_input", outcome: "needs_input" },
+      { id: "asg-3", botId: "bot-old", status: "waiting" },
+    ] };
+    lastAssignmentStatusUrl = null;
+    const res = await callTool("assignment_status", {});
+    const text = res.result.content[0].text;
+    expect(res.result.isError).toBeFalsy();
+    expect(text).toBe([
+      "Outstanding assignments of this conversation (3):",
+      "- asg-1 → @Helper: running",
+      "- asg-2 → @Quill: waiting on the person",
+      "- asg-3 → bot-old: waiting on its own hand-offs",
+      "Each resumes you when it settles; do not wait on them in this turn.",
+    ].join("\n"));
+    expect(lastAssignmentStatusUrl).toBe("/api/internal/assignment-status");
+    expect(lastAuth).toBe(`Bearer ${TOKEN}`);
+
+    assignmentStatusResponse = { outstanding: [] };
+    expect((await callTool("assignment_status", {})).result.content[0].text).toBe("Nothing outstanding: no assignment of this conversation is still open.");
+    assignmentStatusResponse = DONE_ASSIGNMENT;
+  });
+
+  it("assignment_status with an id renders status, outcome, the result head and the assignment's own hand-offs", async () => {
+    assignmentStatusResponse = {
+      assignment: { id: "asg-9", botId: "bot-helper", botName: "Helper", status: "failed", outcome: "provider_error", outcomeDetail: "the engine exited early", result: "x".repeat(2_500) },
+      children: [{ id: "asg-9-1", botId: "bot-quill", botName: "Quill", status: "completed", outcome: "done" }],
+      inbox: [],
+    };
+    lastAssignmentStatusUrl = null;
+    const res = await callTool("assignment_status", { id: "asg-9" });
+    const text = res.result.content[0].text;
+    expect(res.result.isError).toBeFalsy();
+    expect(text).toContain("Assignment asg-9 → @Helper: failed (provider_error): the engine exited early");
+    expect(text).toContain(`Result (first part): ${"x".repeat(2_000)}`);
+    expect(text).not.toContain("x".repeat(2_001));
+    expect(text).toContain("Its own hand-offs:\n- asg-9-1 → @Quill: completed");
+    expect(text).not.toContain("not settled");
+    expect(text).not.toMatch(/Deprecated/);
+    expect(lastAssignmentStatusUrl).toBe("/api/internal/assignment-status?id=asg-9");
+    assignmentStatusResponse = DONE_ASSIGNMENT;
+  });
+
+  it("assignment_status long-polls with wait_ms, capped at 240000, and refuses a bad wait", async () => {
+    lastAssignmentStatusUrl = null;
+    const res = await callTool("assignment_status", { id: "task-earlier123", wait_ms: 900_000 });
+    expect(res.result.isError).toBeFalsy();
+    expect(res.result.content[0].text).toContain("Assignment task-earlier123 → @Helper: completed");
+    expect(lastAssignmentStatusUrl).toBe("/api/internal/assignment-status?id=task-earlier123&wait_ms=240000");
+
+    lastAssignmentStatusUrl = null;
+    for (const args of [{ id: "task-earlier123", wait_ms: -1 }, { id: "task-earlier123", wait_ms: "soon" }, { id: "!" }]) {
+      const bad = await callTool("assignment_status", args);
+      expect(bad.result.isError, JSON.stringify(args)).toBe(true);
+      expect(bad.result.content[0].text).toContain("assignment_status");
+    }
+    expect(lastAssignmentStatusUrl).toBeNull(); // guidance is free
+  });
+
+  it("assignment_status relays an unknown or foreign id as a plain refusal", async () => {
+    assignmentStatusCode = 404;
+    assignmentStatusResponse = { error: "unknown assignment" };
+    try {
+      const missing = await callTool("assignment_status", { id: "asg-gone" });
+      expect(missing.result.isError).toBe(true);
+      expect(missing.result.content[0].text).toContain("No assignment asg-gone is known here");
+      assignmentStatusCode = 403;
+      const foreign = await callTool("assignment_status", { id: "asg-theirs" });
+      expect(foreign.result.isError).toBe(true);
+      expect(foreign.result.content[0].text).toContain("Assignment asg-theirs is not this conversation's");
+    } finally {
+      assignmentStatusCode = 200;
+      assignmentStatusResponse = DONE_ASSIGNMENT;
     }
   });
 
@@ -1333,13 +1270,12 @@ describe("agents-proxy MCP surface", () => {
       fromBotId: "bot-asker", fromThreadId: "thread-asker-routine",
       action: "replace", text: "- New preference", oldText: "- Old preference",
     });
-    // the harness echoes the entry it wrote, so the model can replace it later by exact text
-    memoryResponse = { ok: true, text: "- new fact", truncated: false, bytes: 10, entry: '- 2026-09-10 · from chat "Setup" · New preference' };
+    memoryResponse = { ok: true, truncated: false, entry: '- 2026-09-10 · from chat "Setup" · New preference' };
     const echoed = await callTool("memory_update", { action: "supersede", text: "New preference", old_text: "- Old preference" });
     expect(echoed.result.isError).toBe(false);
     expect(echoed.result.content[0].text).toBe('Memory updated. Entry: - 2026-09-10 · from chat "Setup" · New preference');
     expect(lastMemoryBody).toMatchObject({ action: "supersede", text: "New preference", oldText: "- Old preference" });
-    memoryResponse = { ok: true, text: "- new fact", truncated: false, bytes: 10 };
+    memoryResponse = { ok: true, truncated: false };
     const append = await callTool("memory_update", { action: "append", text: "- Another fact" });
     expect(append.result.isError).toBe(false);
     expect(lastMemoryBody).toEqual({
@@ -1356,12 +1292,8 @@ describe("agents-proxy MCP surface", () => {
     }
     const tools = await rpc("tools/list");
     const schema = tools.result.tools.find((tool: { name: string }) => tool.name === "memory_update").inputSchema;
-    // No pattern on free-text params: servings that constrain-decode
-    // function-call arguments collapse a patterned free-text field to a
-    // minimal satisfier instead of the intended text — the same class of
-    // failure as the schema-conversion issues behind the flat-schema rule.
-    // Blank text is still rejected by the handler (asserted above).
-    expect(schema.properties.text).toMatchObject({ minLength: 1 });
+    // No pattern on free-text params: constrained decoding collapses a patterned field to a minimal satisfier.
+    expect(schema.properties.text).toMatchObject({ minLength: 1, maxLength: 1000 });
     expect(schema.properties.text).not.toHaveProperty("pattern");
     memoryStatus = 409;
     memoryResponse = { error: "oldText must match exactly once in the latest memory." };
@@ -1369,39 +1301,26 @@ describe("agents-proxy MCP surface", () => {
     expect(stale.result.isError).toBe(true);
     expect(stale.result.content[0].text).toContain("latest memory");
     memoryStatus = 200;
-    memoryResponse = { ok: true, text: "- new fact", truncated: false, bytes: 10 };
+    memoryResponse = { ok: true, truncated: false };
   });
 
-  it("memory_update relays a full-file refusal with the newest entries and closes after three refusals in a turn", async () => {
-    memoryStatus = 413;
+  it("memory_update on a full file says what moved to the archive, and stays open however many writes a turn makes", async () => {
     memoryResponse = {
-      ok: false, code: "over-budget",
-      error: "MEMORY.md would be 201 lines and 9000 bytes; only the first 200 lines / 24000 bytes load at the start of a session, and nothing past that is ever read. Consolidate now: replace or remove older entries, or move detail to a memory/<topic>.md file; do not retry the same append.",
-      lines: 201, bytes: 9000, budget: { lines: 200, bytes: 24000 },
-      recent: ["- 2026-09-09 · from chat \"A\" · fact 199", "- 2026-09-10 · from chat \"B\" · fact 200"],
+      ok: true, truncated: false,
+      entry: '- 2026-09-10 · from chat "Setup" · fact 201',
+      moved: ["- 2026-08-01 · from chat \"A\" · fact 1"],
     };
-    const full = await callTool("memory_update", { action: "append", text: "fact 201" });
-    expect(full.result.isError).toBe(true);
-    expect(full.result.content[0].text).toContain("Consolidate now: replace or remove older entries, or move detail to a memory/<topic>.md file; do not retry the same append.");
-    expect(full.result.content[0].text).toContain("Most recent entries, oldest first:\n- 2026-09-09 · from chat \"A\" · fact 199\n- 2026-09-10");
-    // The proxy lives for one turn and an earlier test already spent one
-    // refusal; keep refusing until the tool closes, which must take at most
-    // three refusals from a fresh counter.
-    let closed = "";
-    for (let attempt = 0; attempt < 3 && !closed; attempt += 1) {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
       lastMemoryBody = null;
-      const again = await callTool("memory_update", { action: "append", text: "fact 201" });
-      expect(again.result.isError).toBe(true);
-      if (again.result.content[0].text.includes("closed for the rest of this turn")) closed = again.result.content[0].text;
+      const full = await callTool("memory_update", { action: "append", text: "fact 201" });
+      expect(full.result.isError).toBe(false);
+      expect(full.result.content[0].text).toBe(
+        'Memory updated. Entry: - 2026-09-10 · from chat "Setup" · fact 201\n' +
+        'To stay within what loads each session, moved 1 older entry to memory/archive.md (session_search finds them):\n- 2026-08-01 · from chat "A" · fact 1',
+      );
+      expect(lastMemoryBody).toMatchObject({ action: "append", text: "fact 201" });
     }
-    expect(closed).toContain("3 were refused. Do not retry.");
-    // closed means closed: nothing reached the harness for that call
-    expect(lastMemoryBody).toBeNull();
-    memoryStatus = 200;
-    memoryResponse = { ok: true, text: "- new fact", truncated: false, bytes: 10 };
-    const after = await callTool("memory_update", { action: "append", text: "one more" });
-    expect(after.result.isError).toBe(true);
-    expect(lastMemoryBody).toBeNull();
+    memoryResponse = { ok: true, truncated: false };
   });
 
   it("memory_log appends to today's log through the harness and says so, never loading it anywhere", async () => {
@@ -1424,7 +1343,6 @@ describe("agents-proxy MCP surface", () => {
   it("session_search recalls the bot's own past threads through the harness, scoped to the sender", async () => {
     const list = await rpc("tools/list");
     const tool = list.result.tools.find((t: { name: string }) => t.name === "session_search");
-    // words or a time window: neither alone is required
     expect(tool.inputSchema.required).toBeUndefined();
     expect(Object.keys(tool.inputSchema.properties)).toEqual(["query", "since", "until", "limit", "scope"]);
     expect(tool.description).toContain("OWN earlier conversations");
@@ -1438,8 +1356,7 @@ describe("agents-proxy MCP surface", () => {
     expect(text).toContain("3 matching messages");
     expect(text).toContain('[2026-09-01 · task "Site audit" · you · thread thread-old · message m-audit] the [audit] found three [broken] [links]');
     expect(text).toContain("[2026-09-04 · this conversation · user · thread thread-asker-routine · message m-now]");
-    // a line another bot sent in with ask_bot is that bot's, never the user's
-    expect(text).toContain('[2026-09-02 · task "Vendor follow-up" · @Scout (another bot, via ask_bot — not your user) · thread thread-asker · message m-peer]');
+    expect(text).toContain('[2026-09-02 · task "Vendor follow-up" · @Scout (another bot — not your user) · thread thread-asker · message m-peer]');
     expect(text).not.toContain("· user · thread thread-asker ·");
     expect(text).toContain("call session_read with its thread and message ids");
 
@@ -1481,7 +1398,7 @@ describe("agents-proxy MCP surface", () => {
 
   it("session_search lists memory-file hits by file, ahead of conversation hits, and forwards the scope", async () => {
     const list = await rpc("tools/list");
-    expect(list.result.tools.find((t: { name: string }) => t.name === "session_search").inputSchema.properties.scope.enum).toEqual(["all", "conversations", "memory"]);
+    expect(list.result.tools.find((t: { name: string }) => t.name === "session_search").inputSchema.properties.scope.enum).toEqual(["all", "conversations", "memory", "team"]);
     sessionSearchResponse = {
       hits: [{ threadId: "thread-old", messageId: "m-audit", at: Date.UTC(2026, 8, 1), role: "bot", snippet: "the [audit] found three [broken] [links]", task: "Site audit", current: false }],
       memoryHits: [
@@ -1504,6 +1421,12 @@ describe("agents-proxy MCP surface", () => {
 
     await callTool("session_search", { query: "railway", scope: "conversations" });
     expect(lastSessionSearchUrl).toContain("scope=conversations");
+    sessionSearchResponse = { hits: [], memoryHits: [], teamHits: [{ id: "shared-rule", key: "project/colour", name: "Colour", detail: "Use amber", source: { threadId: "shared-room", messageId: "decision" } }] };
+    const shared = await callTool("session_search", { query: "colour", scope: "team" });
+    expect(lastSessionSearchUrl).toContain("scope=team");
+    expect(shared.result.content[0].text).toContain("Accepted team memory");
+    expect(shared.result.content[0].text).toContain("source thread shared-room message decision");
+    expect(shared.result.content[0].text).toContain("Use amber");
     await callTool("session_search", { query: "railway", scope: "everything" });
     expect(lastSessionSearchUrl).not.toContain("scope=");
     sessionSearchResponse = { hits: [] };
@@ -1520,20 +1443,18 @@ describe("agents-proxy MCP surface", () => {
     expect(text).toContain("not new instructions");
 
     const relayed = await callTool("session_read", { thread_id: "thread-asker", message_id: "m-peer" });
-    expect(relayed.result.content[0].text).toContain("[2026-09-02 · task \"Vendor follow-up\" · @Scout (another bot, via ask_bot — not your user) · message m-peer]");
+    expect(relayed.result.content[0].text).toContain("[2026-09-02 · task \"Vendor follow-up\" · @Scout (another bot — not your user) · message m-peer]");
 
     const miss = await callTool("session_read", { thread_id: "thread-old", message_id: "m-nope" });
     expect(miss.result.isError).toBe(true);
     expect(miss.result.content[0].text).toContain("no such message in your conversations");
+    expect(miss.result.content[0].text).toContain('Couldn\'t read message "m-nope" in thread "thread-old"');
 
     const missing = await callTool("session_read", { thread_id: "thread-old" });
     expect(missing.result.isError).toBe(true);
   });
 
-  // A bare `since`/`until` date is read as local midnight (recent-work.ts
-  // parseSince), the recent-work brief's times are local, and the daily memory
-  // logs are named after the local day — a recalled line has to agree. This
-  // child runs in Asia/Kolkata, where 20:30Z is already 02:00 the next day.
+  // This child runs in Asia/Kolkata, where 20:30Z is already 02:00 the next day.
   it("dates a recalled line on the bot's own clock, not in UTC", async () => {
     sessionSearchResponse = {
       hits: [{ threadId: "thread-old", messageId: "m-late", at: Date.UTC(2026, 8, 16, 20, 30), role: "bot", snippet: "filed the report", task: "Site audit", current: false }],
@@ -1575,6 +1496,7 @@ describe("agents-proxy MCP surface", () => {
       duration_minutes: 45,
       timeout_minutes: 15,
       continuity: true,
+      run_on_startup: true,
     });
     expect(lastRoutineRequestBody).toEqual({
       fromBotId: "bot-asker",
@@ -1587,6 +1509,7 @@ describe("agents-proxy MCP surface", () => {
         runOn: "maus",
         timeoutMinutes: 15,
         continuity: true,
+        runOnStartup: true,
       },
     });
     expect(res.result.content[0].text).toContain("confirmation card");
@@ -1604,7 +1527,6 @@ describe("agents-proxy MCP surface", () => {
       for_bot_id: "bot-helper",
     });
     expect(lastRoutineRequestBody.forBotId).toBe("bot-helper");
-    // the target rides beside the routine definition, never inside it
     expect(lastRoutineRequestBody.routine).not.toHaveProperty("forBotId");
     expect(lastRoutineRequestBody.routine).not.toHaveProperty("for_bot_id");
     expect(res.result.isError).toBeFalsy();
@@ -1666,6 +1588,8 @@ describe("agents-proxy MCP surface", () => {
     { timeout_minutes: 10, timeoutMinutes: 20 },
     { clear_timeout: true, timeoutMinutes: 10 },
     { continuity: "true" },
+    { run_on_startup: "yes" },
+    { run_on_startup: true, runOnStartup: false },
     { clear_timeout: "true" },
   ])("refuses malformed execution settings without silently dropping them: %j", async (settings) => {
     lastRoutineRequestBody = null;
@@ -1765,14 +1689,14 @@ describe("agents-proxy MCP surface", () => {
     const update = await callTool("propose_routine_action", {
       routine_id: "routine-1",
       action: "update",
-      changes: { name: "Weekday brief", clear_timeout: true, continuity: false },
+      changes: { name: "Weekday brief", clear_timeout: true, continuity: false, run_on_startup: false },
     });
     expect(lastRoutineRequestBody).toEqual({
       fromBotId: "bot-asker",
       fromThreadId: "thread-asker-routine",
       action: "update",
       routineId: "routine-1",
-      changes: { name: "Weekday brief", timeoutMinutes: null, continuity: false },
+      changes: { name: "Weekday brief", timeoutMinutes: null, continuity: false, runOnStartup: false },
     });
     expect(update.result.content[0].text).toContain("has not been applied");
 
@@ -1812,8 +1736,6 @@ describe("agents-proxy MCP surface", () => {
   });
 
   it("coerces the schedule shapes models actually send", async () => {
-    // "daily" is the natural word for every-day; it becomes weekly on all
-    // seven days on the wire, so the harness dialect stays unchanged.
     await callTool("propose_routine", {
       name: "Daily check",
       instructions: "Check things.",
@@ -1825,7 +1747,6 @@ describe("agents-proxy MCP surface", () => {
       weekdays: ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"],
     });
 
-    // Capitalized and short weekday names have one obvious meaning.
     await callTool("propose_routine", {
       name: "Caps",
       instructions: "x.",
@@ -1833,7 +1754,6 @@ describe("agents-proxy MCP surface", () => {
     });
     expect(lastRoutineRequestBody.routine.schedule.weekdays).toEqual(["monday", "friday"]);
 
-    // Models routinely deliver nested objects as JSON strings.
     await callTool("propose_routine", {
       name: "Str",
       instructions: "x.",
@@ -1999,11 +1919,6 @@ describe("agents-proxy MCP surface", () => {
     expect(res.error.code).toBe(-32602);
   });
 
-  it("requires bot_id and message", async () => {
-    const res = await callTool("ask_bot", { bot_id: "", message: "" });
-    expect(res.result.isError).toBe(true);
-  });
-
   it("lists, views, and stages skills without enabling them", async () => {
     const list = await rpc("tools/list");
     const manage = list.result.tools.find((t: { name: string }) => t.name === "skill_manage");
@@ -2015,6 +1930,7 @@ describe("agents-proxy MCP surface", () => {
     expect(listed.result.content[0].text).toContain("file-expense");
     expect(listed.result.content[0].text).toContain("file-expense (disabled, imported)");
     expect(listed.result.content[0].text).toContain("learned-expense (enabled, learned/editable)");
+    expect(listed.result.content[0].text).toContain("team-cut (enabled, learned/editable, shared with your team, revision 0123456789ab)");
     expect(listed.result.content[0].text).toContain("pending-skill");
     expect(listed.result.content[0].text).not.toContain("UNREVIEWED");
     expect(listed.result.content[0].text).not.toContain("PRIVATE LEARNED");
@@ -2046,6 +1962,26 @@ describe("agents-proxy MCP surface", () => {
       skill_name: "file-expense",
     });
     expect(updated.result.content[0].text).toContain("current version remains unchanged");
+
+    expect(manage.inputSchema.properties.references.items.required).toEqual(["path", "content"]);
+    await callTool("skill_manage", {
+      action: "update",
+      skill_name: "file-expense",
+      skill_md: "---\nname: file-expense\ndescription: Files expenses.\n---\n\nFor edge cases, read references/edge-cases.md.\n",
+      references: [{ path: "references/edge-cases.md", content: "# Edge cases\n" }],
+      source: "conversation",
+    });
+    expect(lastSkillStageBody).toMatchObject({
+      references: [{ path: "references/edge-cases.md", content: "# Edge cases\n" }],
+    });
+    await callTool("skill_manage", {
+      action: "update",
+      skill_name: "team-cut",
+      skill_md: "---\nname: team-cut\ndescription: Cuts a rough edit.\n---\n\n# Team cut\n",
+      base_revision: "0123456789ab",
+      source: "conversation",
+    });
+    expect(lastSkillStageBody).toMatchObject({ action: "update", skill_name: "team-cut", base_revision: "0123456789ab" });
 
     lastSkillStageBody = null;
     const missingTarget = await callTool("skill_manage", {
@@ -2096,66 +2032,61 @@ describe("standing external runtime", () => {
   });
   afterAll(async () => { if (external) await waitForExit(external, { signal: "SIGTERM" }); });
 
-  it("advertises only peer communication and receipt tools even when unrelated feature flags are set", async () => {
+  it("sees the same one tool surface as every turn: the switches it sets change nothing", async () => {
     const list = await externalRpc("tools/list");
-    expect(list.result.tools.map((tool: any) => tool.name)).toEqual([
-      "list_bots", "ask_bot", "delegate_bot", "check_delegation", "wait_delegation",
-    ]);
-    expect(JSON.stringify(list.result.tools)).not.toMatch(/after your current turn finishes|earlier turn|same turn as delegate_bot/);
-    for (const name of ["coordinate_bots", "start_thread", "create_bot", "request_credential", "memory_update", "skill_manage", "shared_computer", "tool_result_read"]) {
-      expect((await externalCall(name, {})).error).toMatchObject({ code: -32602, message: `Unknown tool: ${name}` });
+    // the main child is a Chief's turn; this one is not, so only the role differs
+    const chiefOnly = ["create_bot", "list_team_setup", "propose_team_setup", "propose_bot_deletion", "create_room", "manage_room", "retry_thread"];
+    const everyTurn = (await rpc("tools/list")).result.tools.filter((tool: any) => !chiefOnly.includes(tool.name));
+    const names = list.result.tools.map((tool: any) => tool.name);
+    expect(names).toEqual(everyTurn.map((tool: any) => tool.name));
+    const teamwork = ["list_room_targets", "coordinate_bots", "assignment_status", "list_bots", "list_rooms", "list_threads", "close_thread", "start_thread", "post_to_room"];
+    for (const name of teamwork) {
+      expect(list.result.tools.find((tool: any) => tool.name === name), name).toEqual(everyTurn.find((tool: any) => tool.name === name));
     }
+    expect(JSON.stringify(list.result.tools)).not.toMatch(/Brief synchronous consultation|BLOCKING status tool|same turn as delegate_bot/);
     const roster = (await externalCall("list_bots", {})).result.content[0].text;
-    expect(roster).toContain("Assign work with delegate_bot");
-    expect(roster).not.toContain("coordinate_bots");
+    expect(roster).toContain("Use coordinate_bots for concrete work");
+    expect(roster).not.toMatch(/\b(delegate_bot|ask_bot)\b/);
   });
 
-  it("checks and waits for a newly delegated task in the same standing process", async () => {
-    delegateResponse = { queued: true, taskId: "external-task-123", message: "Delegated — @Helper is picking it up now." };
+  it("long-polls assignment_status for what it handed on, in the same standing process", async () => {
+    coordinateResponse = { receipts: [{ botId: "bot-helper", botName: "Helper", outcome: "queued", detail: "handed to the coordinator; the teammate's turn has not started yet", requestId: "external-asg-123" }],
+      message: "End your turn after sending all work. These actual teammates will reply and resume you automatically. Do not poll or wait." };
     try {
-      const result = await externalCall("delegate_bot", { bot_id: "bot-helper", message: "A standing assignment" });
-      expect(result.result.content[0].text).toContain("check_delegation or wait_delegation");
-      expect(result.result.content[0].text).not.toContain("finish your turn");
-      for (const name of ["check_delegation", "wait_delegation"]) {
-        lastDelegationUrl = null;
-        const status = await externalCall(name, { task_id: "external-task-123", timeout_seconds: 1 });
-        expect(status.result.isError).toBeFalsy();
-        expect(status.result.content[0].text).toContain("All done.");
-        expect(lastDelegationUrl).toContain(`/api/internal/delegations/external-task-123?`);
-        expect(lastDelegationUrl).toContain(`wait_ms=${name === "wait_delegation" ? 1000 : 0}`);
-        expect(lastAuth).toBe(`Bearer ${TOKEN}`);
-      }
-    } finally { delegateResponse = { queued: true, message: "Delegation queued." }; }
-  });
-
-  it.each(["busy", "timeout"])("can poll a %s ask converted into a delegation without ending the standing process", async outcome => {
-    askResponse = { [outcome]: true, taskId: `external-${outcome}-123`, toBotName: "Helper", waitedMs: 15_000 };
-    try {
-      const result = await externalCall("ask_bot", { bot_id: "bot-helper", message: "A short question" });
-      expect(result.result.content[0].text).toContain("check_delegation or wait_delegation");
-      expect(result.result.content[0].text).not.toMatch(/Finish your turn|after your current turn ends|later turn/);
-      const status = await externalCall("check_delegation", { task_id: `external-${outcome}-123` });
+      const sent = await externalCall("coordinate_bots", { bot_ids: ["bot-helper"], message: "A standing assignment", done_when: "the report is filed" });
+      expect(sent.result.isError).toBeFalsy();
+      expect(lastCoordinateBody).toMatchObject({ botIds: ["bot-helper"], message: "A standing assignment", done_when: "the report is filed" });
+      expect(JSON.parse(sent.result.content[0].text).receipts[0].requestId).toBe("external-asg-123");
+      assignmentStatusResponse = { assignment: { id: "external-asg-123", botId: "bot-helper", botName: "Helper", status: "completed", outcome: "done", result: "All done." }, children: [], inbox: [] };
+      lastAssignmentStatusUrl = null;
+      const status = await externalCall("assignment_status", { id: "external-asg-123", wait_ms: 1_000 });
       expect(status.result.isError).toBeFalsy();
-      expect(status.result.content[0].text).toContain("All done.");
-    } finally { askResponse = { botName: "Helper", text: "hi from helper" }; }
+      expect(status.result.content[0].text).toContain("Assignment external-asg-123 → @Helper: completed");
+      expect(status.result.content[0].text).toContain("Result: All done.");
+      expect(lastAssignmentStatusUrl).toBe("/api/internal/assignment-status?id=external-asg-123&wait_ms=1000");
+      expect(lastAuth).toBe(`Bearer ${TOKEN}`);
+    } finally {
+      coordinateResponse = { ok: true };
+      assignmentStatusResponse = DONE_ASSIGNMENT;
+    }
   });
 
   it("bounds large replies without calling the out-of-scope result-cache route", async () => {
-    askResponse = { botName: "Helper", text: "x".repeat(30_000) };
+    coordinateResponse = { receipts: [{ botId: "bot-helper", botName: "Helper", outcome: "queued", detail: "x".repeat(30_000), requestId: "external-asg-big" }],
+      message: "End your turn after sending all work." };
     const before = savedResultWrites;
     try {
-      const result = await externalCall("ask_bot", { bot_id: "bot-helper", message: "A short question" });
+      const result = await externalCall("coordinate_bots", { bot_ids: ["bot-helper"], message: "A short question", consult: true });
       expect(result.result.isError).toBeFalsy();
       expect(result.result.content[0].text.length).toBeLessThan(17_000);
       expect(result.result.content[0].text).toContain("The original operation was not retried");
       expect(savedResultWrites).toBe(before);
-    } finally { askResponse = { botName: "Helper", text: "hi from helper" }; }
+    } finally { coordinateResponse = { ok: true }; }
   });
 });
 
-// Opt-in computer sharing is off unless the harness turns it on. A separate
-// child is the only honest check: the tool list is frozen at module load.
-describe("with computer sharing off (the default)", () => {
+// A separate child is the only honest check: the tool list is frozen at module load.
+describe("with computer sharing off and no Chief of Staff (the defaults)", () => {
   let gated: ChildProcess;
   const gatedPending = new Map<number, (msg: any) => void>();
   let gatedId = 500;
@@ -2179,7 +2110,7 @@ describe("with computer sharing off (the default)", () => {
         OMB_COMMS_TOKEN: TOKEN,
         OMB_TURN_DEPTH: "0",
         OMB_SKILL_AUTHORING_ENABLED: "1",
-        // deliberately no OMB_SHARED_COMPUTERS_ENABLED
+        // deliberately no OMB_SHARED_COMPUTERS_ENABLED or OMB_CHIEF_OF_STAFF
       },
       stdio: ["pipe", "pipe", "inherit"],
     });
@@ -2208,7 +2139,6 @@ describe("with computer sharing off (the default)", () => {
     const names = list.result.tools.map((tool: { name: string }) => tool.name);
     expect(names).not.toContain("list_shared_computers");
     expect(names).not.toContain("shared_computer");
-    // the rest of the surface is untouched — this is a gate, not a removal
     expect(names).toContain("list_bots");
     expect(names).toContain("skills_list");
   });
@@ -2219,139 +2149,406 @@ describe("with computer sharing off (the default)", () => {
       expect(refused.error?.message ?? refused.result?.content?.[0]?.text).toMatch(/unknown tool|turned off/i);
     }
   });
+
+  it("shows a bot that is not a Chief none of the Chief-only tools or parameters", async () => {
+    type ListedTool = { name: string; description: string; inputSchema: { properties: Record<string, unknown> } };
+    const tools = new Map(((await gatedRpc("tools/list")).result.tools as ListedTool[]).map((tool) => [tool.name, tool]));
+    for (const name of ["create_bot", "list_team_setup", "propose_team_setup", "propose_bot_deletion", "create_room", "manage_room", "retry_thread"]) {
+      expect(tools.has(name), name).toBe(false);
+    }
+    for (const name of ["propose_profile", "propose_model"]) {
+      expect(tools.get(name)!.inputSchema.properties).not.toHaveProperty("for_bot_id");
+      expect(tools.get(name)!.description).not.toContain("for_bot_id");
+    }
+    expect(tools.get("propose_routine_action")!.inputSchema.properties).toHaveProperty("for_bot_id");
+  });
+
+  it("refuses a Chief-only tool called by name without reaching the harness", async () => {
+    lastCreateBody = null;
+    lastCreateRoomBody = null;
+    const created = await gatedRpc("tools/call", { name: "create_bot", arguments: { name: "Scout", role: "Ops", instructions: "Work." } });
+    expect(created.error).toMatchObject({ code: -32602, message: "Unknown tool: create_bot" });
+    const room = await gatedRpc("tools/call", { name: "create_room", arguments: { name: "Ops", member_bot_ids: ["bot-helper"] } });
+    expect(room.error).toMatchObject({ code: -32602, message: "Unknown tool: create_room" });
+    expect(lastCreateBody).toBeNull();
+    expect(lastCreateRoomBody).toBeNull();
+  });
 });
 
-// coordinate_bots exists only in room turns, so its argument handling needs
-// its own child with the room flag on; the stub harness records the wire body.
-describe("coordinate_bots arguments (room turn)", () => {
-  let room: ChildProcess;
-  const roomPending = new Map<number, (msg: any) => void>();
-  let roomId = 700;
-  const roomRpc = (method: string, params?: unknown): Promise<any> =>
-    new Promise((resolve, reject) => {
-      const id = roomId++;
-      roomPending.set(id, resolve);
-      room.stdin!.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
-      setTimeout(() => {
-        if (roomPending.delete(id)) reject(new Error(`${method} timed out`));
-      }, 10_000).unref?.();
-    });
-
-  beforeAll(async () => {
-    room = spawn(process.execPath, [PROXY], {
-      env: {
-        ...childEnv(),
-        OMB_HARNESS_URL: `http://127.0.0.1:${stubPort}`,
-        OMB_BOT_ID: "bot-asker",
-        OMB_THREAD_ID: "thread-asker-routine",
-        OMB_COMMS_TOKEN: TOKEN,
-        OMB_TURN_DEPTH: "0",
-        OMB_ROOM_TURN: "1",
-      },
-      stdio: ["pipe", "pipe", "inherit"],
-    });
-    let buf = "";
-    room.stdout!.on("data", (c) => {
-      buf += c;
-      let nl;
-      while ((nl = buf.indexOf("\n")) !== -1) {
-        const line = buf.slice(0, nl);
-        buf = buf.slice(nl + 1);
-        if (!line.trim()) continue;
-        const msg = JSON.parse(line);
-        roomPending.get(msg.id)?.(msg);
-        roomPending.delete(msg.id);
-      }
-    });
-    await roomRpc("initialize", { protocolVersion: "2024-11-05" });
-  });
-
-  afterAll(() => {
-    room?.kill();
-  });
-
+describe("coordinate_bots arguments", () => {
   it("maps camelCase aliases onto the canonical snake_case fields", async () => {
-    const res = await roomRpc("tools/call", { name: "coordinate_bots", arguments: {
-      botIds: ["bot-helper"], message: "please review the patch", requestKey: "review-1",
-    } });
+    const res = await callTool("coordinate_bots", {
+      botIds: ["bot-helper"], message: "please review the patch",
+    });
     expect(res.result.isError).toBeFalsy();
     expect(lastCoordinateBody).toMatchObject({
-      botIds: ["bot-helper"], message: "please review the patch", requestKey: "review-1",
+      botIds: ["bot-helper"], message: "please review the patch",
     });
   });
 
-  it("sends cross-bot work one way through the existing thread route", async () => {
-    const listed = await roomRpc("tools/list");
-    const send = listed.result.tools.find((tool: { name: string }) => tool.name === "send_to_bot");
-    expect(send.description).toContain("cross-bot only");
-    const previous = threadResponse;
-    threadResponse = { threadId: "thread-sent", title: "Ship it", botId: "bot-helper", botName: "Helper", self: false };
-    try {
-      const result = await roomRpc("tools/call", { name: "send_to_bot", arguments: {
-        bot_id: "bot-helper", title: "Ship it", message: "Ship the reviewed patch.",
-      } });
-      expect(result.result.isError).toBeFalsy();
-      expect(lastThreadBody).toMatchObject({
-        toBotId: "bot-helper", title: "Ship it", message: "Ship the reviewed patch.", oneWay: true,
-      });
-      expect(result.result.content[0].text).toContain("nothing there will resume you");
-    } finally {
-      threadResponse = previous;
-    }
+  it("forwards the contract's fields: reason, thread, reply, consult and done_when", async () => {
+    const res = await callTool("coordinate_bots", {
+      bot_ids: ["bot-helper"], message: "Is the export idempotent?", reason: "need to know before shipping",
+      thread: "new", reply: "resume", consult: true, done_when: "a yes or no with the line that proves it",
+    });
+    expect(res.result.isError).toBeFalsy();
+    expect(lastCoordinateBody).toEqual({
+      botIds: ["bot-helper"], message: "Is the export idempotent?", reason: "need to know before shipping",
+      thread: "new", reply: "resume", consult: true, done_when: "a yes or no with the line that proves it",
+    });
+    await callTool("coordinate_bots", { bot_ids: ["bot-helper"], message: "notice", reply: "none", doneWhen: "  ", reason: " " });
+    expect(lastCoordinateBody).toEqual({ botIds: ["bot-helper"], message: "notice", reply: "none" });
   });
 
-  it("reports a cross-bot send that is waiting for approval", async () => {
-    const previous = threadResponse;
-    threadResponse = {
-      threadId: "thread-sent", title: "Ship it", botId: "bot-helper", botName: "Helper",
-      self: false, state: "pending", approvalRequired: true,
-    };
-    try {
-      const result = await roomRpc("tools/call", { name: "send_to_bot", arguments: {
-        bot_id: "bot-helper", title: "Ship it", message: "Ship the reviewed patch.",
-      } });
-      expect(result.result.isError).toBeFalsy();
-      expect(result.result.content[0].text).toContain("pending approval");
-      expect(result.result.content[0].text).not.toContain("Ownership moved");
-    } finally {
-      threadResponse = previous;
+  it("refuses a thread, reply or consult value outside the contract before contacting the server", async () => {
+    for (const args of [
+      { bot_ids: ["bot-helper"], message: "m", thread: "fresh" },
+      { bot_ids: ["bot-helper"], message: "m", reply: "poll" },
+      { bot_ids: ["bot-helper"], message: "m", consult: "yes" },
+      { bot_ids: ["bot-helper"], message: "m", done_when: ["x"] },
+    ]) {
+      lastCoordinateBody = null;
+      const res = await callTool("coordinate_bots", args);
+      expect(res.result.isError, JSON.stringify(args)).toBe(true);
+      expect(res.result.content[0].text).toContain('thread ("standing" or "new"), reply ("resume" or "none"), consult (true or false) and done_when are optional');
+      expect(lastCoordinateBody).toBeNull();
     }
-  });
-
-  it("refuses send_to_bot to self without contacting the server", async () => {
-    lastThreadBody = null;
-    const result = await roomRpc("tools/call", { name: "send_to_bot", arguments: {
-      bot_id: "bot-asker", title: "Separate work", message: "Do it.",
-    } });
-    expect(result.result.isError).toBe(true);
-    expect(result.result.content[0].text).toContain("cross-bot only");
-    expect(lastThreadBody).toBeNull();
   });
 
   it("keeps the documented snake_case key when both spellings arrive", async () => {
-    const res = await roomRpc("tools/call", { name: "coordinate_bots", arguments: {
+    const res = await callTool("coordinate_bots", {
       bot_ids: ["bot-helper"], botIds: ["bot-other"], group_id: "room-right", groupId: "room-wrong",
-      message: "m", request_key: "k-2", requestKey: "wrong",
-    } });
+      message: "m", request_key: "from an older tool list", label: "from an older tool list",
+    });
     expect(res.result.isError).toBeFalsy();
     expect(lastCoordinateBody).toMatchObject({
-      botIds: ["bot-helper"], groupId: "room-right", requestKey: "k-2",
+      botIds: ["bot-helper"], groupId: "room-right",
     });
     expect(lastCoordinateBody.botIds).not.toContain("bot-other");
+    expect(lastCoordinateBody).not.toHaveProperty("requestKey");
+    expect(lastCoordinateBody).not.toHaveProperty("label");
   });
 
   it("names the expected snake_case fields when arguments are unusable", async () => {
     lastCoordinateBody = null;
-    const res = await roomRpc("tools/call", { name: "coordinate_bots", arguments: {
+    const res = await callTool("coordinate_bots", {
       botIds: "bot-helper", message: "ids is not an array",
-    } });
+    });
     expect(res.result.isError).toBe(true);
     const text = res.result.content[0].text;
-    for (const field of ["bot_ids", "message", "request_key", "group_id", "rework", "label"]) {
+    for (const field of ["bot_ids", "message", "group_id", "reason", "rework", "thread", "reply", "consult", "done_when"]) {
       expect(text).toContain(field);
     }
     expect(text).toContain("botIds");
     expect(text).toContain("message");
     expect(lastCoordinateBody).toBeNull();
+  });
+});
+
+// The tool bridge (agents-bridge.ts): a short hot list plus find_tool and
+// use_tool in place of the whole catalog. The tool list is fixed when the
+// proxy starts, so each profile under test is its own child, as above; all
+// of them talk to the same scripted harness, and the main child (a Chief
+// with the same switches and no bridge) is what a bridged call is compared
+// against.
+describe("tool bridge", () => {
+  type Rpc = (method: string, params?: unknown) => Promise<any>;
+  const started: ChildProcess[] = [];
+  function startProxy(env: Record<string, string>): Rpc {
+    const proxy = spawn(process.execPath, [PROXY], {
+      env: {
+        ...childEnv(), TZ: "Asia/Kolkata", OMB_HARNESS_URL: `http://127.0.0.1:${stubPort}`, OMB_BOT_ID: "bot-asker",
+        OMB_THREAD_ID: "thread-asker-routine", OMB_COMMS_TOKEN: TOKEN, OMB_TURN_DEPTH: "0", ...env,
+      },
+      stdio: ["pipe", "pipe", "inherit"],
+    });
+    started.push(proxy);
+    const waiting = new Map<number, (message: any) => void>();
+    let nextRequest = 1;
+    let buffer = "";
+    proxy.stdout!.on("data", (chunk) => {
+      buffer += chunk;
+      let newline;
+      while ((newline = buffer.indexOf("\n")) !== -1) {
+        const line = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        if (!line.trim()) continue;
+        const message = JSON.parse(line);
+        waiting.get(message.id)?.(message);
+        waiting.delete(message.id);
+      }
+    });
+    return (method, params) => new Promise((resolve, reject) => {
+      const id = nextRequest++;
+      waiting.set(id, resolve);
+      proxy.stdin!.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+      setTimeout(() => { if (waiting.delete(id)) reject(new Error(`${method} timed out`)); }, 10_000).unref?.();
+    });
+  }
+
+  /** The main child's switches: a Chief with skills and shared computers. */
+  const CHIEF = { OMB_SKILL_AUTHORING_ENABLED: "1", OMB_SHARED_COMPUTERS_ENABLED: "1", OMB_CHIEF_OF_STAFF: "1" };
+  const CHIEF_ONLY = ["create_bot", "list_team_setup", "propose_team_setup", "propose_bot_deletion", "create_room", "manage_room", "retry_thread"];
+  const HOT = ["tool_result_read", "list_room_targets", "coordinate_bots", "list_bots", "list_rooms", "select_computer", "attach_file", "post_to_room", "request_credential", "request_sign_in", "fill_login", "memory_update"];
+  let chief: Rpc;
+  let plain: Rpc;
+  let off: Rpc;
+  const find = (proxy: Rpc, query: unknown) => proxy("tools/call", { name: "find_tool", arguments: { query } });
+  const use = (proxy: Rpc, name: string, args?: unknown) =>
+    proxy("tools/call", { name: "use_tool", arguments: { name, ...(args === undefined ? {} : { arguments: args }) } });
+  const matchesOf = (response: any): Array<{ name: string; description: string; inputSchema: unknown }> => JSON.parse(response.result.content[0].text).matches;
+  const listed = async (proxy: Rpc): Promise<any[]> => (await proxy("tools/list")).result.tools;
+  /** A bridged call that was refused: a failed tool call the model reads,
+   * never a protocol error, and its words. */
+  const refusalOf = (response: any): string => {
+    expect(response.error).toBeUndefined();
+    expect(response.result.isError).toBe(true);
+    return response.result.content[0].text;
+  };
+
+  beforeAll(async () => {
+    chief = startProxy({ ...CHIEF, OMB_AGENTS_TOOL_BRIDGE: "1" });
+    // not a Chief, nothing optional: the defaults, bridged
+    plain = startProxy({ OMB_AGENTS_TOOL_BRIDGE: "1" });
+    off = startProxy({ ...CHIEF, OMB_AGENTS_TOOL_BRIDGE: "0" });
+    for (const proxy of [chief, plain, off]) {
+      expect((await proxy("initialize", { protocolVersion: "2024-11-05" })).result.serverInfo.name).toBe("openmausbot-agents");
+    }
+  });
+  afterAll(async () => { for (const proxy of started) await waitForExit(proxy, { signal: "SIGTERM" }); });
+
+  it("changes nothing while the switch is off or absent: the same list to the byte, and no bridge tools", async () => {
+    const unbridged = await rpc("tools/list");
+    expect(JSON.stringify((await off("tools/list")).result)).toBe(JSON.stringify(unbridged.result));
+    expect(unbridged.result.tools.map((tool: any) => tool.name)).not.toEqual(expect.arrayContaining(["find_tool"]));
+    for (const proxy of [off, rpc]) {
+      for (const name of ["find_tool", "use_tool"]) {
+        const refused = await proxy("tools/call", { name, arguments: { query: "routines", name: "list_routines" } });
+        expect(refused.error).toEqual({ code: -32602, message: `Unknown tool: ${name}` });
+      }
+    }
+  });
+
+  it("lists the hot tools as they were, then find_tool and use_tool", async () => {
+    const unbridged = new Map((await listed(rpc)).map((tool) => [tool.name, tool]));
+    for (const proxy of [chief, plain]) {
+      const tools = await listed(proxy);
+      expect(tools.map((tool) => tool.name)).toEqual([...HOT, "find_tool", "use_tool"]);
+      // unchanged schemas: each hot tool is what the unbridged turn lists
+      for (const tool of tools.slice(0, HOT.length)) expect(JSON.stringify(tool), tool.name).toBe(JSON.stringify(unbridged.get(tool.name)));
+    }
+    // A role changes only what sits behind use_tool, and what find_tool says exists.
+    const describes = async (proxy: Rpc) => (await listed(proxy)).find((tool) => tool.name === "find_tool").description as string;
+    for (const name of CHIEF_ONLY) {
+      expect(await describes(chief), name).toContain(name);
+      expect(await describes(plain), name).not.toContain(name);
+    }
+    expect(await describes(chief)).toContain("propose_routine");
+    expect(await describes(plain)).toContain("propose_routine");
+    // find_tool is a read and carries the marks the catalog's reads do; use_tool claims nothing
+    const [findTool, useTool] = (await listed(chief)).slice(-2);
+    expect(findTool.annotations).toEqual(unbridged.get("list_routines").annotations);
+    expect(findTool.annotations).toMatchObject({ readOnlyHint: true });
+    expect(useTool.annotations).toBeUndefined();
+  });
+
+  it("publishes flat schemas for the two bridge tools", async () => {
+    const tools = new Map((await listed(chief)).map((tool) => [tool.name, tool]));
+    for (const name of ["find_tool", "use_tool"]) {
+      const schema = tools.get(name).inputSchema;
+      expect(JSON.stringify(schema)).not.toMatch(/"(oneOf|anyOf|allOf|const|format)":/);
+      expect(schema.type).toBe("object");
+      expect(schema).not.toHaveProperty("anyOf");
+      expect(schema).not.toHaveProperty("oneOf");
+    }
+    expect(tools.get("find_tool").inputSchema.required).toEqual(["query"]);
+    expect(tools.get("use_tool").inputSchema.required).toEqual(["name"]);
+    // a plain object: the hidden tool's own schema is what checks it
+    expect(tools.get("use_tool").inputSchema.properties.arguments).toEqual({ type: "object", additionalProperties: true, description: expect.any(String) });
+  });
+
+  it("find_tool finds a hidden tool from a natural request, with the description and schema the unbridged turn lists", async () => {
+    const unbridged = new Map((await listed(rpc)).map((tool) => [tool.name, tool]));
+    const matches = matchesOf(await find(chief, "schedule a recurring task every morning"));
+    expect(matches.length).toBeLessThanOrEqual(3);
+    const { name, description, inputSchema } = unbridged.get("propose_routine");
+    expect(matches[0]).toEqual({ name, description, inputSchema });
+    expect(matchesOf(await find(chief, "create a new specialist bot"))[0]!.name).toBe("create_bot");
+    // a search that could not be made is a failed call, told how to search
+    expect(refusalOf(await find(chief, "   "))).toContain('find_tool needs { "query": ');
+  });
+
+  it("find_tool never returns a tool outside this turn's profile", async () => {
+    const profile = new Set((await listed(off)).map((tool) => tool.name).filter((name) => !CHIEF_ONLY.includes(name) && !["skills_list", "skill_manage", "list_shared_computers", "shared_computer"].includes(name)));
+    for (const query of ["create a new specialist bot", "delete a teammate", "set up the team", "save a reusable skill", "use the desktop the user shared", ...CHIEF_ONLY, "skill_manage", "shared_computer"]) {
+      const matches = matchesOf(await find(plain, query));
+      for (const match of matches) {
+        expect(profile.has(match.name), `${query} → ${match.name}`).toBe(true);
+        expect(HOT.includes(match.name), `${query} → ${match.name}`).toBe(false);
+      }
+    }
+  });
+
+  it("use_tool runs a hidden tool end to end, with the request and the result a direct call gives", async () => {
+    const routine = { name: "Morning brief", instructions: "Summarize today's priorities.", schedule: { type: "weekly", time: "09:00", weekdays: ["monday", "friday"] }, timeout_minutes: 15 };
+    // found first, as a bot would, from how a person would ask
+    expect(matchesOf(await find(chief, "schedule a recurring task every morning"))[0]!.name).toBe("propose_routine");
+    lastRoutineRequestBody = null;
+    const direct = await callTool("propose_routine", routine);
+    const directBody = lastRoutineRequestBody;
+    lastRoutineRequestBody = null;
+    lastAuth = undefined;
+    const bridged = await use(chief, "propose_routine", routine);
+    // the same capability, the same request, the same answer
+    expect(lastAuth).toBe(`Bearer ${TOKEN}`);
+    expect(lastRoutineRequestBody).toEqual(directBody);
+    expect(lastRoutineRequestBody).toMatchObject({ fromBotId: "bot-asker", fromThreadId: "thread-asker-routine", action: "create", routine: { name: "Morning brief", timeoutMinutes: 15 } });
+    expect(bridged.result).toEqual(direct.result);
+    expect(bridged.result.content[0].text).toContain("confirmation card");
+    // a tool that takes nothing, called with no arguments at all
+    lastRoutineQuery = "";
+    const routines = await use(chief, "list_routines");
+    expect(routines.result).toEqual((await callTool("list_routines", {})).result);
+    expect(new URL(lastRoutineQuery, "http://localhost").searchParams.get("fromBotId")).toBe("bot-asker");
+  });
+
+  it("use_tool refuses a name outside the profile in the words a direct call to it is refused with, as a failed call the model can read", async () => {
+    for (const name of ["made_up", "skill_manage", "shared_computer", "send_voice_note", "find_tool", "use_tool"]) {
+      // find_tool and use_tool are this proxy's own, so only the bridged form is unknown
+      if (name !== "find_tool" && name !== "use_tool") {
+        const direct = await plain("tools/call", { name, arguments: {} });
+        expect(direct.error, name).toEqual({ code: -32602, message: `Unknown tool: ${name}` });
+        expect(refusalOf(await use(plain, name, {})), name).toBe(direct.error.message);
+      }
+      expect(refusalOf(await use(plain, name, {})), name).toBe(`Unknown tool: ${name}`);
+    }
+  });
+
+  it("refuses a Chief-only tool to a bot that is not a Chief without reaching the harness, and hands a Chief-only parameter to the harness to refuse", async () => {
+    lastCreateBody = null;
+    lastCreateRoomBody = null;
+    expect(refusalOf(await use(plain, "create_bot", { name: "Scout", role: "Ops", instructions: "Work." }))).toBe("Unknown tool: create_bot");
+    expect(refusalOf(await use(plain, "create_room", { name: "Ops", member_bot_ids: ["bot-helper"] }))).toBe("Unknown tool: create_room");
+    expect(lastCreateBody).toBeNull();
+    expect(lastCreateRoomBody).toBeNull();
+    // A parameter only a Chief has is the harness's to refuse (index.ts
+    // chiefPeerTargetRule), on a bridged call exactly as on a direct one: the
+    // proxy hands both on with the same request.
+    const other = { title: "Lead", reason: "asked", for_bot_id: "bot-helper" };
+    lastProfileRequestBody = null;
+    const direct = await plain("tools/call", { name: "propose_profile", arguments: other });
+    const directBody = lastProfileRequestBody;
+    lastProfileRequestBody = null;
+    const bridged = await use(plain, "propose_profile", other);
+    expect(lastProfileRequestBody).toEqual(directBody);
+    expect(lastProfileRequestBody).toMatchObject({ fromBotId: "bot-asker", forBotId: "bot-helper" });
+    expect(bridged.result).toEqual(direct.result);
+    // A Chief's own turn reaches them through the bridge.
+    const mine = await use(chief, "create_bot", { name: "Scout", role: "Ops", instructions: "Work." });
+    expect(mine.result.isError).toBeFalsy();
+    expect(lastCreateBody).toMatchObject({ name: "Scout", role: "Ops" });
+  });
+
+  it("use_tool is neither stricter nor looser than a direct call: the tool reads its own arguments", async () => {
+    // What a schema would refuse and the tool takes on purpose
+    // (normalizeScheduleInput): a schedule sent as text, "Daily", short
+    // weekday names. Bridged, it makes the request a direct call makes.
+    const lenient = { name: "Brief", instructions: "Summarize the queue.", schedule: JSON.stringify({ type: "Weekly", time: "09:00", weekdays: ["mon", "fri"] }) };
+    lastRoutineRequestBody = null;
+    const direct = await callTool("propose_routine", lenient);
+    const directBody = lastRoutineRequestBody;
+    expect(direct.result.isError).toBeFalsy();
+    lastRoutineRequestBody = null;
+    const bridged = await use(chief, "propose_routine", lenient);
+    expect(lastRoutineRequestBody).toEqual(directBody);
+    expect(lastRoutineRequestBody).toMatchObject({ action: "create", routine: { name: "Brief" } });
+    expect(bridged.result).toEqual(direct.result);
+    // And what the tool itself refuses, it refuses in its own words either way.
+    for (const [name, args] of [
+      ["propose_routine", { name: "Brief", instructions: "Summarize.", schedule: { type: "hourly" } }],
+      ["start_thread", { title: "", message: "x" }],
+      ["post_to_room", {}],
+    ] as const) {
+      const refused = await callTool(name, args);
+      expect(refused.result.isError, name).toBe(true);
+      if (name !== "post_to_room") expect((await use(chief, name, args)).result, name).toEqual(refused.result);
+    }
+    // Only the call's own shape is the bridge's to refuse: a name, and arguments that are an object.
+    for (const shapeless of [{ arguments: {} }, { name: "list_routines", arguments: "{}" }, { name: "list_routines", arguments: [1] }]) {
+      expect(refusalOf(await chief("tools/call", { name: "use_tool", arguments: shapeless })), JSON.stringify(shapeless)).toContain('use_tool needs { "name": ');
+    }
+  });
+
+  it("use_tool runs a listed tool too, through the same path", async () => {
+    lastMemoryBody = null;
+    const remembered = await use(chief, "memory_update", { action: "append", text: "The deploy script lives in scripts/." });
+    expect(remembered.result.isError).toBeFalsy();
+    expect(lastMemoryBody).toEqual({ fromBotId: "bot-asker", fromThreadId: "thread-asker-routine", action: "append", text: "The deploy script lives in scripts/." });
+    lastCoordinateBody = null;
+    const handed = await use(chief, "coordinate_bots", { bot_ids: ["bot-helper"], message: "please review the patch" });
+    expect(handed.result.isError).toBeFalsy();
+    expect(lastCoordinateBody).toMatchObject({ botIds: ["bot-helper"], message: "please review the patch" });
+  });
+
+  it("will not run an outward action under another name: post_to_room is called directly", async () => {
+    // The restart policy reads a turn's tool names to know it already posted.
+    const posts = postCalls;
+    const text = refusalOf(await use(chief, "post_to_room", { group_id: "room-launch", message: "Shipped." }));
+    expect(text).toContain("post_to_room is in your tool list: call it directly");
+    expect(text).toContain("Nothing was run");
+    expect(postCalls).toBe(posts);
+    const direct = await chief("tools/call", { name: "post_to_room", arguments: { group_id: "room-launch", message: "Shipped." } });
+    expect(direct.result.isError).toBeFalsy();
+    expect(postCalls).toBe(posts + 1);
+  });
+
+  it("leaves every limit with the harness: its refusal of a bridged call is the refusal a direct call gets", async () => {
+    // The proxy counts nothing (a warm engine keeps it across turns), so the
+    // per-turn limit on opened threads is the harness's to enforce and to
+    // word, whichever way the call came.
+    const original = threadResponse;
+    threadResponse = { error: "You have already opened 5 threads this turn, which is the limit. Do not retry." };
+    try {
+      const calls = threadCalls;
+      const job = { title: "QA: PR #9", message: "Review pull request 9." };
+      const direct = await callTool("start_thread", job);
+      const directBody = lastThreadBody;
+      const bridged = await use(chief, "start_thread", job);
+      expect(threadCalls).toBe(calls + 2);
+      expect(lastThreadBody).toEqual(directBody);
+      expect(refusalOf(bridged)).toContain("You have already opened 5 threads this turn");
+      expect(bridged.result).toEqual(direct.result);
+    } finally { threadResponse = original; }
+  });
+
+  it("bounds a large result from use_tool as a direct call's is, and keeps a refusal an error", async () => {
+    const original = agentsResponse;
+    agentsResponse = { bots: Array.from({ length: 80 }, (_, i) => ({ id: `bot-${i}`, name: `Fixture-${i}`, title: "x".repeat(400) })) };
+    try {
+      const result = await use(chief, "list_bots", {});
+      const preview = result.result.content[0].text;
+      expect(result.result.isError).toBeFalsy();
+      expect(preview.length).toBeLessThan(17_000);
+      const id = /id "(r-[0-9a-f-]{36})"/.exec(preview)![1];
+      // the notice names tool_result_read, which stays in the list
+      const page = await chief("tools/call", { name: "tool_result_read", arguments: { id, offset: 16_000 } });
+      expect(page.result.isError).toBeFalsy();
+      expect(page.result.content[0].text).toContain("Fixture-");
+    } finally { agentsResponse = original; }
+    computerStatus = 409;
+    computerResponse = { error: `Unavailable: ${"x".repeat(30_000)}` };
+    const refused = await use(chief, "select_computer", {});
+    expect(refused.result.isError).toBe(true);
+    expect(refused.result.content[0].text.length).toBeLessThan(17_000);
+    expect(refused.result.content[0].text).toContain("Unavailable:");
+  });
+
+  it("still answers a hidden tool called by its own name: the profile, not the list, is what a turn may call", async () => {
+    lastRoutineQuery = "";
+    const direct = await chief("tools/call", { name: "list_routines", arguments: {} });
+    expect(direct.result.isError).toBeFalsy();
+    expect(lastRoutineQuery).toContain("fromBotId=bot-asker");
+    // and a name outside the profile called directly is the protocol error it always was
+    expect((await plain("tools/call", { name: "create_bot", arguments: {} })).error).toEqual({ code: -32602, message: "Unknown tool: create_bot" });
   });
 });

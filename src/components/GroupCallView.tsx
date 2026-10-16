@@ -1,8 +1,5 @@
-// Conference call mode — one microphone, several room members.
-//
-// Capture stays half-duplex for the same reason as one-to-one calls: the
-// native recognizer has no acoustic echo cancellation. Bot replies are
-// explicitly queued so a fast second member never cuts off the first.
+// Half-duplex like CallView: the native recognizer has no echo cancellation. Replies are queued so a fast second member
+// never cuts off the first.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, PhoneOff, X } from "lucide-react";
 
@@ -17,6 +14,7 @@ import { useStore, type Bot, type Group, type Message } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { BotAvatar } from "./Avatar";
 import { CallTargetButton } from "./CallView";
+import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { isRoutineApproval, isSkillApproval, pendingApprovals, spokenApprovalPrompt } from "./PendingApproval";
 
 const YES = /^(yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|allow|approve|approved|fine|please do)\b/i;
@@ -26,7 +24,9 @@ const CALL_ENDPOINT_MS = 850;
 type Phase = "listening" | "sending" | "working" | "speaking";
 
 export function GroupCallButton({ group, members }: { group: Group; members: Bot[] }) {
+  const { capabilities, ready } = useDesktopCapabilities();
   if (group.dm) return null;
+  if (ready && !capabilities.dictation.available) return null;
   return (
     <CallTargetButton
       targetId={group.id}
@@ -234,8 +234,8 @@ function GroupCall({ group, members }: { group: Group; members: Bot[] }) {
             );
             return;
           }
-          // Hold this approval in-flight until its server patch arrives so a
-          // slow response cannot reopen the microphone and submit it twice.
+          // In flight until its server patch arrives, so a slow response cannot reopen the microphone and submit it
+          // twice.
           openApproval.submitted = true;
           allowBargeIn.current = false;
           move("working");
@@ -326,7 +326,6 @@ function GroupCall({ group, members }: { group: Group; members: Bot[] }) {
       offEnd();
       void window.ogb?.speechStop();
     };
-    // Live busy/card changes are handled below without restarting native capture.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dispatch, enqueueSpeech, group.id, group.threadId, hush, listen, move, scheduleListen]);
 
@@ -344,8 +343,7 @@ function GroupCall({ group, members }: { group: Group; members: Bot[] }) {
       scheduleListen(true);
       return;
     }
-    // Keep the voice queue and microphone closed until this exact decision
-    // is settled or its request reports an error.
+    // Voice queue and microphone stay closed until this exact decision settles or its request errors.
     if (askedApproval.current?.submitted) return;
 
     if (approval && askedApproval.current?.requestId !== approval.requestId) {

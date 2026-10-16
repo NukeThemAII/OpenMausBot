@@ -27,7 +27,6 @@ const store = vi.hoisted(() => ({ state: {} as Record<string, unknown>, api: vi.
 vi.mock("@/state/store", () => ({
   api: store.api,
   useStore: () => ({ state: store.state, dispatch: vi.fn() }),
-  useStreaming: () => ({ streaming: {} }),
 }));
 vi.mock("@/lib/analytics", () => ({ emailGateDone: () => false }));
 vi.mock("./Spotlight", () => ({ Spotlight: () => null }));
@@ -55,7 +54,6 @@ beforeEach(() => {
     config: { onboarding: { ...record, hintsSeen: withTourFinished(record) } },
     welcomeOpen: false,
     selectedId: "bot-1",
-    // an approval card is on screen: the first spotlight it explains
     bots: [{ id: "bot-1", threadId: "t-1", busy: false, messages: [{ kind: "options", card: { requestId: "r", tool: "Bash", answered: false } }] }],
   };
 });
@@ -73,14 +71,12 @@ describe("first-conversation spotlights", () => {
     for (const effect of fixture.effects) effect();
     expect(render(false)?.type).toBe(Spotlight);
 
-    // Allow once: the card is answered and the reply streams in under it
     const bots = store.state.bots as Array<{ busy: boolean; messages: Array<{ card: { answered: string | false } }> }>;
     bots[0].busy = true;
     bots[0].messages[0].card.answered = "allow";
     expect(render(false)).toBeNull();
     for (const effect of fixture.effects) effect();
     expect(render(false)).toBeNull();
-    // counted as seen, so the next approval does not bring it back
     expect(store.api).toHaveBeenCalledWith("/api/config", expect.objectContaining({ method: "PUT", body: expect.stringContaining("spot.approval") }));
   });
 

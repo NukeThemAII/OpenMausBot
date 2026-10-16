@@ -4,20 +4,15 @@ import { fileURLToPath } from "node:url";
 import { compile } from "tailwindcss";
 import { describe, expect, it } from "vitest";
 
-// Tailwind v4 wraps every `hover:`/`group-hover:` rule in
-// `@media (hover: hover)`, so on a phone or tablet a control that is
-// `opacity-0 group-hover:opacity-100` never becomes visible: it is either
-// invisible or only reachable by a lucky tap. Every hover-revealed action
-// therefore needs a `touch:` counterpart (the custom variant in styles.css)
-// and a keyboard-focus reveal.
+// Tailwind v4 wraps every hover:/group-hover: rule in @media (hover: hover), so on a touch screen a hover-revealed
+// control never shows: each needs a touch: counterpart and a keyboard-focus reveal.
 
 const here = dirname(fileURLToPath(import.meta.url));
 const srcRoot = join(here, "..");
 const stylesPath = join(srcRoot, "styles.css");
 const styles = readFileSync(stylesPath, "utf8");
 
-// Hover-only details that are not actions. Keyed by file and a snippet of the
-// class string so a stale entry fails below instead of silently widening.
+// Keyed by file and a class-string snippet, so a stale entry fails instead of silently widening.
 const notActions: Array<{ file: string; snippet: string; why: string }> = [
   { file: "components/ChatView.tsx", snippet: "self-end pb-1 text-[11px] tabular-nums", why: "message timestamp, informational" },
   { file: "components/GroupView.tsx", snippet: "self-end pb-1 text-[11px] tabular-nums", why: "message timestamp, informational" },
@@ -56,7 +51,6 @@ function classLiterals(): Literal[] {
   return found;
 }
 
-// The utilities that hide or make room for a hover-revealed control.
 const revealUtility = /group-hover(?:\/[\w-]+)?:(opacity-\d+|pointer-events-auto|pr-\[[^\]]+\])/g;
 
 function missingTouchCounterparts(literal: Literal): string[] {
@@ -99,18 +93,14 @@ describe("hover-only actions on touch screens", () => {
       },
     });
     const css = compiler.build(["touch:opacity-100", "group-hover:opacity-100"]);
-    // one media query holding both conditions; a comma in the shorthand
-    // variant form would be read as a selector list and break the rule
+    // One media query holding both conditions: a comma in the shorthand variant would be read as a selector list.
     expect(css).toMatch(/@media \(hover: none\), \(pointer: coarse\) \{\s*\.touch\\:opacity-100 \{\s*opacity: 100%;/);
     expect(css).not.toMatch(/\.touch\\:opacity-\d+ \(pointer/);
-    // desktop keeps its hover-only rule: nothing about the mouse path changes
     expect(css).toMatch(/@media \(hover: hover\) \{\s*\.group-hover\\:opacity-100:is\(:where\(\.group\):hover \*\)/);
   });
 
   it("finds the hover-revealed controls it guards", () => {
     const literals = classLiterals().filter((literal) => !isNotAction(literal));
-    // copy/raw/speak/pin/reply/actions in chat and group chat, the composer
-    // chip remove, thread list buttons, and sidebar row buttons
     expect(literals.length).toBeGreaterThanOrEqual(19);
   });
 

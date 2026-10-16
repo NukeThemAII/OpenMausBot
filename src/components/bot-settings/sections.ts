@@ -1,9 +1,3 @@
-// The bot settings dialog's section rail — one entry per BotSettingsSection,
-// in the fixed order the rail renders them. Search filters against label
-// plus keywords, the same convention as the app SettingsModal's SECTIONS.
-// "slack" is listed here but shown only when the server offers a link to the
-// organisation's Admin (BotSettingsDialog filters it out otherwise), and
-// "visibility" only to an admin in a browser (never in the desktop app).
 import {
   BookOpen,
   Brain,
@@ -25,8 +19,6 @@ import {
 import type { BotSettingsSection } from "@/state/store";
 import type { LocaleKey } from "@/locales";
 
-/** `labelKey`, when present, is the translated label (read at render time);
- * `label` stays the English fallback and search text. */
 export const BOT_SECTIONS: Array<{
   id: BotSettingsSection;
   label: string;

@@ -1,8 +1,3 @@
-// The SOUL.md editor: the bot's standing instructions, byte-counted
-// against the server cap, with a banner when the file on disk was edited
-// outside the app. Edits go to the record through the normal bot patch;
-// the server writes the mirror. A draft that is over the cap stays local
-// and is never sent, so the counter is the only thing that turns red.
 import { useEffect, useState } from "react";
 
 import { BOT_PROFILE_LIMITS } from "../../shared/bot-profile";
@@ -21,9 +16,6 @@ export function SoulField({
 }: {
   bot: Bot;
   onPatch: (patch: { soul?: string; description?: string }) => void;
-  /** The Simple bot panel's plain "Instructions" box: same value, save path
-   * and drift banner, without the file name, mono font and byte counter
-   * (the counter returns only when the text is over the cap). */
   simple?: { label: string; placeholder: string };
 }) {
   const { dispatch, flushBotPatches } = useStore();
@@ -33,18 +25,11 @@ export function SoulField({
   const [info, setInfo] = useState<SoulRead | null>(null);
   const [resolving, setResolving] = useState(false);
 
-  // A new bot, or a server-side change (drift resolved, another client),
-  // replaces the draft. While the user types, the draft leads.
   useEffect(() => {
     setDraft(bot.soul ?? "");
   }, [bot.id, bot.soul]);
 
-  // Mirror path, drift state, and file text don't depend on the soul text
-  // itself, so this must not key off bot.soul: onPatch updates it
-  // optimistically on every keystroke, which would refetch on every
-  // keystroke. bot.soulDrift changes whenever the server's drift state
-  // changes, and resolve() below already calls refresh() explicitly after
-  // Apply/Discard, so nothing is lost by dropping bot.soul here.
+  // Must not key off bot.soul: onPatch updates it on every keystroke, which would refetch per keystroke.
   const refresh = () => {
     return flushBotPatches(bot.id)
       .then(() => api(`/api/bots/${bot.id}/soul`))

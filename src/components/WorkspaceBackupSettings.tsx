@@ -4,12 +4,36 @@ import type { WorkspaceBackupSummary } from "../../shared/workspace-backup";
 import { api } from "@/state/store";
 import { t } from "@/lib/i18n";
 import { applyWorkspaceClientState, collectWorkspaceClientState, WORKSPACE_RESTORE_MARKER } from "@/lib/workspace-backup-client";
+import { CloudMoveImport } from "./CloudMove";
 import { Card } from "./SettingsPrimitives";
 
 type BackupStatus = { busy: boolean; pendingRestore?: boolean; lastRestoreId?: string };
 const inputClass = "w-full rounded-lg border border-hairline/50 bg-inset px-3 py-2 text-[14px] text-ink disabled:opacity-50";
-const buttonClass = "inline-flex items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-[13px] font-medium text-accent-ink disabled:opacity-40";
+const buttonClass = "cursor-pointer inline-flex items-center justify-center gap-2 rounded-lg bg-accent px-3 py-2 text-[13px] font-medium text-accent-ink disabled:opacity-40";
 const validPassword = (value: string) => value.length >= 12 && value.length <= 1024;
+
+/** A renderer reload cannot apply a restore; the owning server must restart. */
+export function WorkspaceBackupRestartNotice({ onRetry }: { onRetry?: () => void } = {}) {
+  const [restarting, setRestarting] = useState(false);
+  const [error, setError] = useState(false);
+  const lock = useRef(false);
+  const relaunch = typeof window !== "undefined" && !window.ogb?.remoteClient?.active ? window.ogb?.relaunch : undefined;
+  const restart = async () => {
+    if (!relaunch || lock.current || restarting) return;
+    lock.current = true; setRestarting(true); setError(false);
+    try {
+      if (!await relaunch()) throw new Error("Restart unavailable");
+    } catch {
+      lock.current = false; setRestarting(false); setError(true);
+    }
+  };
+  return <div role="status" className="flex max-w-lg flex-col gap-4 text-[14px]">
+    <p>{t(relaunch ? "backup.restartDesktop" : "backup.restart")}</p>
+    {relaunch && <button type="button" className={`${buttonClass} self-start`} disabled={restarting} onClick={() => void restart()}>{restarting ? t("settings.updates.restartingShort") : t("backup.restartAction")}</button>}
+    {!relaunch && onRetry && <button type="button" className={`${buttonClass} self-start`} onClick={onRetry}>{t("connectors.action.retry")}</button>}
+    {error && <p role="alert" className="text-[13px] text-danger">{t("backup.restartFailed")}</p>}
+  </div>;
+}
 
 export function WorkspaceBackupSummaryView({ summary }: { summary: WorkspaceBackupSummary }) {
   return <div className="rounded-lg border border-hairline/50 bg-inset p-3">
@@ -74,8 +98,6 @@ export function WorkspaceBackupSettings() {
       method: "POST", body: JSON.stringify({ password: exportPassword, clientState: collectWorkspaceClientState() }),
     });
     if (alive.current) { setExportPassword(""); setConfirmPassword(""); }
-    // Native download streams large archives without buffering them in the
-    // renderer. Same-origin cookies/desktop headers preserve owner access.
     if (!alive.current) return;
     const url = `/api/workspace-backup/download/${encodeURIComponent(result.id)}`;
     setDownload({ url, filename: result.filename });
@@ -110,8 +132,8 @@ export function WorkspaceBackupSettings() {
 
   const restoreBackup = () => perform("restore", async () => {
     if (!preview || confirmation !== "REPLACE") return;
-    // This stage ID is also the restore ID. Persist it before the request so
-    // a lost response still lets this browser recover its own drafts at boot.
+    // The stage ID is the restore ID: persist it before the request so a lost response still lets this browser recover
+    // its drafts at boot.
     localStorage.setItem(WORKSPACE_RESTORE_MARKER, preview.id);
     try {
       await api("/api/workspace-backup/restore", {
@@ -127,36 +149,43 @@ export function WorkspaceBackupSettings() {
   });
 
   const disabled = busy !== null || !status || status.busy || Boolean(status.pendingRestore);
-  return <div className="flex flex-col gap-4">
-    <p className="text-[13px] leading-relaxed text-ink-secondary">{t("backup.scope")}</p>
-    <p className="text-[13px] leading-relaxed text-ink-secondary">{t("backup.excluded")}</p>
-    <p className="text-[13px] leading-relaxed text-ink-secondary">{t("backup.privacy")}</p>
-    {error && <p role="alert" className="break-words text-[13px] text-danger">{error}</p>}
-    {status?.pendingRestore ? <div role="status" className="rounded-xl border border-warning/40 bg-warning/10 p-4 text-[13px] text-ink">{t("backup.restart")}</div> : <>
-      {(!status || status.busy) && <div role="status" className="flex items-center gap-3 text-[13px] text-ink-secondary"><span>{status?.busy ? t("backup.serverBusy") : t("backup.checkStatus")}</span><button type="button" onClick={() => void refresh()} className="underline">{t("connectors.action.retry")}</button></div>}
-      <Card title={t("backup.export")} subtitle={t("backup.passwordHint")}>
-        <form className="flex flex-col gap-3" onSubmit={(event) => { event.preventDefault(); void exportBackup(); }}>
-          <label className="text-[13px] text-ink">{t("backup.exportPassword")}<input type="password" autoComplete="new-password" minLength={12} maxLength={1024} required disabled={disabled} value={exportPassword} onChange={(event) => setExportPassword(event.target.value)} className={`${inputClass} mt-1`} /></label>
-          <label className="text-[13px] text-ink">{t("backup.confirmPassword")}<input type="password" autoComplete="new-password" minLength={12} maxLength={1024} required disabled={disabled} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} className={`${inputClass} mt-1`} /></label>
-          <button type="submit" disabled={disabled || !validPassword(exportPassword) || exportPassword !== confirmPassword} className={buttonClass}>{busy === "export" ? <Loader2 aria-hidden="true" size={15} className="animate-spin" /> : <Download aria-hidden="true" size={15} />}{busy === "export" ? t("backup.exporting") : t("backup.export")}</button>
-          {download && <a href={download.url} download={download.filename} className="break-all text-[13px] text-accent-text underline">{t("backup.downloadAgain", { filename: download.filename })}</a>}
-        </form>
-      </Card>
-      <Card title={t("backup.import")} subtitle={t("backup.importHint")}>
-        <form className="flex flex-col gap-3" onSubmit={(event) => { event.preventDefault(); void previewBackup(); }}>
-          <label className="text-[13px] text-ink">{t("backup.file")}<input type="file" accept=".ombbackup" disabled={disabled} onChange={(event) => { setFile(event.target.files?.[0] ?? null); setUploadedId(null); setPreview(null); setConfirmation(""); setImportPassword(""); setError(null); }} className="mt-1 block w-full min-w-0 rounded-lg border border-hairline/50 bg-inset p-2 text-[13px] text-ink file:mr-3 file:rounded file:border-0 file:bg-control file:px-2 file:py-1 file:text-ink disabled:opacity-50" /></label>
-          {!preview && <><label className="text-[13px] text-ink">{t("backup.importPassword")}<input type="password" autoComplete="off" maxLength={1024} required disabled={disabled || !file} value={importPassword} onChange={(event) => setImportPassword(event.target.value)} className={`${inputClass} mt-1`} /></label><button type="submit" disabled={disabled || !file || !importPassword} className={buttonClass}>{busy === "preview" ? <Loader2 aria-hidden="true" size={15} className="animate-spin" /> : <Upload aria-hidden="true" size={15} />}{busy === "preview" ? t("backup.validating") : t("backup.validate")}</button></>}
-        </form>
-        {preview && <div className="mt-4 flex flex-col gap-3">
-          <WorkspaceBackupSummaryView summary={preview.summary} />
-          <p className="text-[13px] leading-relaxed text-danger">{t("backup.replaceWarning")}</p>
-          <p className="text-[13px] leading-relaxed text-danger">{t("backup.trustWarning")}</p>
-          <label className="text-[13px] text-ink">{t("backup.confirmReplace")}<input value={confirmation} autoComplete="off" spellCheck={false} disabled={disabled} onChange={(event) => setConfirmation(event.target.value)} className={`${inputClass} mt-1`} /></label>
-          <button type="button" disabled={disabled || confirmation !== "REPLACE"} onClick={() => void restoreBackup()} className="rounded-lg bg-danger px-3 py-2 text-[13px] font-medium text-danger-ink disabled:opacity-40">{busy === "restore" ? t("backup.restoring") : t("backup.replace")}</button>
-        </div>}
-      </Card>
-    </>}
-  </div>;
+  return <>
+    <section className="space-y-2 px-4">
+        <p className="text-[13px] leading-relaxed text-ink-secondary">{t("backup.scope")}</p>
+        <p className="text-[13px] leading-relaxed text-ink-secondary">{t("backup.excluded")}</p>
+        <p className="text-[13px] leading-relaxed text-ink-secondary">{t("backup.privacy")}</p>
+    </section>
+        <div className="flex flex-col gap-4">
+            {error && <p role="alert" className="break-words px-4 text-[13px] text-danger">{error}</p>}
+            {status?.pendingRestore ? <div className="rounded-xl border border-warning/40 bg-warning/10 p-4 text-ink"><WorkspaceBackupRestartNotice /></div> : <>
+            {(!status || status.busy) && <div role="status" className="flex items-center gap-3 px-4 text-[13px] text-ink-secondary"><span>{status?.busy ? t("backup.serverBusy") : t("backup.checkStatus")}</span><button type="button" onClick={() => void refresh()} className="cursor-pointer underline">{t("connectors.action.retry")}</button></div>}
+            <Card title={t("backup.export")} subtitle={t("backup.passwordHint")}>
+                <form className="flex flex-col gap-3" onSubmit={(event) => { event.preventDefault(); void exportBackup(); }}>
+                <label className="text-[13px] text-ink">{t("backup.exportPassword")}<input type="password" autoComplete="new-password" minLength={12} maxLength={1024} required disabled={disabled} value={exportPassword} onChange={(event) => setExportPassword(event.target.value)} className={`${inputClass} mt-1`} /></label>
+                <label className="text-[13px] text-ink">{t("backup.confirmPassword")}<input type="password" autoComplete="new-password" minLength={12} maxLength={1024} required disabled={disabled} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} className={`${inputClass} mt-1`} /></label>
+                <button type="submit" disabled={disabled || !validPassword(exportPassword) || exportPassword !== confirmPassword} className={buttonClass}>{busy === "export" ? <Loader2 aria-hidden="true" size={15} className="animate-spin" /> : <Download aria-hidden="true" size={15} />}{busy === "export" ? t("backup.exporting") : t("backup.export")}</button>
+                {download && <a href={download.url} download={download.filename} className="break-all text-[13px] text-accent-text underline">{t("backup.downloadAgain", { filename: download.filename })}</a>}
+                </form>
+            </Card>
+            <CloudMoveImport />
+            <Card title={t("backup.import")} subtitle={t("backup.importHint")}>
+                <form className="flex flex-col gap-3" onSubmit={(event) => { event.preventDefault(); void previewBackup(); }}>
+                <label className="text-[13px] text-ink">{t("backup.file")}<input type="file" accept=".ombbackup" disabled={disabled} onChange={(event) => { setFile(event.target.files?.[0] ?? null); setUploadedId(null); setPreview(null); setConfirmation(""); setImportPassword(""); setError(null); }} className="mt-1 block w-full min-w-0 rounded-lg border border-hairline/50 bg-inset p-2 text-[13px] text-ink file:mr-3 file:rounded file:border-0 file:bg-control file:px-2 file:py-1 file:text-ink disabled:opacity-50" /></label>
+                {!preview && <><label className="text-[13px] text-ink">{t("backup.importPassword")}<input type="password" autoComplete="off" maxLength={1024} required disabled={disabled || !file} value={importPassword} onChange={(event) => setImportPassword(event.target.value)} className={`${inputClass} mt-1`} /></label><button type="submit" disabled={disabled || !file || !importPassword} className={buttonClass}>{busy === "preview" ? <Loader2 aria-hidden="true" size={15} className="animate-spin" /> : <Upload aria-hidden="true" size={15} />}{busy === "preview" ? t("backup.validating") : t("backup.validate")}</button></>}
+                </form>
+                {preview && <div className="mt-4 flex flex-col gap-3">
+                <WorkspaceBackupSummaryView summary={preview.summary} />
+                <p className="text-[13px] leading-relaxed text-danger">{t("backup.replaceWarning")}</p>
+                <p className="text-[13px] leading-relaxed text-danger">{t("backup.trustWarning")}</p>
+                <label className="text-[13px] text-ink">{t("backup.confirmReplace")}<input value={confirmation} autoComplete="off" spellCheck={false} disabled={disabled} onChange={(event) => setConfirmation(event.target.value)} className={`${inputClass} mt-1`} /></label>
+                <button type="button" disabled={disabled || confirmation !== "REPLACE"} onClick={() => void restoreBackup()} className="cursor-pointer rounded-lg bg-danger px-3 py-2 text-[13px] font-medium text-danger-ink disabled:opacity-40">{busy === "restore" ? t("backup.restoring") : t("backup.replace")}</button>
+                </div>}
+            </Card>
+            </>
+            }
+        </div>
+    </>
+  ;
 }
 
 function pendingRestoreId(): string | null {
@@ -195,17 +224,16 @@ export function WorkspaceBackupRecovery({ children }: { children: ReactNode }) {
   const continueWithoutDrafts = () => {
     try {
       localStorage.removeItem(WORKSPACE_RESTORE_MARKER);
-      // Re-enter normal bootstrap so expired sessions can reach sign-in.
       window.location.reload();
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
   };
   return <main className="flex h-dvh flex-col items-center justify-center gap-4 bg-app p-6 text-ink">
-    <p className="max-w-lg text-[14px]">{restartRequired ? t("backup.restart") : t("backup.recovering")}</p>
+    {restartRequired ? <WorkspaceBackupRestartNotice onRetry={() => { setRestartRequired(false); setAttempt((value) => value + 1); }} /> : <p className="max-w-lg text-[14px]">{t("backup.recovering")}</p>}
     {error && <p role="alert" className="max-w-lg break-words text-[13px] text-danger">{error}</p>}
-    {(error || restartRequired) && <button type="button" className={buttonClass} onClick={() => { setRestartRequired(false); setAttempt((value) => value + 1); }}>{t("connectors.action.retry")}</button>}
+    {error && <button type="button" className={buttonClass} onClick={() => { setRestartRequired(false); setAttempt((value) => value + 1); }}>{t("connectors.action.retry")}</button>}
     {error && <>
       <p className="max-w-lg text-[13px] text-ink-secondary">{t("backup.skipDraftsHint")}</p>
-      <button type="button" className="rounded-lg border border-hairline/50 bg-control px-3 py-2 text-[13px] font-medium text-ink" onClick={continueWithoutDrafts}>{t("backup.skipDrafts")}</button>
+      <button type="button" className="cursor-pointer rounded-lg border border-hairline/50 bg-control px-3 py-2 text-[13px] font-medium text-ink" onClick={continueWithoutDrafts}>{t("backup.skipDrafts")}</button>
     </>}
   </main>;
 }

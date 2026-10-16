@@ -1,7 +1,3 @@
-// Boundary markers: a Chief-proposable group says its changes arrive as a
-// card the owner confirms; an owner-only group says it never arrives as a
-// proposal. Both hide when no other Chief covers the bot's section and in
-// the draft editor, and sections with nothing proposal-eligible carry none.
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -54,7 +50,6 @@ function makeDerived(): ReturnType<typeof import("./useBotSettingsDerived").useB
     trustedModesAvailable: false,
     canCoordinate: false,
     canUseConnectedApps: true,
-    canUseVps: false,
     connectedAppsConfigured: true,
     connectedAppsEnabled: true,
     connectorGrantState: "full",
@@ -158,7 +153,7 @@ describe("Edit Profile boundary markers in sections", () => {
       'Where this bot runs its shell and file tools.</div><div class="mt-1 text-[11.5px] leading-snug text-ink-secondary">Chief-proposable',
     );
     expect(markup).toContain(
-      'Browser is the built-in browser tab only; no desktop.</div><div class="mt-1 text-[11.5px] leading-snug text-ink-secondary">Owner-only',
+      'Where Scout works: Chooses for you</div><div class="mt-1 text-[11.5px] leading-snug text-ink-secondary">Owner-only',
     );
     expect(markup).toContain("Inbound triggers wired to this bot.");
   });

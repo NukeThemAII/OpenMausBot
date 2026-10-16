@@ -2,13 +2,10 @@ import { CURSOR_STATES, type CursorState } from "@/components/CursorAvatar";
 import { botShowsUnread } from "./bot-unread";
 import { lastNonReceipt } from "./receipts";
 
-/** The mascot's behaviour vocabulary — CursorAvatar's 39 states, under the
- * app's historical names. */
 export type MausState = CursorState;
 export const MAUS_STATES = CURSOR_STATES;
 
-/** CursorAvatar ships French group labels; the app shows these instead. The
- * memberships mirror its STATE_GROUPS exactly. */
+/** CursorAvatar ships French group labels; these mirror its STATE_GROUPS memberships exactly. */
 export const STATE_GROUPS = {
   Lifecycle: ["sleeping", "waking", "idle", "listening", "thinking", "searching", "working"],
   Reactions: [
@@ -92,12 +89,6 @@ export const MAUS_MOTIONS = [
 
 export type MausMotion = "none" | (typeof MAUS_MOTIONS)[number];
 
-/**
- * The face used to be ten hand-drawn SVGs; it is now the engine's 39 states.
- * Bots saved under the old vocabulary still carry one of these ten names, so
- * they are translated on read rather than migrated in place — a bot's stored
- * face should survive a downgrade too.
- */
 interface LegacyStates {
   [state: string]: MausState;
 }
@@ -117,37 +108,23 @@ const LEGACY_STATES: LegacyStates = {
 
 const KNOWN_STATES = new Set<string>(MAUS_STATES);
 
-/** Resolves any stored value — current, legacy or junk — to a real state. */
 export function normalizeState(value: string | null | undefined): MausState | null {
   if (!value) return null;
   if (KNOWN_STATES.has(value)) return value as MausState;
   return LEGACY_STATES[value] ?? null;
 }
 
-/**
- * The states worth offering in the appearance picker.
- *
- * The engine carries 39, but many are transient beats the app drives itself
- * (`sending`, `alerting`, `powering-down`) and make no sense as a bot's resting
- * face. More importantly, states share resting faces: `happy`, `excited` and
- * `playful` all rest on expression 2, and `curious`, `surprised` and `scared`
- * all rest on 3 — they differ in which faces they *drift* to, which a static
- * swatch cannot show. Offering them all gave 15 buttons showing 8 pictures.
- *
- * Across all 39 states there are only 11 distinct resting faces, so this is one
- * state per face, chosen for the clearest name. Every swatch looks different.
- */
 export const PICKABLE_STATES: MausState[] = [
-  "idle", // expression 0
-  "happy", // 2
-  "curious", // 3
-  "drowsy", // 4
-  "working", // 7
-  "thinking", // 8
-  "listening", // 10
-  "sleeping", // 13
-  "suspicious", // 14
-  "proud", // 15
+  "idle",
+  "happy",
+  "curious",
+  "drowsy",
+  "working",
+  "thinking",
+  "listening",
+  "sleeping",
+  "suspicious",
+  "proud",
 ];
 
 type MascotMessage = {
@@ -166,17 +143,10 @@ export type MascotBotProfile = {
   messages?: MascotMessage[];
 };
 
-/**
- * Selects a state from live state first, then from what the bot is about.
- * The keyword groups deliberately overlap as little as possible so a bot's
- * visual identity stays stable while its title and description are edited.
- */
 export function stateForBot(bot: MascotBotProfile): MausState {
   const pinned = normalizeState(bot.mascotExpression);
   if (pinned) return pinned;
 
-  // the harness's receipts (digest, compaction) follow every turn; the mood
-  // reads the last row a person reads, not the record about it
   const last = lastNonReceipt(bot.messages);
 
   if (last?.kind === "activity" && last.tool?.ok === false) return "alerting";

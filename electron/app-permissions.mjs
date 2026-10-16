@@ -1,14 +1,5 @@
-// Permission policy for the main application window. The local UI needs a
-// small set of capabilities to function: audio media (microphone for voice
-// input), notifications, and clipboard access. Screen preview has its own
-// one-shot, user-gesture-bound display-media guard in main.mjs.
-//
-// Privileged capabilities — camera/video, geolocation, USB, HID, serial,
-// MIDI, unguarded screen capture, window management, local fonts — stay off: the app
-// does not use them, and granting them unconditionally to the renderer leaves
-// host sensors and devices exposed if an untrusted payload ever executes.
-// The allow-list also applies only to the verified renderer origin; any
-// opaque or cross-origin request is refused outright.
+// Privileged capabilities (camera, geolocation, USB, HID, serial, MIDI, unguarded screen capture) stay off,
+// and the allow-list applies only to the verified renderer origin.
 
 const ALLOWED_APP_PERMISSIONS = new Set([
   "notifications",
@@ -17,8 +8,7 @@ const ALLOWED_APP_PERMISSIONS = new Set([
   "fullscreen",
 ]);
 
-// Opaque origins (data:, about:blank, javascript:) serialise as the string
-// "null"; never let two of them match each other.
+// Opaque origins (data:, about:blank) serialise as "null"; never let two of them match.
 function webOrigin(value) {
   if (typeof value !== "string") return null;
   try {
@@ -30,33 +20,98 @@ function webOrigin(value) {
 }
 
 /**
- * Decide whether a requested Chromium permission should be granted for the main app window.
- *
- * @param {string} permission The Electron/Chromium permission name
- * @param {string} requestingUrlOrOrigin The URL or origin requesting the permission
- * @param {string} rendererOrigin The trusted local renderer origin
- * @param {{ mediaTypes?: string[], mediaType?: string }} [details] Optional request details
- * @returns {boolean} True if the permission should be granted, false otherwise
+ * @param {string} permission
+ * @param {string} requestingUrlOrOrigin
+ * @param {string} rendererOrigin
+ * @param {{ mediaTypes?: string[], mediaType?: string }} [details]
+ * @returns {boolean}
  */
 export function appPermissionAllowed(permission, requestingUrlOrOrigin, rendererOrigin, details = {}) {
   const requesting = webOrigin(requestingUrlOrOrigin);
   const allowed = webOrigin(rendererOrigin);
   if (!requesting || !allowed || requesting !== allowed) return false;
 
-  // Media: audio (microphone) is permitted; video (camera/webcam) is strictly denied.
-  // Electron 43 routes getDisplayMedia through permission="media" with mediaTypes: []
-  // before selecting display media. Allowing this preserves the guarded displayMediaGuard
-  // without granting webcam access.
+  // Electron 43 routes getDisplayMedia through "media" with mediaTypes: [] before selecting display media.
   if (permission === "media") {
     if (details?.mediaType !== undefined && details.mediaType !== "audio") return false;
     if (details?.mediaTypes !== undefined) {
-      // Empty mediaTypes is Electron getDisplayMedia routing; ["audio"] is microphone capture.
       return Array.isArray(details.mediaTypes) && details.mediaTypes.every((type) => type === "audio");
     }
     return details?.mediaType === "audio";
   }
 
   return ALLOWED_APP_PERMISSIONS.has(permission);
+}
+
+function mainFrameMicrophoneAllowed(permission, requestingUrlOrOrigin, trustedOrigin, details) {
+  if (permission !== "media" || details?.isMainFrame !== true || details.mediaTypes?.length === 0) return false;
+  return appPermissionAllowed("media", requestingUrlOrOrigin, trustedOrigin ?? null, details);
+}
+
+/**
+ * navigator.clipboard.writeText asks for "clipboard-sanitized-write" within Chromium's transient user
+ * activation (~5 s); without one it asks for "clipboard-read", which stays denied here.
+ *
+ * @param {string} permission
+ * @param {string} requestingUrlOrOrigin
+ * @param {string | null | undefined} activeRemoteOrigin
+ * @param {{ isMainFrame?: boolean }} [details]
+ * @returns {boolean}
+ */
+export function remoteClipboardWriteAllowed(permission, requestingUrlOrOrigin, activeRemoteOrigin, details = {}) {
+  if (permission !== "clipboard-sanitized-write") return false;
+  if (details?.isMainFrame !== true) return false;
+  const requesting = webOrigin(requestingUrlOrOrigin);
+  const active = webOrigin(activeRemoteOrigin);
+  return Boolean(requesting && active && requesting === active);
+}
+
+/**
+ * @param {{ rendererOrigin: () => string, mainContents: () => unknown, cloudHomeOrigin: () => string | null,
+ *   cloudHomeRestoring?: () => Promise<unknown> | null, activeRemoteOrigin?: () => string | null,
+ *   activeRemoteMicrophone?: () => boolean, askRemoteMicrophone?: (origin: string) => Promise<unknown> | null }} context
+ *   Every getter is read per request, so a sign-out or server switch withdraws access at once.
+ */
+export function appPermissionHandlers({ rendererOrigin, mainContents, cloudHomeOrigin, cloudHomeRestoring = () => null, activeRemoteOrigin = () => null,
+  activeRemoteMicrophone = () => false, askRemoteMicrophone = () => null }) {
+  const asksAsCloud = (contents, permission, requesting, details) =>
+    Boolean(contents) && contents === mainContents() && mainFrameMicrophoneAllowed(permission, requesting, requesting, details);
+  const asksAsRemote = (contents, permission, requesting, details) =>
+    Boolean(contents) && contents === mainContents() && mainFrameMicrophoneAllowed(permission, requesting, activeRemoteOrigin(), details);
+  const clipboardWrite = (contents, permission, requesting, details) =>
+    Boolean(contents) && contents === mainContents() &&
+    (remoteClipboardWriteAllowed(permission, requesting, activeRemoteOrigin(), details) ||
+      remoteClipboardWriteAllowed(permission, requesting, cloudHomeOrigin(), details));
+  const allowed = (contents, permission, requesting, details) =>
+    appPermissionAllowed(permission, requesting, rendererOrigin(), details) ||
+    (asksAsCloud(contents, permission, requesting, details) && mainFrameMicrophoneAllowed(permission, requesting, cloudHomeOrigin(), details)) ||
+    (asksAsRemote(contents, permission, requesting, details) && activeRemoteMicrophone() === true) ||
+    clipboardWrite(contents, permission, requesting, details);
+  return {
+    // Only a request may wait (Electron answers through the callback); the rule runs again after any wait.
+    request: (contents, permission, callback, details) => {
+      const requesting = details?.requestingUrl ?? contents?.getURL?.() ?? "";
+      const decide = () => allowed(contents, permission, requesting, details);
+      const settle = (waiting) => Promise.resolve(waiting).catch(() => {});
+      const decideOrAsk = () => {
+        if (decide()) return true;
+        const asking = asksAsRemote(contents, permission, requesting, details) ? askRemoteMicrophone(activeRemoteOrigin()) : null;
+        return asking ? settle(asking).then(decide) : false;
+      };
+      const restoring = !decide() && asksAsCloud(contents, permission, requesting, details) ? cloudHomeRestoring() : null;
+      const answer = restoring ? settle(restoring).then(decideOrAsk) : decideOrAsk();
+      if (typeof answer === "boolean") return callback(answer);
+      void answer.then(callback);
+    },
+    check: (contents, permission, requestingOrigin, details) =>
+      allowed(contents, permission, requestingOrigin || contents?.getURL?.() || "", details),
+    pageMicrophone: (event) => {
+      const contents = event?.sender;
+      const frame = event?.senderFrame;
+      const isMainFrame = Boolean(frame) && frame === contents?.mainFrame;
+      return allowed(contents, "media", frame?.url ?? "", { isMainFrame, mediaTypes: ["audio"] }) ? "allowed" : "refused";
+    },
+  };
 }
 
 // Both explicit IPC links and window.open must use the same web-only policy.

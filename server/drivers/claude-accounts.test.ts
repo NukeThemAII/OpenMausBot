@@ -8,8 +8,7 @@ import { removeTempDir } from "../testing/cleanup.ts";
 import { recordEvents } from "../testing/events.ts";
 import { CLAUDE_ACCOUNT_ENV_KEYS, ClaudeDriver, resolveClaudeConfigDir } from "./claude.ts";
 
-// This CLI only reads synthetic account labels and records its spawn contract.
-// It never opens the real CLI, credential files, Keychain, or a network service.
+// Reads synthetic account labels and records its spawn contract; never the real CLI, Keychain or network.
 const FAKE_CLI = `#!/usr/bin/env node
 import { appendFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -149,7 +148,8 @@ describe("Claude account configuration", () => {
     await provider.adapter.sendTurn({ threadId: "account-injected", text: "hello", model: "unsloth::fixture-model" });
     await recorder.until(event => event.type === "turn.completed");
     recorder.stop();
-    expect(calls(dir)[1]?.env).toEqual({
+    // The turn is the last spawn (a version check may come before it).
+    expect(calls(dir).at(-1)?.env).toEqual({
       ANTHROPIC_BASE_URL: "http://127.0.0.1:8888",
       ANTHROPIC_AUTH_TOKEN: "fixture-local-key",
       ANTHROPIC_API_KEY: "fixture-local-key",

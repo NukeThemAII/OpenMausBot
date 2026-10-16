@@ -1,8 +1,3 @@
-// Identity: avatar, name, title, and the short blurb every roster and the
-// phone show. Long standing instructions belong in Soul (SoulSection) —
-// this section only keeps the "View full" dialog for the blurb itself.
-// Moved out of SettingsPanel.tsx (its header, avatar card, Name, Title,
-// and Instructions block) with only the label and helper text changed.
 import { useState } from "react";
 import { BookOpen } from "lucide-react";
 
@@ -99,8 +94,6 @@ export function IdentitySection({
         />
         <div className="mt-1.5 flex items-start justify-between gap-3 text-[11px] text-ink-secondary">
           <span>Shown in rosters, on the phone, and to other bots. Standing instructions belong in Soul, which has room for a full document.</span>
-          {/* The cap only matters when someone is near it; a counter under a
-              one-line field otherwise reads as an invitation to fill it. */}
           {bot.description.length > 3_000 && (
             <span className="shrink-0 tabular-nums">
               {bot.description.length.toLocaleString()} / {BOT_PROFILE_LIMITS.description.toLocaleString()}

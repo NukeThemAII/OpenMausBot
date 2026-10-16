@@ -1,10 +1,17 @@
-// Keep platform error details in the updater log; show the same recovery
-// guidance in Settings and the update card. This never relaxes install locks.
+const INTEGRITY = "The update failed verification. Download a fresh installer from the official release page.";
+const DISK = "Not enough disk space to prepare the update. Free some space, then try again.";
+const PERMISSION = "The update could not write to the app or its cache. Check folder permissions, or use the official installer.";
+const BUSY = "An update file is in use. Close other copies of OpenMausBot, then try again.";
+const NEEDS_PERSON = new Set([INTEGRITY, DISK, PERMISSION, BUSY]);
+
+export function updateErrorNeedsPerson(error) {
+  return NEEDS_PERSON.has(updateErrorMessage(error));
+}
+
 export function updateErrorMessage(error) {
   const message = String(error?.message ?? error ?? "Update failed");
   const detail = `${error?.code ?? ""} ${message}`;
-  // Installer errors may include SignerCertificate details. Those must not
-  // become network advice just because their diagnostic mentions certificates.
+  // Installer errors may mention SignerCertificate details; that must not read as network advice.
   const integrity = /ERR_UPDATER_(?:INVALID_SIGNATURE|CHECKSUM_MISMATCH)/i.test(detail);
   const tls = /CERT_|ERR_TLS_|UNABLE_TO_VERIFY_LEAF_SIGNATURE|SSL_ERROR|SELF_SIGNED_CERT_IN_CHAIN/i.test(detail);
   if (!integrity && tls) {
@@ -12,16 +19,16 @@ export function updateErrorMessage(error) {
   }
   // Integrity failures must never be explained away as a network/disk issue.
   if (integrity || /checksum|signature|codesign/i.test(detail)) {
-    return "The update failed verification. Download a fresh installer from the official release page.";
+    return INTEGRITY;
   }
   if (/\bENOSPC\b|no space left|disk (?:is )?full/i.test(detail)) {
-    return "Not enough disk space to prepare the update. Free some space, then try again.";
+    return DISK;
   }
   if (/\b(?:EACCES|EPERM)\b|read.only (?:volume|file system)|permission denied|access is denied/i.test(detail)) {
-    return "The update could not write to the app or its cache. Check folder permissions, or use the official installer.";
+    return PERMISSION;
   }
   if (/\bEBUSY\b|being used by another process/i.test(detail)) {
-    return "An update file is in use. Close other copies of OpenMausBot, then try again.";
+    return BUSY;
   }
   if (/certificate/i.test(detail)) {
     return "The update connection could not be verified. Check your clock, VPN or proxy; do not disable certificate checks.";

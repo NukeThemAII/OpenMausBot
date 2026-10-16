@@ -15,8 +15,9 @@ import {
   type RefObject,
 } from "react";
 import { api, useStore, type Action, type Bot } from "@/state/store";
+import { useCaptionChrome } from "@/components/DesktopCapabilities";
 import { cn } from "@/lib/cn";
-import { transitionComputerControlLease } from "@/lib/computer-control";
+import { parseComputerHelp, transitionComputerControlLease } from "@/lib/computer-control";
 import {
   initialLocalVmWorkspaceSlots,
   nativeViewOverlayIntersects,
@@ -32,6 +33,7 @@ import {
   type LocalVmWorkspaceStatus,
 } from "@/lib/local-vm-workspace";
 import { z } from "zod";
+import { Select } from "./Select";
 
 const SLOT_CONTEXTS = ["local-vm-workspace:left", "local-vm-workspace:right"] as const;
 
@@ -40,6 +42,7 @@ type WorkspaceDispatch = (action: Action) => void;
 const controlSnapshotSchema = z.object({
   held: z.boolean(),
   helpReason: z.string().nullable(),
+  help: z.unknown().optional().transform(parseComputerHelp),
   owned: z.boolean().optional(),
   acquired: z.boolean().optional(),
   released: z.boolean().optional(),
@@ -82,13 +85,11 @@ function bestEffortRelease(botId: string, controlLeaseId: string) {
     keepalive: true,
   }).then(async (response) => {
     if (!response.ok) return;
-    // The server lease is the source of truth; only clear Electron after the
-    // workspace-owned release was actually accepted.
+    // The server lease is the source of truth: clear Electron only after the workspace-owned release was accepted.
   }).catch(() => {});
 }
 
 async function setNativeBrowserControl(_botId: string, _held: boolean): Promise<boolean> {
-  // The engine owns its browser; there is no native surface to hold.
   return true;
 }
 
@@ -102,6 +103,7 @@ function dispatchControl(
     botId,
     held: snapshot.held,
     helpReason: snapshot.helpReason,
+    help: snapshot.help ?? null,
   });
 }
 
@@ -126,9 +128,10 @@ const NATIVE_VIEW_OVERLAY_SELECTOR = [
   ".absolute",
 ].join(",");
 
-/** Native views always paint above the renderer. Detect every visible
- * positioned overlay or popover that intersects a pane, including portal
- * content such as sidebar menus and the update banner. */
+/**
+ * Electron's native views always paint above the renderer, so any intersecting overlay or popover counts, portals
+ * included.
+ */
 function rendererOverlayIntersectsNativeView() {
   const hosts = [...document.querySelectorAll<HTMLElement>("[data-native-view-host]")];
   const hostRects = hosts
@@ -269,16 +272,12 @@ function LocalVmPane({
   });
   const [error, setError] = useState<string | null>(null);
 
-  // The open flow below reads status once per selection, but a ready desktop
-  // can still be stopped or reaped server-side; every later re-check writes
-  // through this same sanitized setStatus path.
   const refreshStatus = useCallback(async (signal?: AbortSignal) => {
     if (!botId) return;
     try {
       const raw = await api(`/api/bots/${botId}/local-computer`, { signal });
       if (!signal?.aborted) setStatus(sanitizeLocalVmWorkspaceStatus(raw));
     } catch {
-      /* transient read; the slow interval or Retry re-checks */
     }
   }, [botId]);
   const refreshStatusRef = useRef(refreshStatus);
@@ -295,7 +294,6 @@ function LocalVmPane({
     return bridge?.onState((next) => {
       if (next.contextId !== contextId) return;
       setNativeState(next);
-      // A dead native view may mean the VM itself went away; re-read it.
       if (next.status === "error" || next.status === "closed") void refreshStatusRef.current();
     });
   }, [contextId]);
@@ -326,8 +324,6 @@ function LocalVmPane({
         if (!safeStatus.ready || !viewerUrl) return;
 
         // Hidden or minimized Electron windows may suspend animation frames.
-        // Keep the layout read ordered after a paint when possible, but never
-        // let this serialized operation block viewer cleanup indefinitely.
         await new Promise<void>((resolve) => {
           let settled = false;
           const finish = () => {
@@ -428,12 +424,11 @@ function LocalVmPane({
           <label className="sr-only" htmlFor={`local-vm-slot-${index}`}>
             Local VM for pane {index + 1}
           </label>
-          <select
+          <Select size="sm" className="w-full"
             id={`local-vm-slot-${index}`}
             value={bot?.id ?? ""}
             onChange={(event) => onSelect(event.target.value || null)}
             disabled={controlPending}
-            className="w-full truncate rounded-lg border border-hairline/50 bg-card px-2.5 py-1.5 text-[13px] font-medium text-ink outline-none focus:border-accent/70"
           >
             <option value="">Choose a Local VM bot</option>
             {bots.map((candidate) => (
@@ -441,7 +436,7 @@ function LocalVmPane({
                 {candidate.name}
               </option>
             ))}
-          </select>
+          </Select>
           <div className="mt-1 flex items-center gap-1.5 text-[11px] text-ink-secondary">
             <span
               className={cn(
@@ -543,6 +538,7 @@ export function LocalVmWorkspace({
   onOpenComputer,
 }: LocalVmWorkspaceProps) {
   const { state, dispatch } = useStore();
+  const { dragProps } = useCaptionChrome();
   const eligibleBots = useMemo(
     () => state.bots.filter((bot) => bot.computer === "vm" && !bot.hidden),
     [state.bots],
@@ -556,9 +552,7 @@ export function LocalVmWorkspace({
   const controlLeaseIdRef = useRef<string | null>(null);
   const controlLeaseId = controlLeaseIdRef.current ?? crypto.randomUUID();
   controlLeaseIdRef.current = controlLeaseId;
-  // React disables both buttons after the state update commits, but a second
-  // discrete event can arrive before that render. Guard the mutation itself
-  // so two panes can never acquire overlapping workspace leases.
+  // A second discrete event can arrive before React commits the disabled buttons, so the mutation itself is guarded.
   const controlBusyRef = useRef(false);
   const mountedRef = useRef(true);
   const [controlPending, setControlPending] = useState(false);
@@ -610,8 +604,8 @@ export function LocalVmWorkspace({
     });
   }, [state.bots]);
 
-  // Opening is read-only. A hold may belong to the legacy viewer or another
-  // surface, so observe it and surface it without silently releasing it.
+  // Opening is read-only: a hold may belong to the legacy viewer or another surface, so observe it, never silently
+  // release it.
   useEffect(() => {
     let alive = true;
     const readSelected = async () => {
@@ -621,7 +615,6 @@ export function LocalVmWorkspace({
           const snapshot = await readComputerControl(botId);
           if (alive) dispatchControl(dispatch, botId, snapshot);
         } catch {
-          // SSE can still supply the state; taking control rechecks it.
         }
       }
     };
@@ -767,7 +760,7 @@ export function LocalVmWorkspace({
 
   return (
     <main className="flex h-full min-w-0 flex-1 flex-col bg-app">
-      <header className="flex min-h-[60px] items-center gap-3 border-b border-hairline/40 px-5 py-3">
+      <header {...dragProps} className="flex min-h-[60px] items-center gap-3 border-b border-hairline/40 px-5 py-3">
         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-accent/15 text-accent">
           <Monitor size={18} />
         </div>

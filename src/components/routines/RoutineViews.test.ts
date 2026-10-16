@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Routine, RoutineRun } from "@/lib/routines";
 import { RoutineList } from "./RoutineList";
 import { RoutineLogs } from "./RoutineLogs";
+import { Select } from "../Select";
 import { latestRoutineRun, routineNextLabel } from "@/lib/routine-display";
 
 const routine: Routine = {
@@ -57,6 +58,29 @@ describe("routine list", () => {
     expect(markup).not.toContain("Latest: Completed");
   });
 
+  it("keeps the state badge where the list cannot pause, and swaps it for a switch where it can", () => {
+    expect(list()).toContain(">Active<");
+    expect(list()).not.toContain('role="switch"');
+    expect(list({ routines: [{ ...routine, enabled: false }] })).toContain(">Paused<");
+
+    const onToggle = vi.fn();
+    const on = list({ onToggle });
+    expect(on).toContain('role="switch" aria-checked="true"');
+    expect(on).toContain('aria-label="Run Morning brief on its schedule"');
+    expect(on).not.toContain(">Active<");
+    const off = list({ onToggle, routines: [{ ...routine, enabled: false }] });
+    expect(off).toContain('role="switch" aria-checked="false"');
+    expect(off.match(/>Paused</g)).toHaveLength(1);
+  });
+
+  it("leaves a finished one-shot its badge: there is nothing to switch back on", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    const markup = list({ onToggle: vi.fn(), routines: [{ ...routine, schedule: { type: "once", at: 10 }, enabled: false, nextRunAt: null }] });
+    expect(markup).not.toContain('role="switch"');
+    expect(markup.match(/Finished schedule/g)).toHaveLength(1);
+  });
+
   it("never advertises a stale next timestamp for a paused routine", () => {
     expect(routineNextLabel({ ...routine, enabled: false })).toBe("Paused");
     expect(list({ routines: [{ ...routine, enabled: false }] })).not.toContain("Next Jan");
@@ -108,7 +132,7 @@ describe("central routine logs", () => {
     function visit(node: ReactNode) {
       Children.forEach(node, (child) => {
         if (!isValidElement<{ onChange?: (event: { target: { value: string } }) => void; children?: ReactNode }>(child)) return;
-        if (child.type === "select") select = child.props;
+        if (child.type === Select) select = child.props;
         visit(child.props.children);
       });
     }

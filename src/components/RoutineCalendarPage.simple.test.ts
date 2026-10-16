@@ -4,9 +4,8 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AppState, Bot } from "@/state/store";
 import type { Routine, RoutineRun } from "@/lib/routines";
 
-// Hook-by-call-order harness (as in ModelPicker.simple.test.ts): the page's
-// own state survives between captures, so a click followed by a fresh capture
-// shows what the page renders next. Effects never run.
+// Hook-by-call-order harness: the page's own state survives between captures, so a click then a fresh capture shows
+// what renders next. Effects never run.
 const fixture = vi.hoisted(() => {
   vi.stubGlobal("window", {});
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
@@ -82,7 +81,6 @@ function textOf(node: ReactNode): string {
 }
 const named = (name: string) => (node: Node) => typeof node.type === "function" && node.type.name === name;
 
-/** One capture of the page's own returned tree, keeping state between calls. */
 function capture(render: () => ReactNode): Node[] {
   let tree: Node[] = [];
   function Capture() { fixture.index = 0; tree = nodes(render()); return null; }
@@ -99,7 +97,6 @@ function buttons(tree: Node[]): Map<string, Node["props"]> {
   }
   return map;
 }
-/** A full render (children included) from fresh state. */
 function markup(element: ReactElement): string {
   fixture.values = [];
   fixture.index = 0;
@@ -203,7 +200,7 @@ describe("routine drawer", () => {
   });
 
   it("describes the Boat runner in plain words", () => {
-    expect(details(routineItem({ ...routine, runOn: "cloud" })).html).toContain("Boat cloud runner");
+    expect(details(routineItem({ ...routine, runOn: "cloud" })).html).toContain("Cloud computer");
   });
 
   it("Run now and Pause send the same requests as before", () => {
@@ -242,7 +239,7 @@ describe("routine editor", () => {
     seed: { kind: "routine", at: Date.now() + 3_600_000, durationMinutes: 30, botIds: [bot.id], routine: routineToEdit },
     bots: [bot], onClose: vi.fn(), onSavedCall: vi.fn(),
   }));
-  const hidden = ['<select aria-label="Repeat"', "Routine safety limit", "Boat-hosted agent", "Add attachment", "Post results to", "Routine type"];
+  const hidden = ['<select aria-label="Repeat"', "Routine safety limit", "Runs the whole job on the bot&#x27;s cloud computer", "Add attachment", "Post results to", "Routine type"];
 
   it("keeps Simple mode to the basics with everything else behind More options", () => {
     const html = editor();
@@ -264,10 +261,61 @@ describe("routine editor", () => {
     expect(html).not.toMatch(/aria-pressed="true"/);
   });
 
+  it("shows a saved startup choice when the simple editor opens", () => {
+    const html = editor({ ...routine, runOnStartup: true });
+    expect(html).toContain('aria-expanded="true"');
+    expect(html).toMatch(/<input type="checkbox" aria-label="Also run when OpenMausBot starts"[^>]*checked[^>]*>/);
+  });
+
+  it("offers Remember the last run for a repeating routine, off unless the routine has it", () => {
+    expect(editor(routine)).toMatch(/<input type="checkbox" aria-label="Remember the last run"(?![^>]*checked)[^>]*>/);
+    expect(editor({ ...routine, continuity: true })).toMatch(/<input type="checkbox" aria-label="Remember the last run"[^>]*checked[^>]*>/);
+    expect(editor(routine)).toContain("Each run starts with the previous run&#x27;s report");
+  });
+
+  it("hides Remember the last run for a one-time routine", () => {
+    expect(editor()).not.toContain("Remember the last run");
+  });
+
+  it("saves the switch with the routine, and turning it off saves false", () => {
+    const props = {
+      seed: { kind: "routine" as const, at: Date.now() + 3_600_000, durationMinutes: 30, botIds: [bot.id], routine },
+      bots: [bot], onClose: vi.fn(), onSavedCall: vi.fn(),
+    };
+    fixture.values = [];
+    let tree = capture(() => EventEditor(props));
+    const toggle = () => tree.find((node) => node.type === "input" && node.props["aria-label"] === "Remember the last run")!;
+    (toggle().props.onChange as (event: unknown) => void)({ target: { checked: true } });
+    tree = capture(() => EventEditor(props));
+    expect(toggle().props.checked).toBe(true);
+    click(buttons(tree).get("Save"));
+    const [path, init] = fixture.api.mock.calls.at(-1) as unknown as [string, { method: string; body: string }];
+    expect(path).toBe(`/api/routines/${routine.id}`);
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(init.body)).toMatchObject({ continuity: true });
+
+    fixture.values = [];
+    const on = { ...props, seed: { ...props.seed, routine: { ...routine, continuity: true } } };
+    tree = capture(() => EventEditor(on));
+    (toggle().props.onChange as (event: unknown) => void)({ target: { checked: false } });
+    tree = capture(() => EventEditor(on));
+    click(buttons(tree).get("Save"));
+    const [, off] = fixture.api.mock.calls.at(-1) as unknown as [string, { body: string }];
+    expect(JSON.parse(off.body)).toMatchObject({ continuity: false });
+  });
+
+  it("shows a routine with no thread of its own reporting into the bot's main thread", () => {
+    fixture.advanced = true;
+    const { resultsThreadId: _chosen, ...unchosen } = routine;
+    const destination = (html: string) => html.slice(html.indexOf("Post results to")).match(/^[\s\S]*?<\/select>/)![0];
+    expect(destination(editor(unchosen))).toContain('<option value="new" selected="">The bot&#x27;s main thread</option>');
+    expect(destination(editor(routine))).toContain('<option value="brief-thread" selected="">Morning briefs</option>');
+  });
+
   it("leaves the Advanced editor as it was", () => {
     fixture.advanced = true;
     const html = editor();
-    for (const text of ['placeholder="Add title"', '<select aria-label="Repeat"', "Assign a bot", "Boat-hosted agent", "Post results to", "Routine type", "New event"]) {
+    for (const text of ['placeholder="Add title"', '<select aria-label="Repeat"', "Assign a bot", "Runs the whole job on the bot&#x27;s cloud computer", "Post results to", "Routine type", "New event"]) {
       expect(html, text).toContain(text);
     }
     expect(html).not.toContain("More options");

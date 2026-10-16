@@ -59,17 +59,13 @@ interface TeamCatalog {
 export interface TeamImportResult {
   name: string;
   members: number;
-  /** Preset bots now in New bot. */
   presets?: number;
-  /** Connection slots created switched off, waiting for their values. */
   connections?: number;
 }
 
 type ImportSource = "library" | "file" | "github";
 type TeamTab = "org" | "explore" | "import" | "scout" | "share";
 
-/** the scout endpoint's answer, as far as this panel renders it — the
- * manifest itself stays opaque and goes back to the server verbatim */
 interface ScoutResult {
   profile: { name: string; summary: string; stacks: string[] };
   suggestion: {
@@ -91,7 +87,6 @@ interface DirectoryCandidate {
   matched: string[];
 }
 
-/** appearance colors for community bots folded into a scouted team */
 const DIRECTORY_COLORS = ["cyan", "red", "purple", "green", "orange"] as const;
 
 const TEAM_GLYPHS = [
@@ -110,8 +105,6 @@ async function openExternal(url: string): Promise<void> {
   if (opened) opened.opener = null;
 }
 
-/** Teams that can be shared: named teams first, in sidebar order, then
- * General; only teams with at least one visible bot. Pure, for tests. */
 export function shareableTeamList(sections: readonly string[], bots: ReadonlyArray<Pick<Bot, "section" | "hidden">>): Array<{ name: string; bots: number }> {
   const counts = new Map<string, number>();
   for (const bot of bots) {
@@ -132,11 +125,9 @@ function TeamGlyph({ index }: { index: number }) {
   );
 }
 
-/** Everything an import will add, before anything is added. Pure, for tests. */
 export function TeamImportDetails({ pending, importedNames, org = false }: {
   pending: PendingTeamImport;
   importedNames: string[];
-  /** From the organization's library: its skills arrive switched on. */
   org?: boolean;
 }) {
   return (
@@ -264,28 +255,20 @@ export function TeamLibraryPanel({
   const [scoutFolder, setScoutFolder] = useState("");
   const [scouting, setScouting] = useState(false);
   const [scouted, setScouted] = useState<ScoutResult | null>(null);
-  // the folder the current `scouted` result was actually read from — the
-  // import must pin the room to THIS, not to whatever the input says now
+  // The folder the current result was read from: the import pins the room to this, never to the input's current value.
   const [scoutedFolder, setScoutedFolder] = useState("");
-  // null = not asked yet or still loading; [] = asked, nothing (or offline)
   const [directory, setDirectory] = useState<DirectoryCandidate[] | null>(null);
   const [pickedDirectory, setPickedDirectory] = useState<Set<string>>(new Set());
   const [roomName, setRoomName] = useState("");
   const [creating, setCreating] = useState(false);
-  // The team being shared; its dialog sits above this panel.
   const [sharing, setSharing] = useState<string | null>(null);
-  // The organization's shelf: null until loaded, {organization: null}
-  // without an organization (then there is no tab at all).
   const [orgListing, setOrgListing] = useState<OrgLibraryListing | null>(null);
   const [orgBusy, setOrgBusy] = useState<string | null>(null);
   const [orgNotice, setOrgNotice] = useState("");
   const [orgError, setOrgError] = useState("");
-  // Set while the preview shows a package from the organization.
   const [pendingOrg, setPendingOrg] = useState<OrgLibraryPackage | null>(null);
   const tabChosen = useRef(false);
-  // monotonically increasing scout token: a late response from an older
-  // scout (including its lazy directory call) must never overwrite state
-  // that belongs to a newer one
+  // Monotonic scout token: a late response from an older scout must never overwrite a newer one's state.
   const scoutRequest = useRef(0);
 
   const currentBotCount = state.bots.filter((bot) => !bot.hidden).length;
@@ -315,10 +298,8 @@ export function TeamLibraryPanel({
       // SAFETY: this endpoint is owned by the app and returns OrgLibraryListing.
       const listing = (await api("/api/org-library")) as OrgLibraryListing;
       setOrgListing(listing);
-      // The organization's shelf is the first tab, and opens first.
       if (listing.organization && !tabChosen.current) setTab("org");
     } catch {
-      // No shelf is the same as no organization: the other tabs still work.
       setOrgListing({ organization: null, packages: [] });
     }
   }, []);
@@ -334,7 +315,6 @@ export function TeamLibraryPanel({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      // The Share team dialog above this panel owns the keyboard while open.
       if (sharing !== null) return;
       if (event.key === "Escape" && !importing) {
         event.preventDefault();
@@ -427,8 +407,6 @@ export function TeamLibraryPanel({
     setTab("import");
     setGithubUrl(initialUrl);
     void loadGithubUrl(initialUrl);
-    // A deep link is immutable for this panel instance; reloading it on
-    // every callback identity change would duplicate the preview request.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialUrl]);
 
@@ -483,7 +461,6 @@ export function TeamLibraryPanel({
     }
   };
 
-  /** One click adds it; there is no confirmation step. */
   const addOrgPackage = async (entry: OrgLibraryPackage) => {
     setOrgBusy(entry.packageId);
     setImporting(true);
@@ -542,8 +519,6 @@ export function TeamLibraryPanel({
       setScoutedFolder(folder);
       setRoomName(result.suggestion.roomName);
       track("team_scouted", { signals: result.suggestion.manifest.team.members.length - 1 });
-      // community candidates arrive lazily; an unreachable directory just
-      // leaves this section empty
       void api(`/api/teams/scout/directory?cwd=${encodeURIComponent(folder)}`)
         // SAFETY: this endpoint is owned by the app and returns candidates.
         .then((extra) => {
@@ -572,9 +547,8 @@ export function TeamLibraryPanel({
     setCreating(true);
     setError("");
     try {
-      // the confirmed suggestion, plus any community bots the user ticked —
-      // folded in as ordinary manifest members so the import boundary
-      // (persona only, no grants) applies to them like to everything else
+      // Security: community bots join as ordinary manifest members, so the import boundary (persona only, no grants)
+      // applies.
       const extras = (directory ?? [])
         .filter((candidate) => pickedDirectory.has(candidate.slug))
         .map((candidate, index) => ({
@@ -599,7 +573,6 @@ export function TeamLibraryPanel({
       )) as { bots: Bot[]; group?: Group };
       for (const bot of response.bots) dispatch({ type: "botAdded", bot });
       if (response.group) {
-        // upsert now instead of waiting for the SSE frame, then land in the room
         dispatch({ type: "groupPatched", group: { ...response.group, messages: [] } });
         dispatch({ type: "select", id: response.group.id });
       }

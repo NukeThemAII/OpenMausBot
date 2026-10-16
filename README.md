@@ -1,12 +1,12 @@
-> ⚠️ **No affiliation with any cryptocurrency.** OpenMausBot has no token. Any coin using the OpenMausBot, Maus, or SupaMaus name is not created, endorsed, or affiliated with this project or its maintainer. I have received no tokens, payment, or allocation from anyone, and I will not be endorsing any token.
-
 <div align="center">
 
 # OpenMausBot
 
-**Your own team of AI bots, in a chat app.**
+**The open-source Grok Bot alternative: your own team of AI bots, in a chat app.**
 
-<sub>An independent, open-source project inspired by **Grok Bot** — bring-your-own-agent, local-first, on the models you already have. Not affiliated with xAI.</sub>
+[**openmausbot.com**](https://www.openmausbot.com) &nbsp;·&nbsp; [Download](https://www.openmausbot.com/download) &nbsp;·&nbsp; [Open source Grok Bot alternative, compared](https://www.openmausbot.com/blog/grok-bot-vs-openmausbot)
+
+<sub>OpenMausBot is an open-source Grok Bot alternative: an independent project inspired by **Grok Bot**, and the open-source alternative to **Meta Muse**, **OpenAI dots** and **Cue by Manus** — bring-your-own-agent, local-first, on the models you already have. Also known as **MausBot**; formerly **OpenGrokBot**. Not affiliated with xAI, Meta, OpenAI or Manus.</sub>
 
 Every bot in the sidebar is a real agent — Claude or Codex running locally under the hood — with its own
 personality, its own model, its own cloud computer, and its own connected apps.
@@ -48,11 +48,25 @@ Talk to them like contacts. Watch them work. Approve what matters.
 <br>
 <br>
 
+<sub>Powered by <a href="https://boat.dev">boat.dev</a></sub>
+<br>
+<a href="https://boat.dev">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/sponsors/boat-logo-white.svg">
+    <img src="docs/assets/sponsors/boat-logo.svg" alt="Boat (boat.dev)" height="34">
+  </picture>
+</a>
+
+<br>
+<br>
+
 <img src="docs/screenshots/hero.png" alt="OpenMausBot — a Telegram-style chat app where every chat is a real AI agent" width="900">
 
 </div>
 
 ---
+
+> ⚠️ **No affiliation with any cryptocurrency.** OpenMausBot has no token. Any coin using the OpenMausBot, Maus, or SupaMaus name is not created, endorsed, or affiliated with this project or its maintainer. I have received no tokens, payment, or allocation from anyone, and I will not be endorsing any token.
 
 ## Why
 
@@ -70,6 +84,25 @@ already have:
   safety boundary is currently certified—your own computer, plus 500+ apps through Composio. Host control is
   available on macOS and Ubuntu Xorg after explicit opt-in. Ubuntu Wayland host control remains disabled while
   issue #345 is resolved.
+
+## The open-source alternative to Grok Bot, Muse, dots and Cue
+
+Four closed personal-agent products shipped in seven weeks of 2026, and each one keeps the model, the
+computer and your data on its maker's side of the line. OpenMausBot is the open-source version of that
+shape: a team of agents in a chat app, each with its own model, its own computer and its own connected
+apps, running on your machine under Apache 2.0. If you searched for an *open Muse*, *open dots*, an
+*open-source Grok Bot*, an *open Instinct* or an *open Cue*, this is the repository.
+
+| Looking for | What it is | How OpenMausBot differs | Read more |
+| --- | --- | --- | --- |
+| **Open source Grok Bot** | xAI's roster of bots on one shared cloud computer, Grok only, from a SuperGrok or Cursor plan | Same roster shape; any model per bot; your own machine; approval cards | [Grok Bot vs OpenMausBot](https://www.openmausbot.com/blog/grok-bot-vs-openmausbot) |
+| **Open Muse** | Meta's single personal agent in a Meta cloud VM, US and Canada only | A team instead of one agent; runs anywhere; data in `~/.openmausbot` | [Meta Muse alternative](https://www.openmausbot.com/blog/open-source-alternative-to-meta-muse) |
+| **Open dots** | OpenAI's always-on agent inside ChatGPT, GPT only, Pro and Business Premium plans | Several agents; your Claude, ChatGPT or Grok login; no plan required | [OpenAI dots alternative](https://www.openmausbot.com/blog/openai-dots-alternative) |
+| **Open Cue** | Manus's invite-only agents with their own phone, email and wallet | No invite; OAuth instead of passwords; open source | [Cue by Manus alternative](https://www.openmausbot.com/blog/open-source-alternative-to-cue-by-manus) |
+| **Open Instinct** | Spear Street's invite-only agent that holds your passwords on a cloud computer | Ask for approval when you want it; signs in over OAuth; your machine | [Instinct AI alternative](https://www.openmausbot.com/blog/instinct-ai-alternative) |
+
+All five side by side: [Muse vs Grok Bot vs Dots vs Cue](https://www.openmausbot.com/blog/muse-vs-grok-bot-vs-dots-vs-cue),
+and a decision guide in five questions: [Which AI agent should I use?](https://www.openmausbot.com/blog/which-ai-agent-should-i-use)
 
 ## Features
 
@@ -150,8 +183,8 @@ channel and its bots under a named context, then rename it or change its members
 
 ### ⚡ Fast decisions with Jev
 
-Add a TypeSafe Jev key in **Settings → Decision model** and rooms set to **Auto** pick the bot that fits each
-un-mentioned message in a few hundred milliseconds, falling back to the room's lead whenever Jev is off or unsure.
+Add a TypeSafe Jev key, or an OpenRouter key and model, in **Settings → Decision model** and rooms set to **Auto** pick the bot
+that fits each un-mentioned message in a few hundred milliseconds, falling back to the room's lead whenever the decision model is off or unsure.
 See [docs/decision-model.md](docs/decision-model.md).
 
 ### 📦 Install a complete team from one Markdown file
@@ -213,6 +246,7 @@ expressions · screenshots of the bot's work folded into the transcript.
 ![Vite](https://img.shields.io/badge/Vite-646CFF?logo=vite&logoColor=white)
 ![Tailwind CSS](https://img.shields.io/badge/Tailwind%20CSS-0F172A?logo=tailwindcss&logoColor=38BDF8)
 ![Composio](https://img.shields.io/badge/Composio-e6493a)
+![Boat](https://img.shields.io/badge/Boat-sponsor-111111)
 ![Cua](https://img.shields.io/badge/Cua%20Driver-1f2937)
 ![ElevenLabs](https://img.shields.io/badge/ElevenLabs-000000?logo=elevenlabs&logoColor=white)
 ![Fish Audio](https://img.shields.io/badge/Fish%20Audio-2563eb)
@@ -225,7 +259,7 @@ expressions · screenshots of the bot's work folded into the transcript.
 | **Claude · Codex · Grok** | The agents behind every bot, run through their local CLIs |
 | **Electron** | Desktop shells for macOS, Windows, and Ubuntu |
 | **React + Vite + Tailwind CSS** | The chat app UI and its build |
-| **Boat** ([boat.dev](https://boat.dev)) | Each bot's cloud computer |
+| **Boat** ([boat.dev](https://boat.dev)) | Each bot's cloud computer · our sponsor |
 | **Composio** | Connected apps — Gmail, Slack, GitHub, and more |
 | **Cua Driver** | Native computer use on your own machine |
 | **ElevenLabs · Fish Audio** | Hosted voices for bots that talk back |
@@ -276,6 +310,20 @@ create and configure bots/channels/tasks, send work, wait for completion, switch
 It does **not** expose approval grants, deletion, arbitrary settings, credentials, or computer lifecycle.
 
 See [MCP server setup and tool reference](docs/mcp-server.md).
+
+### Run it from scripts and CI
+
+The `openmausbot` command drives a running workspace without a screen: set a
+team up from a file, give a bot one job, wait until it and every teammate it
+asked are done, and export what they made. One JSON document with `--json`,
+and exit codes a script can branch on.
+
+```sh
+openmausbot team apply team.yaml
+openmausbot run "Room Lead" "Rehearse the launch of https://example.com" --export ./out
+```
+
+See [Run OpenMausBot from scripts and CI](docs/headless-cli.md).
 
 ## Quick start
 
@@ -396,6 +444,12 @@ Users can add their own MCP tool servers with zero code via [`docs/custom-mcp-se
 To run bots on OpenRouter, Fireworks AI, DeepSeek, Cline or your own OpenAI- or Anthropic-compatible provider,
 see [Other model providers](apps/docs/content/docs/providers/model-providers.mdx).
 
+## Privacy
+
+Usage analytics are optional and anonymous: product events and a once-a-day count of what is set up, never keys,
+names, addresses or conversations. Turn them off in Settings → General → Usage analytics;
+[`docs/analytics.md`](docs/analytics.md) lists every event and property.
+
 ## Support the project
 
 OpenMausBot is free and open source. If it does real work for you, you can
@@ -426,6 +480,10 @@ iOS app takes either that or the web link. A browser works on either phone. A ph
 cannot use a localhost link. `--local` ignores saved remote access for one launch;
 `--no-pair` suppresses phone prompts and invitations but does not disable a saved
 remote connection.
+
+The web UI can also be installed from Safari or Chrome as a standalone phone
+app. See [Install the phone web app](docs/phone-web-app.md) for Home Screen
+installation and pairing.
 
 Run `openmausbot setup` to reconfigure without resetting bots or conversations;
 the saved model default applies only to new bots. Native setup confirms provider

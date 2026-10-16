@@ -56,9 +56,7 @@ export async function ensureManagedComposioCredentials({
         signal: timeoutSignal(existingCredentialTimeoutMs),
       });
       if (check.ok) return credentials;
-      // Only a definitive auth failure rotates the credential. A transient
-      // outage keeps the existing identity so reconnecting cannot strand the
-      // user's already-authorized accounts under a new installation.
+      // Only a definitive auth failure rotates the credential, so an outage never strands authorized accounts.
       if (check.status !== 401) return credentials;
       delete credentials.composioBrokerToken;
       delete credentials.composioInstallationId;
@@ -84,8 +82,6 @@ export async function ensureManagedComposioCredentials({
     await saveCredentials(credentials);
     log("connected-apps installation registered");
   } catch (error) {
-    // This operation always settles locally. The caller runs it after first
-    // paint, so an optional hosted integration cannot delay desktop readiness.
     log(`connected-apps registration failed: ${error?.message ?? error}`);
   }
   return credentials;

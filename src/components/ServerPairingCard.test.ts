@@ -7,7 +7,6 @@ import { canPairDevices, lastSeen, minutesLeft, pairingBlockedReason, ServerPair
 describe("pairing devices from a hosted server's settings", () => {
   it("is offered to the owner on the box and to admin sessions, never to chat-only sessions", () => {
     expect(canPairDevices({ kind: "loopback" })).toBe(true);
-    // a shared server that treats session-less local requests as a service, not the owner
     expect(canPairDevices({ kind: "loopback", trust: "service" })).toBe(false);
     expect(canPairDevices({ kind: "session", id: "s", label: "Her iPad", scopes: ["admin", "client"], expiresAt: 1 })).toBe(true);
     expect(canPairDevices({ kind: "session", id: "s", label: "Staff phone", scopes: ["client"], expiresAt: 1 })).toBe(false);
@@ -41,6 +40,11 @@ describe("pairing devices from a hosted server's settings", () => {
     const admin = renderToStaticMarkup(createElement(ServerPairingCard, { initialSession: { ...chatOnly, scopes: ["admin", "client"] } }));
     expect(admin).toContain("Create pairing code");
     expect(admin).not.toContain("data-server-pairing-chat-only");
+    expect(admin).toMatch(/<button[^>]*data-phone-pairing-action[^>]*>Create pairing code<\/button>/);
+    expect(admin.match(/data-phone-pairing-action/g)?.length).toBe(1);
+    expect(admin).toContain('data-phone-pairing="server"');
+    expect(html).toContain('data-phone-pairing="server"');
+    expect(html).not.toContain("data-phone-pairing-action");
   });
 
   it("offers no pairing code on a hosted workspace, where people sign in through the portal", () => {
@@ -51,6 +55,7 @@ describe("pairing devices from a hosted server's settings", () => {
     expect(html).not.toContain("Create pairing code");
     expect(html).not.toMatch(/pairing code from|openmausbot pair/);
     expect(html).toContain("Signed-in devices");
+    expect(html).not.toContain("data-phone-pairing-action");
     const member = renderToStaticMarkup(createElement(ServerPairingCard, { initialSession: { ...admin, scopes: ["client"] }, initialPairingCodes: false }));
     expect(member).toContain("data-server-pairing-chat-only");
     expect(member).not.toContain("openmausbot pair");
@@ -62,7 +67,7 @@ describe("pairing devices from a hosted server's settings", () => {
     expect(cloud).toContain("Create pairing code");
     expect(cloud).not.toContain("Chat and approvals only");
     expect(cloud).toContain("data-server-pairing-personal");
-    expect(cloud).toContain("OMB Cloud is personal: only your own devices can connect");
+    expect(cloud).toContain("My Cloud is personal: only your own devices can connect");
     const elsewhere = renderToStaticMarkup(createElement(ServerPairingCard, { initialSession: admin }));
     expect(elsewhere).toContain("Chat and approvals only");
     expect(elsewhere).not.toContain("data-server-pairing-personal");

@@ -1,9 +1,3 @@
-/** Renewable idle deadline for one Local VM.
- *
- * Activity resets the full window. The caller decides how to suspend or
- * recycle the disposable VM, and an active turn or lifecycle operation defers
- * that work for another full window instead of racing current work.
- */
 export class LocalVmIdleTimer {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private lastActivityAt = 0;
@@ -27,10 +21,6 @@ export class LocalVmIdleTimer {
     this.timer = null;
   }
 
-  /** Apply a new idle window. A pending deadline is re-armed against the
-   * last activity, so a shorter window takes effect without waiting out the
-   * old one and a longer window extends the current one. A cancelled timer
-   * stays cancelled. */
   setIdleMs(idleMs: number): void {
     this.idleMs = checkedIdleMs(idleMs);
     if (!this.timer) return;
@@ -52,8 +42,6 @@ export class LocalVmIdleTimer {
     try {
       await this.suspend();
     } catch {
-      // A transient runtime failure must not disable the cost/resource
-      // backstop forever. Retry after a fresh full idle window.
       this.touch();
     }
   }

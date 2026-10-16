@@ -9,8 +9,7 @@ describe("built-in agent tool read policy", () => {
       "list_shared_computers",
       "list_rooms",
       "list_threads",
-      "check_delegation",
-      "wait_delegation",
+      "assignment_status",
       "session_search",
       "session_read",
       "tool_result_read",
@@ -29,8 +28,10 @@ describe("built-in agent tool read policy", () => {
   });
 
   it.each([
-    "shared_computer", "ask_bot", "delegate_bot", "start_thread", "close_thread", "post_to_room",
-    "create_bot", "request_credential", "memory_update", "propose_routine",
+    "shared_computer", "ask_bot", "delegate_bot", "check_delegation", "wait_delegation", "start_thread", "close_thread", "post_to_room",
+    // These post into the chat: never read-only.
+    "attach_file", "show_widget", "update_widget",
+    "create_bot", "request_credential", "request_sign_in", "memory_update", "propose_routine",
     "propose_routine_action", "propose_profile", "skill_manage",
     "propose_team_setup", "propose_bot_deletion",
     "list_secrets", "read_credentials", "list_bots_and_delete", "unknown", "",

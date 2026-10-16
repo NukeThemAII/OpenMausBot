@@ -12,13 +12,20 @@ describe("liveCardKind", () => {
     expect(liveCardKind(card({ requestId: "r1", tool: "schedule_routine", routineRequest: {} as OptionCardData["routineRequest"] }))).toBe("review");
     expect(liveCardKind(card({ requestId: "r1" }))).toBe("question");
   });
-  it("sends a default-model or tightening proposal to the screen, though it names a tool", () => {
-    // propose_model and propose_tightening cards carry update_model and
-    // tighten_permissions; a spoken yes must never reach them as an approval
+  it("sends a default-model proposal to the screen, though it names a tool", () => {
+    // propose_model cards carry update_model; a spoken yes must never reach
+    // them as an approval
     expect(liveCardKind(card({ requestId: "r1", tool: "update_model", modelRequest: {} as OptionCardData["modelRequest"] }))).toBe("review");
-    expect(liveCardKind(card({ requestId: "r1", tool: "tighten_permissions", tighteningRequest: {} as OptionCardData["tighteningRequest"] }))).toBe("review");
     expect(liveDecisionRefusal(card({ requestId: "r1", tool: "update_model", modelRequest: {} as OptionCardData["modelRequest"] })))
       .toBe("This request is reviewed on screen.");
+  });
+  it("sends a quota-switch offer to the screen, though it looks like a question", () => {
+    // A spoken answer to a question becomes a message to the bot once its
+    // asker is gone; an engine's name must never be sent that way.
+    const offer = card({ requestId: "r1", options: ["Codex", "Not now"], fixedOptions: true, quotaSwitch: { engines: [{ instanceId: "codex", name: "Codex" }] } });
+    expect(liveCardKind(offer)).toBe("review");
+    expect(liveDecisionRefusal(offer)).toBe("This request is reviewed on screen.");
+    expect(liveCardKind({ ...offer, answered: "answer" })).toBeNull();
   });
   it("ignores settled cards and cards without a request", () => {
     expect(liveCardKind(card({ requestId: "r1", tool: "Bash", answered: "allow" }))).toBeNull();

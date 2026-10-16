@@ -65,9 +65,9 @@ registerHooks({
         String(result.source).replaceAll('Date.now()', `(Date.now() + (JSON.parse(readVmClock(${JSON.stringify(state)}, 'utf8')).clockOffset || 0))`) };
     }
     if (url.endsWith('/drivers/claude.ts')) {
-      return { ...result, source: `import { readFileSync as readVmEvents, writeFileSync as writeVmEvent } from 'node:fs';\n` +
+      return { ...result, source: `import { existsSync as existsVmRelease, readFileSync as readVmEvents, writeFileSync as writeVmEvent } from 'node:fs';\n` +
         String(result.source).replace('for (const l of Array.from(listeners)) l(event);',
-          `if (event.type === 'turn.completed') {\n        const fixture = JSON.parse(readVmEvents(${JSON.stringify(state)}, 'utf8'));\n        if (fixture.dropCompletion) return;\n        if (fixture.delayCompletion) { setTimeout(() => { writeVmEvent(${JSON.stringify(state)} + '.latecompleted', event.turnId ?? ''); for (const l of Array.from(listeners)) l(event); }, fixture.delayCompletion); return; }\n      }\n      for (const l of Array.from(listeners)) l(event);`) };
+          `if (event.type === 'turn.completed') {\n        const fixture = JSON.parse(readVmEvents(${JSON.stringify(state)}, 'utf8'));\n        if (fixture.dropCompletion) return;\n        if (fixture.holdCompletion) { writeVmEvent(${JSON.stringify(state)} + '.completionheld', event.turnId ?? ''); const timer = setInterval(() => { if (!existsVmRelease(${JSON.stringify(state)} + '.releasecompletion')) return; clearInterval(timer); writeVmEvent(${JSON.stringify(state)} + '.latecompleted', event.turnId ?? ''); for (const l of Array.from(listeners)) l(event); }, 10); return; }\n      }\n      for (const l of Array.from(listeners)) l(event);`) };
     }
     if (url.endsWith('/turn-watchdog.ts')) {
       return { ...result, source: `import { readFileSync as readVmWatch } from 'node:fs';\n` +
@@ -75,12 +75,7 @@ registerHooks({
           .replace('at - turn.lastEventAt < this.opts.stallMs', `at - turn.lastEventAt < (JSON.parse(readVmWatch(${JSON.stringify(state)}, 'utf8')).stall ? 0 : JSON.parse(readVmWatch(${JSON.stringify(state)}, 'utf8')).stallThread === turn.threadId ? 100 : this.opts.stallMs)`) };
     }
     if (url.endsWith('/turn-dispatch-guard.ts')) {
-      // wedgeClear parks a room turn inside waitForClear, the pre-id
-      // quarantine a prior turn's cancelled handshake can hold open while
-      // its TTL runs — the real delayed-setup window where a stall used to
-      // find no completion handler. The clearwait marker lets a test prove
-      // the turn reached that park before it flips the stall on; entry into
-      // containerComputerStatus alone only proves readiness started.
+      // wedgeClear parks a room turn inside waitForClear; the clearwait marker proves it got there.
       return { ...result, source: `import { readFileSync as readVmClear, writeFileSync as writeVmClear } from 'node:fs';\n` +
         String(result.source).replace('async waitForClear(threadId: string): Promise<void> {',
           `async waitForClear(threadId: string): Promise<void> {\n      writeVmClear(${JSON.stringify(state)} + '.clearwait', '1');\n      while (JSON.parse(readVmClear(${JSON.stringify(state)}, 'utf8')).wedgeClear) await new Promise((resolve) => setTimeout(resolve, 20));`) };

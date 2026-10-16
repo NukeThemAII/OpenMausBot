@@ -23,8 +23,10 @@ concurrency:
   # other in October 2026). The running one always finishes. A release runs
   # CI on its own commit in a release-ci/v<version> lane when main's run for
   # it was replaced (scripts/release-ci.mjs). Merge-queue runs stay on their
-  # own refs.
-  group: ci-${{ github.event_name == 'merge_group' && github.event.merge_group.head_ref || github.ref }}
+  # own refs. A PR's group is named by its number, never by github.ref: a
+  # merged PR's closed event reports the base branch as github.ref, so a
+  # ref-named group let every merge cancel main's run (ci-stop-closed.yml).
+  group: ci-${{ github.event_name == 'merge_group' && github.event.merge_group.head_ref || github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -42,9 +44,12 @@ jobs:
     name: typecheck + lint
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      # ci-scope reads whether the commit before a push got its own green run
+      actions: read
     outputs:
       runtime: ${{ steps.scope.outputs.runtime }}
-      mobile: ${{ steps.scope.outputs.mobile }}
       vitest_os: ${{ steps.scope.outputs.vitest_os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -60,6 +65,8 @@ jobs:
           cache: pnpm
       - name: Select checks for this change
         id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: node scripts/ci-scope.mjs
       - run: pnpm install --frozen-lockfile
       - name: Verify CI selection and documentation references
@@ -92,10 +99,13 @@ jobs:
         os: ${{ fromJSON(needs.static.outputs.vitest_os) }}
         shard: [1, 2, 3, 4]
     runs-on: ${{ matrix.os }}
-    # vitest splits by file count, not by duration, so the shard holding the
-    # heavy e2e files exceeds 20 minutes on macOS and 25 on Windows with
-    # tests still progressing. The cap catches a hang, not normal suite growth.
-    timeout-minutes: ${{ matrix.os == 'ubuntu-latest' && 20 || 35 }}
+    # scripts/testing/duration-sequencer.ts splits the files by their recorded
+    # CI seconds, not by count, so the heavy e2e files no longer share one
+    # shard. The cap catches a hang, not normal suite growth: Linux shards
+    # took 15-20 minutes by Oct 13 (the runtime and room suites), so Linux
+    # gets 30. Windows shards took 30-35 minutes by Oct 15, so the slower
+    # platforms get 45.
+    timeout-minutes: ${{ matrix.os == 'ubuntu-latest' && 30 || 45 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@ff378ebe6b225b0680b81c1ad4498ae0d1d3a5e3 # v6.0.10
@@ -113,7 +123,19 @@ jobs:
         # The github-actions reporter turns each failure into an annotation
         # on the PR, so the failing test and its assertion are readable
         # without opening the job log.
+        env:
+          # scripts/testing/ci-retry-runner.ts records each listed flaky test
+          # that needed a retry here (the runner context is step-level only).
+          OMB_VITEST_RETRY_LOG: ${{ runner.temp }}/vitest-retries.jsonl
         run: pnpm exec vitest run --shard=${{ matrix.shard }}/4 --reporter=default --reporter=github-actions
+      - name: Report flaky tests that needed a retry
+        # Known flakes (scripts/testing/ci-retry-list.json) get two retries in
+        # CI. A pass after a retry is still listed in the job summary, so the
+        # flake stays visible until its entry is fixed and removed.
+        if: ${{ !cancelled() }}
+        env:
+          OMB_VITEST_RETRY_LOG: ${{ runner.temp }}/vitest-retries.jsonl
+        run: node scripts/testing/ci-retry-summary.mjs
       - name: Broker and Electron unit tests
         if: matrix.shard == 1
         run: pnpm broker:test && pnpm test:electron
@@ -418,7 +440,7 @@ jobs:
         env:
           OMB_UI_E2E: "1"
           OMB_UI_EVIDENCE_DIR: .omb-scratch/verify-evidence
-        run: pnpm exec vitest run scripts/testing/control-omb-ui.e2e.test.ts scripts/testing/bot-tools-ui.e2e.test.ts scripts/testing/thinking-timer-ui.e2e.test.ts scripts/testing/team-share-ui.e2e.test.ts scripts/testing/org-library-ui.e2e.test.ts scripts/testing/presets-ui.e2e.test.ts
+        run: pnpm exec vitest run scripts/testing/control-omb-ui.e2e.test.ts scripts/testing/bot-tools-ui.e2e.test.ts scripts/testing/thinking-timer-ui.e2e.test.ts scripts/testing/team-share-ui.e2e.test.ts scripts/testing/org-library-ui.e2e.test.ts scripts/testing/presets-ui.e2e.test.ts scripts/testing/browser-evidence.e2e.test.ts
       - name: Upload the renderer screenshot
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
@@ -430,6 +452,41 @@ jobs:
             .omb-scratch/verify-evidence/share-team-dialog.png
           if-no-files-found: warn
           retention-days: 7
+
+  browser-identity:
+    needs: static
+    if: needs.static.outputs.runtime == 'true'
+    # Advisory, outside the required gate: the pinned agent-browser drives a
+    # real Chrome for Testing through OMB's launcher and identity connection
+    # (scripts/testing/browser-identity.e2e.test.ts): a 1280x720 page whose
+    # user agent and client hints are the browser's own in the page, a
+    # worker, a service worker and a cross-site frame. On Windows this is
+    # also the check that the 0.36.0-omb.1 engine starts Chrome through the
+    # generated batch file. The same platforms as the vitest matrix.
+    name: browser identity (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(needs.static.outputs.vitest_os) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ff378ebe6b225b0680b81c1ad4498ae0d1d3a5e3 # v6.0.10
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Let Chrome build its sandbox on this runner
+        if: runner.os == 'Linux'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Drive a real Chrome through the launcher
+        env:
+          OMB_UI_E2E: "1"
+        run: pnpm exec vitest run scripts/testing/browser-identity.e2e.test.ts
 
   package-linux:
     needs: static
@@ -500,78 +557,60 @@ jobs:
           include-hidden-files: true
           retention-days: 7
 
-  ios:
+  browser-driver:
     needs: static
-    if: needs.static.outputs.mobile == 'true'
-    # The simulator UI suite (about 90 minutes of iPhone + iPad runs) lives in
-    # ios-thread-ui.yml: nightly, on main pushes that touch ios/, and by hand.
-    # Here it held three of the account's five macOS runners at a time.
-    name: Swift tests + iOS build
-    runs-on: macos-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Swift package tests
-        run: swift test --package-path ios
-      - name: Generate the Xcode project
-        run: |
-          brew install xcodegen
-          cd ios
-          xcodegen generate
-      - name: Build the simulator app
-        run: |
-          cd ios
-          xcodebuild \
-            -project OpenMausCompanion.xcodeproj \
-            -scheme OpenMausCompanion \
-            -sdk iphonesimulator \
-            -destination 'generic/platform=iOS Simulator' \
-            CODE_SIGNING_ALLOWED=NO \
-            build
-
-  # Selection includes ios/** as well as android/**: :core's fixtures come
-  # from ios/Tests/CompanionCoreTests/Fixtures.
-  android:
-    needs: static
-    if: needs.static.outputs.mobile == 'true'
-    name: Kotlin tests + Android build
-    runs-on: ubuntu-24.04
+    if: needs.static.outputs.runtime == 'true'
+    # Advisory, outside the CI gate until it has run green for a while: the
+    # omb-cdp S4 conformance suites and the new browser's checklist and viewer
+    # suites on the runner's own Google Chrome (PRs run Linux and Windows;
+    # main pushes, merge groups and manual runs add macOS, as for the vitest
+    # shards), then on Linux inside the server image's runtime as a non-root
+    # user. Every S4 suite also fails when its trace holds Runtime.enable or
+    # another forbidden CDP method (docs/ci.md).
+    name: browser driver S4 (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(needs.static.outputs.vitest_os) }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
         with:
-          distribution: temurin
-          java-version: 17
-          cache: gradle
-          # Robolectric fetches android-all-instrumented from Maven Central at
-          # *test* time into ~/.m2 — 278 MB per clean machine that no Gradle
-          # cache reaches. This replaces the action's default path, so
-          # ~/.gradle/caches has to be named alongside it.
-          cache-path: |
-            ~/.gradle/caches
-            ~/.m2/repository/org/robolectric
-      - name: Kotlin tests and debug / preview APKs
+          persist-credentials: false
+      - uses: pnpm/action-setup@ff378ebe6b225b0680b81c1ad4498ae0d1d3a5e3 # v6.0.10
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Let Chrome build its sandbox on this runner, and give it a display
+        # Ubuntu 24.04 restricts unprivileged user namespaces; Chrome's own
+        # documented fix for 23.10+. The sandbox itself stays on.
+        if: runner.os == 'Linux'
         run: |
-          cd android
-          ./gradlew --no-daemon :core:test :app:testDebugUnitTest :app:assembleDebug :app:assemblePreview
-      - name: Upload the installable Android preview
-        if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: android-threads-preview-${{ github.sha }}-${{ github.run_attempt }}
-          path: android/app/build/outputs/apk/preview/app-preview.apk
-          if-no-files-found: error
-          retention-days: 14
-      - name: Upload the Android test reports on failure
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: failure()
-        with:
-          name: android-test-reports
-          path: |
-            android/core/build/reports/tests
-            android/core/build/test-results
-            android/app/build/reports/tests
-            android/app/build/test-results
-          if-no-files-found: warn
-          retention-days: 7
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo apt-get update && sudo apt-get install -y xvfb
+      - name: S4 on the runner's Google Chrome
+        # The headed-identity case needs a display, which Linux runners get from Xvfb.
+        env:
+          OMB_CDP_E2E: "1"
+        shell: bash
+        run: |
+          run=(pnpm exec vitest run server/browser/cdp/s4- server/browser/checklist.e2e server/browser/viewers/viewers.e2e --reporter=verbose --silent=false --reporter=github-actions)
+          if [ "$RUNNER_OS" = "Linux" ]; then xvfb-run -a "${run[@]}"; else "${run[@]}"; fi
+      - name: S4 inside the server image's runtime, as its own user
+        # maus, with its real home, as the server runs there. The image's
+        # Chrome for Testing has no setuid sandbox helper yet, so this leg
+        # runs with the operator opt-out; the host legs keep the sandbox.
+        # Vitest writes its bundled config beside it and its cache under
+        # node_modules/.vite, so those two places are opened to maus. It runs
+        # even when the host leg failed: they test different Chromes.
+        if: ${{ !cancelled() && runner.os == 'Linux' }}
+        run: |
+          docker build --target runtime -t omb-runtime:s4 .
+          mkdir -p node_modules/.vite && chmod a+w . node_modules/.vite
+          docker run --rm --init --shm-size=512m --user maus -e CI=true \
+            -e OMB_CDP_CHROME=/opt/openmausbot-browser/chrome -e OMB_CDP_HOST=container -e OMB_BROWSER_SANDBOX=0 \
+            -v "$PWD:/src" -w /src omb-runtime:s4 \
+            node node_modules/vitest/vitest.mjs run server/browser/cdp/s4- server/browser/checklist.e2e server/browser/viewers/viewers.e2e --reporter=verbose --silent=false

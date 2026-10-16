@@ -18,7 +18,7 @@ export const CREDENTIAL_TARGETS = {
   },
   opencodeGoApiKey: {
     label: "OpenCode API key",
-    description: "Used for OpenCode Go and other key-backed OpenCode providers.",
+    description: "Used for OpenCode Zen and Go.",
     placeholder: "Paste your OpenCode API key",
     helpUrl: "https://opencode.ai/docs/providers/",
   },
@@ -45,7 +45,6 @@ export const CREDENTIAL_TARGETS = {
 export type CredentialTargetId = keyof typeof CREDENTIAL_TARGETS;
 export type CredentialConfig = {
   xai?: { key?: string };
-  // The persisted config section keeps its historical name: cfg.box.
   box?: { token?: string };
   opencodeGo?: { apiKey?: string };
   tts?: { key?: string; fishKey?: string };
