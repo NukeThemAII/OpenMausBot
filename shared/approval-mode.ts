@@ -40,6 +40,12 @@ export function hasNativeAutoReview(driverKind: string | undefined): boolean {
   return ["codex", "claudeAgent", "cursorAgent", "grokAgent", "qwenAgent"].includes(driverKind ?? "");
 }
 
+const APPROVAL_RANK: Record<ApprovalMode, number> = { ask: 0, edits: 1, auto: 2, full: 3, custom: 4 };
+
+export function approvalModeWidens(from: ApprovalMode, to: ApprovalMode): boolean {
+  return APPROVAL_RANK[to] > APPROVAL_RANK[from];
+}
+
 export function isApprovalMode(value: unknown): value is ApprovalMode {
   return typeof value === "string" && (APPROVAL_MODES as readonly string[]).includes(value);
 }

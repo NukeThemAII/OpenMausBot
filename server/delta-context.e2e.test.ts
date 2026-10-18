@@ -411,8 +411,7 @@ it("keeps the person's request on work a thread the bot opened on itself hands o
 }), hostTimeout(120_000));
 
 it("keeps the person's request on work handed on after a card answer, on the root that asked", () => fixture(async (f) => {
-  // On Ask, so the proposed deletion waits on its card.
-  await f.api(`/api/bots/${f.chief.id}`, { approvalMode: "ask" }, "PATCH");
+  // A specialist the Chief suggests unasked is its question to the person, so it waits on its card at every level.
   const seen = new Set<string>();
   // The card ends a whole chief turn (launch, agents proxy, three tool calls): the slow CI hosts need the full poll budget.
   const card = async () => {
@@ -424,10 +423,10 @@ it("keeps the person's request on work handed on after a card answer, on the roo
     seen.add(id);
     return id;
   };
-  const deny = async (requestId: string) => {
+  const answer = async (requestId: string, behavior: "allow" | "deny") => {
     f.save();
     const response = await fetch(`${f.session.info.url}/api/threads/${f.thread}/respond`, { method: "POST",
-      headers: { "content-type": "application/json", origin: f.session.info.url }, body: JSON.stringify({ requestId, behavior: "deny" }) });
+      headers: { "content-type": "application/json", origin: f.session.info.url }, body: JSON.stringify({ requestId, behavior }) });
     expect(response.status, await response.clone().text()).toBeLessThan(300);
   };
   const briefed = async (brief: string) => {
@@ -437,7 +436,7 @@ it("keeps the person's request on work handed on after a card answer, on the roo
   };
   f.plan[f.lead.id] = { reply: "LEAD_DONE" };
   const propose = (key: string, brief: string) => ({
-    steps: [{ tool: "propose_bot_deletion", arguments: { bot_id: f.ops.id, reason: "No longer needed" } }], reply: "Proposed",
+    steps: [{ tool: "create_bot", arguments: { name: `Checker ${key}`, role: "Checks the work", instructions: "Check every result.", suggestion: true } }], reply: "Proposed",
     byPrompt: [{ promptIncludes: "team setup decision", plan: f.delegate(key, [f.lead], brief) }],
   });
 
@@ -445,7 +444,7 @@ it("keeps the person's request on work handed on after a card answer, on the roo
   await f.send("PERSON_CARD_ONE please tidy the team");
   const first = await card();
   await f.idle();
-  await deny(first);
+  await answer(first, "allow");
   const afterCard = await briefed("CARD_ONE_BRIEF");
   expect(afterCard).toMatch(assignedBy(f.chief.name));
   expect(afterCard).toContain(personLineage("PERSON_CARD_ONE please tidy the team"));
@@ -459,7 +458,7 @@ it("keeps the person's request on work handed on after a card answer, on the roo
   f.plan[f.chief.id] = { reply: "Hi", byPrompt: propose("late-card", "CARD_TWO_BRIEF check the team").byPrompt };
   await f.send("PERSON_LATER just say hi");
   await f.idle();
-  await deny(late);
+  await answer(late, "deny");
   const after = await briefed("CARD_TWO_BRIEF");
   expect(after).toMatch(assignedBy(f.chief.name));
   expect(after).toContain(personLineage("PERSON_CARD_TWO please tidy the team again"));

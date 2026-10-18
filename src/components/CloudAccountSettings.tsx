@@ -53,20 +53,22 @@ function trialLines(trial: CloudTrial | undefined, credit: CloudCredit | undefin
  * Security: status and address come only from the verified native snapshot; the pairing code never reaches this page.
  */
 function cloudHomeCard({ machine, busy, failed, onConnect, lending, trial = false }: { machine: CloudMachine; busy: boolean; failed: boolean; onConnect: () => void; lending?: CloudAccountBridge["lending"]; trial?: boolean }) {
-  const connectable = machine.status === "ready";
-  const text = trial && (machine.status === "stopped" || machine.status === "payment-problem") ? t("cloudHome.stoppedTrial")
+  const unreachable = machine.status === "ready" ? machine.unreachable : undefined;
+  const connectable = machine.status === "ready" && !unreachable;
+  const text = unreachable ? t(unreachable.cause === "host" ? "cloudHome.unreachableHost" : "cloudHome.unreachable")
+    : trial && (machine.status === "stopped" || machine.status === "payment-problem") ? t("cloudHome.stoppedTrial")
     : machine.status === "failed" && machine.retryAt ? t("cloudHome.failedRetry", { time: time(machine.retryAt) })
     : machine.status === "provisioning" && machine.setup?.slow ? t("cloudHome.slow") : t(MACHINE_TEXT[machine.status]);
   return <Card title={t("cloudHome.title")}>
-    <div data-cloud-home={machine.status} className="flex flex-col items-start gap-3">
-      <p role="status" className={machine.status === "ready" ? "text-[14px] text-ink" : "text-[13px] text-ink-secondary"}>{text}</p>
+    <div data-cloud-home={machine.status} data-cloud-unreachable={unreachable?.cause} className="flex flex-col items-start gap-3">
+      <p role="status" className={connectable ? "text-[14px] text-ink" : "text-[13px] text-ink-secondary"}>{text}</p>
       {machine.status === "provisioning" && setupSteps(machine)}
       {connectable && <>
         <button type="button" disabled={busy} className="ui-button" onClick={onConnect}>{t("cloudHome.connect")}</button>
         <p className="text-[12px] text-ink-secondary">{t("cloudHome.connectHelp")}</p>
         {cloudFilesBridge() && <OpenFilesButton label={t("cloudHome.filesLink")} className="text-[13px] font-medium text-accent-text underline underline-offset-2 hover:text-ink" />}
       </>}
-      {failed && <p role="alert" className="text-[13px] text-danger">{t("cloudHome.connectFailed")}</p>}
+      {failed && !unreachable && <p role="alert" className="text-[13px] text-danger">{t("cloudHome.connectFailed")}</p>}
       {lending && <CloudLending bridge={lending} />}
     </div>
   </Card>;
@@ -93,7 +95,7 @@ function cloudPhoneCard({ ready, busy, failed, onUse }: { ready: boolean; busy: 
 
 export function cloudLinkAction(account: CloudAccountState, link: { arrived: boolean; connected: boolean }): "sign-in" | "connect" | null {
   if (link.arrived && account.status === "signed-out" && account.message !== "restoring") return "sign-in";
-  if (!link.connected && account.status === "connected" && account.machine?.status === "ready") return "connect";
+  if (!link.connected && account.status === "connected" && account.machine?.status === "ready" && !account.machine.unreachable) return "connect";
   return null;
 }
 

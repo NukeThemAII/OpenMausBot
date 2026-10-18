@@ -257,7 +257,8 @@ describe("drawing a widget", () => {
     expect(field<HTMLInputElement>("starts").type).toBe("date");
     expect(field<HTMLInputElement>("starts").min).toBe("2026-10-13");
     expect(field<HTMLInputElement>("stopOnRed").checked).toBe(true);
-    expect(Array.from(report.options).map((option) => option.value)).toEqual(["", "discord:releases", "chat"]);
+    expect(Array.from(report.options).map((option) => option.value).slice(0, 3)).toEqual(["", "discord:releases", "chat"]);
+    expect(Array.from(report.options).map((option) => option.textContent).slice(3)).toEqual([t("question.other")]);
     expect(report.options[0]!.disabled).toBe(true);
     expect(report.value).toBe("");
   });

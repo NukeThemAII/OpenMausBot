@@ -1,5 +1,5 @@
 import { createManagedDesktopStore, retryDelay, unreadableRecord } from "./managed-desktop.mjs";
-import { CLOUD_MACHINE_CONNECTABLE, parseCloudCredit, parseCloudOffer, parseCloudPurchase, parseCloudSummary, parseCloudTrial, parsePairingGrant, parsePublicOffer, withoutTrial } from "./cloud-home.mjs";
+import { CLOUD_MACHINE_CONNECTABLE, cloudUnreachableText, parseCloudCredit, parseCloudOffer, parseCloudPurchase, parseCloudSummary, parseCloudTrial, parsePairingGrant, parsePublicOffer, withoutTrial } from "./cloud-home.mjs";
 import { cleanCode, cleanEmail, parseSignInStart, SIGN_IN_START, SIGN_IN_TRIES, SIGN_IN_VERIFY, signInIdentity, startFailure, verifyFailure } from "./cloud-signin.mjs";
 
 export const CLOUD_ORIGIN = "https://cloud.openmausbot.com";
@@ -457,7 +457,11 @@ export function createCloudAccountClient({ store, openBrowser, platform, deviceN
     async pairHome() {
       const target = homeTarget(), current = grant;
       if (!target || !current) throw new Error("My Cloud is not ready to connect yet.");
-      const result = await request("pairing", { method: "POST", body: {}, token: current.token });
+      let result;
+      try { result = await request("pairing", { method: "POST", body: {}, token: current.token }); } catch (error) {
+        const why = cloudUnreachableText(await refresh().catch(() => state()), target.origin);
+        throw why ? new Error(why) : error;
+      }
       const pairing = parsePairingGrant(result, target.origin, now());
       if (!pairing) throw new Error("Invalid Cloud pairing response.");
       return pairing;

@@ -101,6 +101,13 @@ function tarEntry(path: string, type: "File" | "Directory" | "SymbolicLink" | "L
   const body = Buffer.from(content);
   return Buffer.concat([block, body, Buffer.alloc((512 - body.length % 512) % 512)]);
 }
+function caseSensitiveTempFolder(): boolean {
+  const probe = mkdtempSync(join(tmpdir(), "omb-case-probe-"));
+  try {
+    writeFileSync(join(probe, "probe"), "");
+    return !existsSync(join(probe, "PROBE"));
+  } finally { rmSync(probe, { recursive: true, force: true }); }
+}
 afterEach(() => { for (const root of scratch.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 describe("encrypted full workspace backups", () => {
@@ -332,7 +339,7 @@ describe("encrypted full workspace backups", () => {
       "vm-home/.browser-profiles/chrome/Cookies", "vm-homes/abc/.browser-profiles/chromium/Cookies",
       "tmp/omb-mcp-123/mcp.json", ".tmp/secret",
       "logins.json.enc", "logins-key", "logins.json.enc.123.05a7b3e0-1234.tmp",
-      "highlevel.json.enc", "highlevel-key",
+      "highlevel.json.enc", "highlevel-key", "connected-apps-installation.json",
     ];
     for (const root of [source, target]) {
       for (const path of authPaths) {
@@ -551,6 +558,34 @@ describe("encrypted full workspace backups", () => {
     const root = directory();
     const path = encryptedPayload(root, Buffer.concat([payload(), Buffer.alloc(1024)]));
     await expect(stageWorkspaceBackup(root, path, { password: PASSWORD })).rejects.toThrow(/unsafe|unsupported entries|Compressed payloads/);
+    expect(readdirSync(join(root, ".backups"))).toEqual([]);
+  });
+
+  it.skipIf(process.platform === "win32").each([
+    ["notes/report-2026-10-16T04:00:00Z.md", "notes/report-2026-10-16T04:00:00Z.md"],
+    ["repo/aux/readme.txt", "repo/aux"],
+  ])("names the work file %s that Windows cannot restore, instead of failing anonymously (Windows cannot create it)", async (file, named) => {
+    const root = directory();
+    const work = join(root, "task-workspaces", "bot", "thread");
+    mkdirSync(join(work, file, ".."), { recursive: true });
+    writeFileSync(join(work, file), "x");
+    await expect(createWorkspaceBackup(root, { password: PASSWORD })).rejects.toThrow(`task-workspaces/bot/thread/${named}`);
+    expect(readdirSync(join(root, ".backups"))).toEqual([]);
+    rmSync(join(work, file));
+    rmSync(join(work, named), { recursive: true, force: true });
+    writeFileSync(join(work, "report.md"), "x");
+    expect((await createWorkspaceBackup(root, { password: PASSWORD })).summary.files).toBeGreaterThan(0);
+  });
+
+  it.skipIf(!caseSensitiveTempFolder())("names both work files whose names differ only by letter case (needs a case-sensitive file system)", async () => {
+    const root = directory();
+    const repo = join(root, "task-workspaces", "bot", "thread", "repo");
+    mkdirSync(repo, { recursive: true });
+    writeFileSync(join(repo, "README.md"), "upper");
+    writeFileSync(join(repo, "readme.md"), "lower");
+    const failure = createWorkspaceBackup(root, { password: PASSWORD });
+    await expect(failure).rejects.toThrow("task-workspaces/bot/thread/repo/README.md");
+    await expect(failure).rejects.toThrow("task-workspaces/bot/thread/repo/readme.md");
     expect(readdirSync(join(root, ".backups"))).toEqual([]);
   });
 

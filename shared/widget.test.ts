@@ -319,6 +319,69 @@ describe("widget actions", () => {
   });
 });
 
+describe("the person's own answer to a choice", () => {
+  const confirm = { label: "Choose", action: { type: "choose" } };
+  const rows = (...names: string[]) => names.map((value) => ({ type: "ListViewItem", children: [{ type: "Text", value }] }));
+
+  it("offers it on every Select, RadioGroup and list with a name unless the bot says allowOther: false", () => {
+    const root = parsed({ type: "Card", confirm, children: [
+      { type: "Select", name: "length", options: ["15", "30"] },
+      { type: "RadioGroup", name: "size", options: ["S", "M"], allowOther: false },
+      { type: "Input", name: "who", allowOther: true },
+      { type: "Checkbox", name: "ok", label: "OK", allowOther: true },
+    ] });
+    expect(root.children!.map((node) => node.allowOther)).toEqual([true, false, undefined, undefined]);
+    expect(parsed({ type: "ListView", name: "pick", confirm, children: rows("A", "B") }).allowOther).toBe(true);
+    expect(parsed({ type: "ListView", name: "pick", allowOther: false, confirm, children: rows("A", "B") }).allowOther).toBe(false);
+    expect("allowOther" in parsed({ type: "ListView", allowOther: true, children: rows("A") })).toBe(false);
+    // a stored tree read again keeps what it was posted with
+    expect(parsed(root)).toEqual(root);
+  });
+
+  it("sends their own words as the choice's line, apart from the options", () => {
+    const dinner = payload("dinnerChoice");
+    expect(resolveWidgetAction(dinner, "confirm", { dish: "" }, { dish: "  sushi \n rolls " })).toMatchObject({
+      ok: true, ref: "confirm", label: "Pick this", tone: "confirm", values: { dish: "" }, other: { dish: "sushi rolls" }, text: "Pick this\nDinner tonight: sushi rolls",
+    });
+    const routine = payload("routineForm");
+    expect(resolveWidgetAction(routine, "confirm", { report: "" }, { report: "Slack #ops" })).toMatchObject({
+      ok: true, other: { report: "Slack #ops" },
+      text: "Create routine\nRuns on: Weekdays\nStarts: 2026-10-14\nAt: 09:00\nReport to: Slack #ops\nStop if any check is red: yes",
+    });
+    const sink = payload("kitchenSink");
+    const submit = widgetActions(sink.root).find((entry) => entry.tone === "submit")!;
+    expect(resolveWidgetAction(sink, submit.ref, {}, { rating: "Slow, but it worked" })).toMatchObject({ ok: true, text: "Send feedback\nHow did the run go?: Slow, but it worked" });
+  });
+
+  it("counts their own words as an answer to a required choice, and blank words as none", () => {
+    const dinner = payload("dinnerChoice");
+    expect(resolveWidgetAction(dinner, "confirm", {}, { dish: "Leftovers" })).toMatchObject({ ok: true, values: { dish: "" }, other: { dish: "Leftovers" } });
+    expect(resolveWidgetAction(dinner, "confirm", {}, { dish: "   " })).toEqual({ ok: false, status: 400, error: "Dinner tonight is required." });
+    expect(resolveWidgetAction(dinner, "cancel", {}, { dish: "Leftovers" })).toEqual(expect.not.objectContaining({ other: expect.anything() }));
+  });
+
+  it("still takes only an offered option as the choice itself, and refuses words where they cannot go", () => {
+    const dinner = payload("dinnerChoice");
+    expect(resolveWidgetAction(dinner, "confirm", { dish: "sushi" })).toEqual({ ok: false, status: 400, error: "Dinner tonight must be one of the offered options." });
+    expect(resolveWidgetAction(dinner, "confirm", { dish: "pizza" }, { dish: "sushi" })).toEqual({ ok: false, status: 400, error: "Dinner tonight is one of the options or their own answer, not both." });
+    expect(resolveWidgetAction(dinner, "confirm", {}, { dish: "x".repeat(WIDGET_LIMITS.fieldValue + 1) })).toEqual({ ok: false, status: 400, error: `Dinner tonight must be at most ${WIDGET_LIMITS.fieldValue} characters.` });
+    expect(resolveWidgetAction(dinner, "confirm", {}, { dish: 3 })).toEqual({ ok: false, status: 400, error: "Dinner tonight must be text." });
+    expect(resolveWidgetAction(dinner, "confirm", {}, "sushi")).toEqual({ ok: false, status: 400, error: "other must be an object of field names." });
+    expect(resolveWidgetAction(dinner, "confirm", {}, { nope: "x" })).toEqual({ ok: false, status: 400, error: 'There is no field named "nope" here.' });
+    const closed = parsed({ type: "Card", confirm, children: [
+      { type: "RadioGroup", name: "size", options: ["S", "M"], allowOther: false },
+      { type: "Input", name: "who" },
+      { type: "Select", name: "plan", options: ["Pro"], disabled: true },
+    ] });
+    for (const name of ["size", "who", "plan"]) {
+      expect(resolveWidgetAction({ v: 1, root: closed }, "confirm", {}, { [name]: "Mine" })).toEqual({ ok: false, status: 400, error: `${name} takes only the offered options.` });
+    }
+    // a tree stored before this was offered has no allowOther, so it takes only its options
+    const { allowOther: _offered, ...stored } = dinner.root;
+    expect(resolveWidgetAction({ v: 1, root: stored as WidgetRoot }, "confirm", {}, { dish: "sushi" })).toEqual({ ok: false, status: 400, error: "Dinner tonight takes only the offered options." });
+  });
+});
+
 describe("times, days, labels and progress", () => {
   it("reads a time of day and keeps it inside its range", () => {
     const card = parsed({ type: "Card", children: [

@@ -243,6 +243,26 @@ it.each([
   expect(html.includes(">Open My Cloud</button>")).toBe(connectable);
   expect(html).not.toContain("Could not complete this Cloud action");
 });
+it("says why a ready Cloud can't be reached when the Admin knows, with no button that can't reach it", async () => {
+  const since = Date.UTC(2026, 9, 16, 9);
+  await ready({ ...pro, machine: { status: "ready", origin, unreachable: { cause: "host", since } } });
+  let html = render().html;
+  expect(html).toContain('data-cloud-unreachable="host"');
+  expect(html).toContain("The server My Cloud runs on is being restarted by our hosting provider. My Cloud and its files are safe, and it comes back on its own, usually within about 20 minutes.");
+  expect(html).not.toContain(">Open My Cloud</button>");
+  expect(html).not.toContain("My Cloud is ready");
+  push({ ...pro, machine: { status: "ready", origin, unreachable: { cause: "no_answer", since } } });
+  html = render().html;
+  expect(html).toContain("My Cloud hasn&#x27;t answered for a few minutes. Nothing was lost, and we&#x27;ve been told.");
+  expect(html).not.toContain(">Open My Cloud</button>");
+  // The Cloud link opens nothing while it can't be reached, and does once it answers again.
+  render({ linkRequest: 1 }); f.effects[1](); await flush();
+  expect(bridge.connectHome).not.toHaveBeenCalled();
+  push({ ...pro, machine: { status: "ready", origin } });
+  expect(render().html).toContain(">Open My Cloud</button>");
+  render({ linkRequest: 1 }); f.effects[1](); await flush();
+  expect(bridge.connectHome).toHaveBeenCalledExactlyOnceWith();
+});
 it("promises no included AI: the person signs in with their own account there", async () => {
   await ready({ ...pro, machine: { status: "ready", origin } });
   const html = render().html;

@@ -26,6 +26,7 @@ beforeAll(async () => {
 });
 afterAll(async () => { await hl.close(); await relay.close(); });
 afterEach(async () => {
+  hl.pathOverrides.clear();
   for (const service of services.splice(0)) service.close();
   for (const dir of dirs.splice(0)) await removeTempDir(dir);
 });
@@ -94,10 +95,10 @@ describe("sign-in flow", () => {
     const state = [...relay.states.keys()].at(-1)!;
     relay.complete(state);
     await until(() => svc.signInStatus(started.flowId), (status) => status?.phase === "connected");
-    expect(svc.status()).toMatchObject({ state: "connected", kind: "oauth", location: { id: FAKE_LOCATION_ID, name: "Precision Profiles" } });
+    expect(svc.status()).toMatchObject({ state: "connected", kind: "oauth", location: { id: FAKE_LOCATION_ID, name: "Example Profiles" } });
     expect(svc.status().connectedAt).toEqual(expect.any(Number));
     expect(svc.connected()).toBe(true);
-    expect(svc.store.get()).toMatchObject({ kind: "oauth", locationName: "Precision Profiles", companyId: "company_1", userId: "user_1", scopes: expect.stringContaining("contacts.write") });
+    expect(svc.store.get()).toMatchObject({ kind: "oauth", locationName: "Example Profiles", companyId: "company_1", userId: "user_1", scopes: expect.stringContaining("contacts.write") });
     // The flow's answer stays readable, and the tokens are nowhere in the status.
     expect(JSON.stringify(svc.status())).not.toMatch(/hl_access|hl_refresh/u);
     expect(svc.signInStatus(started.flowId)).toEqual({ phase: "connected" });
@@ -144,9 +145,10 @@ describe("sign-in flow", () => {
     await expect(svc.startSignIn()).rejects.toThrow(/no OpenMausBot relay is configured/u);
     await expect(svc.connectWithToken("nope", FAKE_LOCATION_ID)).rejects.toThrow("Paste a Private Integration token. It starts with pit-.");
     await expect(svc.connectWithToken("pit-abcdefgh12345678", "x")).rejects.toThrow(/Enter the location id/u);
-    await expect(svc.connectWithToken("pit-abcdefgh12345678", FAKE_LOCATION_ID)).rejects.toThrow("HighLevel did not accept this token for that location. Check the token and the location id.");
+    await expect(svc.connectWithToken("pit-abcdefgh12345678", FAKE_LOCATION_ID)).rejects.toThrow(/^HighLevel did not accept this token \(401\)\./u);
+    expect(svc.store.get()).toBeNull();
     hl.tokens.add("pit-abcdefgh12345678");
-    expect(await svc.connectWithToken(" pit-abcdefgh12345678 ", ` ${FAKE_LOCATION_ID} `)).toMatchObject({ state: "connected", kind: "token", location: { id: FAKE_LOCATION_ID, name: "Precision Profiles" } });
+    expect(await svc.connectWithToken(" pit-abcdefgh12345678 ", ` ${FAKE_LOCATION_ID} `)).toMatchObject({ state: "connected", kind: "token", location: { id: FAKE_LOCATION_ID, name: "Example Profiles" } });
     expect(svc.store.get()).toMatchObject({ kind: "token", accessToken: "pit-abcdefgh12345678", companyId: "company_1" });
     expect(svc.store.get()?.refreshToken).toBeUndefined();
     svc.store.markNeedsSignIn("HighLevel rejected the Private Integration token.");
@@ -192,10 +194,19 @@ describe("owner routes", () => {
     expect(await request(routes, "GET", `/api/highlevel/sign-in/${started.body.flowId}`, admin)).toEqual({ status: 200, body: { phase: "failed", message: "Cancelled." } });
     expect(await request(routes, "POST", "/api/highlevel/token", admin, { token: "", locationId: FAKE_LOCATION_ID })).toEqual({ status: 400, body: { error: "Paste a Private Integration token. It starts with pit-." } });
     expect(await request(routes, "POST", "/api/highlevel/token", admin, { token: "pit-abcdefgh12345678" })).toEqual({ status: 400, body: { error: "Enter the location id (Settings → Business Profile in HighLevel)." } });
-    expect(await request(routes, "POST", "/api/highlevel/token", admin, { token: "pit-not-accepted-1", locationId: FAKE_LOCATION_ID })).toEqual({ status: 401, body: { error: "HighLevel did not accept this token for that location. Check the token and the location id." } });
+    // Each refusal reaches the card as its own sentence, with HighLevel's reason and never the token.
+    expect(await request(routes, "POST", "/api/highlevel/token", admin, { token: "pit-not-accepted-1", locationId: FAKE_LOCATION_ID })).toEqual({ status: 401, body: { error: "HighLevel did not accept this token (401). Check that it was copied whole and has not been rotated or deleted, and that its Private Integration has the View Locations permission. HighLevel said: Invalid JWT" } });
     hl.tokens.add("pit-route-token-123");
+    expect(await request(routes, "POST", "/api/highlevel/token", admin, { token: "pit-route-token-123", locationId: "loc_other_9" })).toEqual({ status: 403, body: {
+      error: "This token does not belong to that location (403): it was created in another sub-account or at the agency level. Create the Private Integration inside the sub-account whose location ID you entered. HighLevel said: The token does not have access to this location.",
+    } });
+    hl.pathOverrides.set(`GET /locations/${FAKE_LOCATION_ID}`, { status: 401, body: { statusCode: 401, message: "The token is not authorized for this scope.", error: "Unauthorized" } });
+    const missing = await request(routes, "POST", "/api/highlevel/token", admin, { token: "pit-route-token-123", locationId: FAKE_LOCATION_ID });
+    expect(missing).toMatchObject({ status: 401, body: { error: expect.stringMatching(/^This token is missing the View Locations permission \(401\).+HighLevel said: The token is not authorized for this scope\.$/u) } });
+    expect(JSON.stringify(missing.body)).not.toContain("pit-route");
+    hl.pathOverrides.clear();
     const connected = await request(routes, "POST", "/api/highlevel/token", admin, { token: " pit-route-token-123 ", locationId: FAKE_LOCATION_ID });
-    expect(connected).toMatchObject({ status: 200, body: { state: "connected", kind: "token", location: { id: FAKE_LOCATION_ID, name: "Precision Profiles" } } });
+    expect(connected).toMatchObject({ status: 200, body: { state: "connected", kind: "token", location: { id: FAKE_LOCATION_ID, name: "Example Profiles" } } });
     expect(JSON.stringify(connected.body)).not.toContain("pit-route");
     expect(await request(routes, "DELETE", "/api/highlevel", admin)).toEqual({ status: 200, body: { state: "signed-out" } });
     relay.unavailable = true;

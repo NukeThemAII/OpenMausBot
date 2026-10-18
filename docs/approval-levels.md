@@ -72,9 +72,11 @@ set a level on follows the default, and so does each of its threads without a
 level of its own. Bots and threads that saved Ask before Full access became
 the default keep it: choose Full access in the bot's settings, or **Set for
 all bots in this team…**, to move a bot and every one of its threads at once.
-Ask, Auto, and Custom retain their existing OMB configuration review cards.
-Full actions return an applied result and leave a settled receipt, so the bot
-continues in the same turn. Invalid input, unavailable services, or failed
+OpenMausBot adds no review card of its own at any level: a bot's profile,
+working folder, model, skill, team setup and team memory changes apply at
+once and leave a one-line receipt with Undo, so the bot continues in the same
+turn. Routine requests keep their own rule until Triggers v2 replaces them,
+and on My Cloud a turn a guest or a webhook drove still waits for the owner. Invalid input, unavailable services, or failed
 writes return errors, not a request to approve again. An expired native
 permission request is not turned into another Allow/Deny card.
 
@@ -241,7 +243,7 @@ silently substitute unrestricted access when a mode is rejected.
 OpenMausBot's built-in agents MCP server describes its scoped reads with
 explicit read-only, non-destructive, idempotent, closed-world metadata:
 `list_bots`, `list_rooms`, `list_threads`, `assignment_status`,
-`session_search`, `session_read`, `list_routines`, and `skills_list`.
+`session_search`, `session_read`, `list_triggers`, and `skills_list`.
 Session recall still enforces own-bot access and records its existing room
 disclosure audit. These hints do not grant access to another bot's conversations.
 Writes, credential requests, proposals, and third-party tools do not inherit

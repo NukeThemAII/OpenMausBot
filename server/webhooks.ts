@@ -81,6 +81,8 @@ export type WebhookManagerEvent =
   | { kind: "webhook.attempt"; attempt: WebhookAttempt };
 
 const MAX_DELIVERIES = 2_000;
+const RESTORE_WINDOW_MS = 7 * 24 * 60 * 60_000;
+const MAX_DELETED = 50;
 const MAX_ATTEMPTS = 2_000;
 const MAX_EVENT_CHARS = 48_000;
 const RATE_WINDOW_MS = 60_000;
@@ -151,11 +153,14 @@ const webhookAttemptSchema = z.object({
   runId: z.string().optional(),
   reason: z.string().optional(),
 });
+const deletedWebhookSchema = z.object({ at: z.number().finite().nonnegative(), webhook: storedWebhookSchema });
 const webhookFileSchema = z.object({
   version: z.literal(1),
   webhooks: z.array(storedWebhookSchema),
   deliveries: z.array(deliveryReceiptSchema),
   attempts: z.array(webhookAttemptSchema).optional(),
+  /** Webhooks deleted in the last week, kept so a chat Undo can bring one back with its URL and secret. */
+  deleted: z.array(deletedWebhookSchema).optional(),
 });
 const taskPayloadSchema = z.object({ task: z.string().optional(), message: z.string().optional() });
 const statusErrorSchema = z.object({ status: z.number().int().optional() });
@@ -297,6 +302,7 @@ export class WebhookManager {
   private webhooks: StoredWebhookTrigger[] = [];
   private deliveries: DeliveryReceipt[] = [];
   private attempts: WebhookAttempt[] = [];
+  private deleted: Array<z.output<typeof deletedWebhookSchema>> = [];
   private rate = new Map<string, number[]>();
   private unauthorized = new Map<string, number>();
   /** Saves are refused while set, so an empty state never overwrites an unreadable file. */
@@ -312,10 +318,12 @@ export class WebhookManager {
       this.webhooks = parsed.data.webhooks;
       this.deliveries = parsed.data.deliveries.slice(-MAX_DELIVERIES);
       this.attempts = (parsed.data.attempts ?? []).slice(-MAX_ATTEMPTS);
+      this.deleted = (parsed.data.deleted ?? []).filter((entry) => entry.at >= this.now() - RESTORE_WINDOW_MS);
     } catch (error) {
       this.webhooks = [];
       this.deliveries = [];
       this.attempts = [];
+      this.deleted = [];
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         this.unreadable = true;
         // JSON.parse errors can echo a fragment of the input, so they never reach the log.
@@ -389,6 +397,8 @@ export class WebhookManager {
     const at = this.webhooks.findIndex((candidate) => candidate.id === id);
     if (at === -1) return false;
     const [trigger] = this.webhooks.splice(at, 1);
+    this.deleted = [...this.deleted.filter((entry) => entry.at >= this.now() - RESTORE_WINDOW_MS && entry.webhook.id !== trigger.id),
+      { at: this.now(), webhook: trigger }].slice(-MAX_DELETED);
     this.deliveries = this.deliveries.filter((delivery) => !delivery.key.startsWith(`${trigger.endpointId}:`));
     this.attempts = this.attempts.filter((attempt) => attempt.webhookId !== trigger.id);
     this.rate.delete(trigger.endpointId);
@@ -397,6 +407,20 @@ export class WebhookManager {
     this.save();
     this.options.emit?.({ kind: "webhook.deleted", webhookId: id });
     return true;
+  }
+
+  /** Brings back a webhook deleted in the last week, with the same URL and secret. Null when it is gone for good. */
+  restore(id: string): WebhookTrigger | null {
+    this.assertWritable();
+    const entry = this.deleted.find((candidate) => candidate.webhook.id === id && candidate.at >= this.now() - RESTORE_WINDOW_MS);
+    if (!entry || this.webhooks.some((candidate) => candidate.id === id || candidate.endpointId === entry.webhook.endpointId)) return null;
+    if (this.options.botState(entry.webhook.botId) === "missing") fail(410, "The assigned bot no longer exists");
+    const trigger: StoredWebhookTrigger = { ...entry.webhook, updatedAt: this.now() };
+    this.deleted = this.deleted.filter((candidate) => candidate !== entry);
+    this.webhooks.unshift(trigger);
+    this.save();
+    this.emit(trigger);
+    return publicTrigger(trigger);
   }
 
   rotateSecret(id: string): { webhook: WebhookTrigger; secret: string } | null {
@@ -670,7 +694,7 @@ export class WebhookManager {
     mkdirSync(dirname(this.file), { recursive: true });
     writeFileAtomic(
       this.file,
-      JSON.stringify({ version: 1, webhooks: this.webhooks, deliveries: this.deliveries, attempts: this.attempts } satisfies WebhookFile, null, 2),
+      JSON.stringify({ version: 1, webhooks: this.webhooks, deliveries: this.deliveries, attempts: this.attempts, deleted: this.deleted } satisfies WebhookFile, null, 2),
       { mode: 0o600 },
     );
   }

@@ -56,7 +56,7 @@ registerHooks({
       }
     ` };
     const result = nextLoad(url, context);
-    if (url.endsWith('/local-vm-idle.ts')) {
+    if (url.endsWith('/computer-idle.ts')) {
       return { ...result, source: `import { readFileSync as readVmIdle } from 'node:fs';\n` +
         String(result.source).replaceAll('checkedIdleMs(idleMs)', `(JSON.parse(readVmIdle(${JSON.stringify(state)}, 'utf8')).idleMs ?? checkedIdleMs(idleMs))`) };
     }

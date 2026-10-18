@@ -52,8 +52,8 @@ describe("glass surface", () => {
     }
   });
 
-  it("is what the Settings, Apps and Triggers pop-ups are drawn on", () => {
-    for (const file of ["SettingsModal.tsx", "PluginsPanel.tsx", "TriggersPanel.tsx"]) {
+  it("is what the Settings and Apps pop-ups are drawn on", () => {
+    for (const file of ["SettingsModal.tsx", "PluginsPanel.tsx"]) {
       const source = readFileSync(join(src, "components", file), "utf8");
       expect(source, file).toContain("glass-surface");
       // The scrim is a sibling: a backdrop-filter on an ancestor would hide the app from the pane's own blur.
@@ -71,7 +71,7 @@ describe("glass surface", () => {
     expect(glassPopupTopInset("mac-inset")).toBe(56);
     expect(glassPopupTopInset("win-caption")).toBe(56);
     expect(glassPopupTopInset("native")).toBe(24);
-    for (const file of ["SettingsModal.tsx", "PluginsPanel.tsx", "TriggersPanel.tsx"]) {
+    for (const file of ["SettingsModal.tsx", "PluginsPanel.tsx"]) {
       const source = readFileSync(join(src, "components", file), "utf8");
       expect(source, file).toContain('className="glass-popup-frame"');
       expect(source, file).toContain("style={glassPopupFrameStyle()}");

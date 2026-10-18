@@ -9,6 +9,7 @@ import { track } from "@/lib/analytics";
 import { brandStatus } from "@/lib/brand";
 import { buyOfferAllowed, cloudBeatTerms, cloudPlanView } from "@/lib/cloud-plan";
 import { t } from "@/lib/i18n";
+import { CLOUD_PRO_UPDATE_NOTICE } from "@/lib/notices";
 import { cloudBeatPossible, cloudBeatWanted, hintSeenPatch, ONBOARDING_CLOUD_HINT } from "@/lib/onboarding";
 import type { LocaleKey } from "@/locales";
 import { api, useStore } from "@/state/store";
@@ -19,26 +20,30 @@ import { QuietButton, staggerIndex, type BeatProps } from "./shared";
 export const CLOUD_BEAT_WAIT_MS = 6_000;
 const TICKS: readonly LocaleKey[] = ["onboarding.cloud.routines", "onboarding.cloud.phone", "onboarding.cloud.move"];
 
-/** The offer for the welcome's Cloud beat, or null: decided once, within `wait`, and never waited on. `shown` (the
- * preview) stands in for the bridge. */
+/** The offer for the welcome's Cloud beat, or null: decided once, within `wait`, and never waited on; none once this
+ * desktop has seen the Cloud Pro popup. `shown` (the preview) stands in for the bridge. */
 export function useCloudBeatOffer(hosted: boolean, shown?: CloudOffer | null, wait = CLOUD_BEAT_WAIT_MS): CloudOffer | null {
   const remote = !localDesktopPage() || window.ogb?.remoteClient?.active === true;
   const bridge = remote ? undefined : window.ogb?.cloudAccount;
+  const desktop = remote ? undefined : window.ogb?.desktopNotices;
   const place = { bridge: Boolean(bridge?.offer), branded: brandStatus().source === "file", hosted, remote };
   const possible = shown === undefined && cloudBeatPossible(place);
   const [decided, setDecided] = useState<CloudOffer | null>(null);
   useEffect(() => {
     if (!possible || !bridge?.offer) return;
     let active = true, done = false, account: CloudAccountState | null = null, offer: CloudOffer | null | undefined;
+    let popupSeen: boolean | undefined = desktop ? undefined : false;
     const settle = (value: CloudOffer | null) => { if (active && !done) { done = true; setDecided(value); } };
     const check = () => {
+      if (popupSeen) return settle(null);
       const view = cloudPlanView(account);
-      if (view.kind === "unknown" || offer === undefined) return;
+      if (view.kind === "unknown" || offer === undefined || popupSeen === undefined) return;
       settle(cloudBeatWanted({ ...place, mayBuy: buyOfferAllowed(view), offer }) ? offer : null);
     };
     const unsubscribe = bridge.onState(next => { account = next; check(); });
     void bridge.state().then(next => { account ??= next; check(); }, () => settle(null));
     void bridge.offer().then(next => { offer = next; check(); }, () => settle(null));
+    void desktop?.state().then(next => { popupSeen = next.seen.includes(CLOUD_PRO_UPDATE_NOTICE); check(); }, () => settle(null));
     const timer = setTimeout(() => settle(null), wait);
     return () => { active = false; unsubscribe(); clearTimeout(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps

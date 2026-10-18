@@ -45,6 +45,7 @@ export function RoutineList({ routines, runs, bots, loading, error, onOpen, onLo
         </div>
         {latest && (latest.attention || latest.error || latest.output) && <p className={cn("mt-2 line-clamp-2 whitespace-pre-wrap text-[11.5px] leading-relaxed", latest.error ? "text-danger" : "text-ink-secondary")}>{latest.attention || latest.error || latest.output}</p>}
         {!!routine.failureStreak && <p className="mt-2 text-[11.5px] text-danger">{t("routines.failureStreak", { count: routine.failureStreak })}</p>}
+        {routine.weekRuns && <p className="mt-2 text-[11.5px] text-ink-secondary">{t("routines.weekRuns", routine.weekRuns)}</p>}
         {routine.warning && <p className="mt-2 text-[11.5px] leading-relaxed text-warning">{routine.warning}</p>}
         {!!routine.skippedRuns && <p className="mt-2 text-[11.5px] text-ink-secondary">
           {t("routines.skippedRuns", { count: routine.skippedRuns })}

@@ -90,7 +90,7 @@ beforeEach(() => {
   push = () => {};
   bridge = {
     state: vi.fn().mockResolvedValue(overview()), start: vi.fn().mockResolvedValue({ phase: "preparing" }), cancel: vi.fn().mockResolvedValue({ phase: "failed" }),
-    restorePrevious: vi.fn(), dismiss: vi.fn().mockResolvedValue(overview({ suggest: false })),
+    restorePrevious: vi.fn(), bring: vi.fn(), dismiss: vi.fn().mockResolvedValue(overview({ suggest: false })),
     onState: vi.fn((callback) => { push = callback; return () => {}; }),
   };
   lending = { open: vi.fn().mockResolvedValue(undefined) };
@@ -260,6 +260,37 @@ describe("CloudWelcome", () => {
     expect(text()).not.toContain("Claude credit");
     click("Continue");
     expect(host.querySelector('[data-welcome-step="files"]')).not.toBeNull();
+  });
+
+  it("right after an AI is connected here, checks it with one tiny real message and says it works, or what to fix", async () => {
+    fixture.state.config.onboarding = { ...EMPTY_ONBOARDING, hintsSeen: [welcomeStepHint("bring")] };
+    fixture.state.instances = [claude, codex, credit];
+    const checks: string[] = [];
+    let answer: Record<string, unknown> = { ok: true };
+    const config = fixture.api.getMockImplementation()!;
+    fixture.api.mockImplementation(async (path: string, init?: RequestInit) => {
+      const check = /^\/api\/instances\/([\w.-]+)\/check$/.exec(path);
+      if (!check) return config(path, init);
+      checks.push(check[1]!);
+      return answer;
+    });
+    render();
+    // Already connected or not, nothing is checked until one is connected here.
+    expect(checks).toEqual([]);
+    fixture.state = { ...fixture.state, instances: [{ ...claude, snapshot: { state: "available", authenticated: true } }, codex, credit] };
+    render();
+    await vi.waitFor(() => expect(text()).toContain("Claude is working"));
+    expect(checks).toEqual(["claude"]);
+    expect(host.querySelector('[data-engine-check="working"]')).not.toBeNull();
+    answer = { ok: false, error: "ChatGPT isn't signed in on this computer anymore. Sign in again, then check again." };
+    fixture.state = { ...fixture.state, instances: [{ ...claude, snapshot: { state: "available", authenticated: true } }, { ...codex, snapshot: { state: "available", authenticated: true } }, credit] };
+    render();
+    await vi.waitFor(() => expect(host.querySelector('[data-engine-check="failed"]')).not.toBeNull());
+    expect(text()).toContain("ChatGPT is connected but didn't answer a test message. ChatGPT isn't signed in on this computer anymore. Sign in again, then check again.");
+    answer = { ok: true };
+    click("Test again");
+    await vi.waitFor(() => expect(host.querySelectorAll('[data-engine-check="working"]')).toHaveLength(2));
+    expect(checks).toEqual(["claude", "codex", "codex"]);
   });
 
   it("files and apps open this computer's Files and Connected apps, then it is ready and says hi to the Chief of Staff", async () => {

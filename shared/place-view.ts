@@ -133,7 +133,7 @@ export const PLACE_EN = {
   "place.view.ccWaking.short": "Waking…",
   "place.view.ccWaking.line": "Waking {bot}'s cloud computer. This takes a few seconds.",
   "place.view.ccOn.short": "On",
-  "place.view.ccOn.line": "{bot}'s cloud computer is on.",
+  "place.view.ccOn.line": "{bot}'s cloud computer is on. It goes to sleep after 10 minutes without use.",
   "place.view.ccAsleep.short": "Asleep",
   "place.view.ccAsleep.line": "{bot}'s cloud computer is asleep. It wakes in a few seconds when {bot} needs it.",
   "place.view.ccNoHours.short": "No hours left",

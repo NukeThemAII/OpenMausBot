@@ -1,3 +1,5 @@
+import { hasPriorRun } from "./prior-run";
+
 export const SKIN_IDS = [
   "midnight",
   "atelier",
@@ -29,7 +31,8 @@ export const SKINS: readonly Skin[] = [
   { id: "meadow", name: "Meadow", tagline: "Fresh white with a calm green. The MausBot look." },
 ];
 
-export const DEFAULT_SKIN: SkinId = "midnight";
+export const DEFAULT_SKIN: SkinId = "meadow";
+export const PRIOR_INSTALL_SKIN: SkinId = "midnight";
 
 const KEY = "omb-skin";
 
@@ -48,10 +51,12 @@ function getStore(): Storage | undefined {
 
 export function readSkin(): SkinId {
   try {
-    const stored = getStore()?.getItem(KEY);
-    return isSkinId(stored) ? stored : DEFAULT_SKIN;
+    const store = getStore();
+    const stored = store?.getItem(KEY);
+    if (isSkinId(stored)) return stored;
+    return hasPriorRun(store) ? PRIOR_INSTALL_SKIN : DEFAULT_SKIN;
   } catch {
-    return DEFAULT_SKIN;
+    return PRIOR_INSTALL_SKIN;
   }
 }
 

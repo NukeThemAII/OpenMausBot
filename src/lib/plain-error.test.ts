@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { isTechnicalError, plainErrorLine } from "./plain-error";
+import { botsSaveFailure } from "../../shared/bots-save-failure";
 
 describe("plainErrorLine", () => {
   it.each([
@@ -40,6 +41,8 @@ describe("plainErrorLine", () => {
     "no activity for 10 minutes — the turn was stopped",
     "The server returned HTTP 503. Wait for the scheduled maintenance to finish, then try again.",
     "Couldn't undo that change.",
+    botsSaveFailure("the thread switch", "EPERM"),
+    botsSaveFailure("the thread's usage", "ENOSPC"),
     "",
   ])("keeps a sentence a person can read: %j", (raw) => {
     expect(isTechnicalError(raw)).toBe(false);

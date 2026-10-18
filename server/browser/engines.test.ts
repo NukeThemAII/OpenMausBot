@@ -1,13 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { BrowserLive } from "../browser-live.ts";
-import type { BrowserRuntime } from "../browser-runtime.ts";
-import { CHROME_ENGINE, chromeTarget, LiveRouter, profileKey, RuntimeRouter, type ChromeEngine } from "./engines.ts";
+import { attachesToChrome, type BrowserRuntime } from "../browser-runtime.ts";
+import type { ListenerOwnership } from "./egress/ownership.ts";
+import type { EgressHost } from "./egress/policy.ts";
+import { REDDIT_REFUSAL } from "./egress/reddit.ts";
+import { BrowserEgress, OwnListeners } from "./egress/registry.ts";
+import { CHROME_ENGINE, chromeTarget, LiveRouter, profileKey, RuntimeRouter, type ChromeEngine, type RuntimeRouterOptions } from "./engines.ts";
 
 const AGENT_BROWSER = { command: "/opt/agent-browser", args: ["--session", "s"], env: { AGENT_BROWSER_SESSION: "s" } };
 const CHROME = { command: CHROME_ENGINE, args: ["bot:a"], env: {} };
 
-function engines() {
+function engines(options: RuntimeRouterOptions = {}) {
   const old = {
     agentRpc: vi.fn(async () => "agent-browser"),
     previewFrame: vi.fn(async (_session: string, capture: () => Promise<unknown>) => capture()),
@@ -33,7 +37,7 @@ function engines() {
     live: { open: vi.fn(async () => undefined), action: vi.fn(async () => "chrome"), has: vi.fn((viewerId: string) => viewerId === "v-chrome"), handBack: vi.fn(), closeForSession: vi.fn(), closeForOwner: vi.fn(), closeForBot: vi.fn(), closeAll: vi.fn() },
     close: vi.fn(async () => undefined),
   };
-  const runtime = new RuntimeRouter(old as unknown as BrowserRuntime, chrome as unknown as ChromeEngine);
+  const runtime = new RuntimeRouter(old as unknown as BrowserRuntime, chrome as unknown as ChromeEngine, options);
   const live = new LiveRouter(oldLive as unknown as BrowserLive, chrome as unknown as ChromeEngine);
   return { old, oldLive, chrome, runtime, live };
 }
@@ -77,6 +81,47 @@ describe("the runtime router", () => {
     expect(old.closeIfIdle).not.toHaveBeenCalled();
     await expect(runtime.closeIfIdle("s", 1000, AGENT_BROWSER)).resolves.toBe(true);
     expect(old.closeIfIdle).toHaveBeenCalledWith("s", 1000, AGENT_BROWSER);
+  });
+
+  /** As server/host/browser.ts wires it. */
+  const onHost = (host: EgressHost) => {
+    const egress = new BrowserEgress();
+    egress.configure({ host, config: () => ({}), ownership: { botOwned: async () => false } as unknown as ListenerOwnership, listeners: new OwnListeners(host, { env: {}, streamPorts: () => [], devToolsPorts: () => [] }) });
+    return engines({ refusal: (spec, params) => (attachesToChrome(spec.env) ? null : egress.callRefusal(params)) });
+  };
+  const OPENS_REDDIT = [
+    { name: "agent_browser_open", arguments: { url: "https://www.reddit.com/r/test/" } },
+    { name: "agent_browser_navigate", arguments: { url: "old.reddit.com/r/test" } },
+    { name: "agent_browser_tabs", arguments: { action: "new", url: "https://i.redd.it/a.png" } },
+    { name: "agent_browser_tab_new", arguments: { url: "https://www.reddit.com/" } },
+  ];
+
+  it("tells a bot on MausBot Cloud why its browser doesn't open Reddit, on either engine, without reaching it", async () => {
+    const { old, chrome, runtime } = onHost("cloud");
+    for (const spec of [AGENT_BROWSER, CHROME]) {
+      for (const call of OPENS_REDDIT) {
+        await expect(runtime.agentRpc("s", spec, "tools/call", call), `${spec.command} ${call.name}`).resolves.toEqual({ isError: true, content: [{ type: "text", text: REDDIT_REFUSAL }] });
+      }
+    }
+    expect(old.agentRpc).not.toHaveBeenCalled();
+    expect(chrome.service.agentRpc).not.toHaveBeenCalled();
+    await expect(runtime.agentRpc("s", CHROME, "tools/call", { name: "agent_browser_open", arguments: { url: "https://example.com/" } })).resolves.toBe("chrome");
+    await expect(runtime.agentRpc("s", AGENT_BROWSER, "tools/list", OPENS_REDDIT[0])).resolves.toBe("agent-browser");
+  });
+
+  it("opens Reddit on the desktop, on a self-hosted server and in the person's own Chrome", async () => {
+    for (const host of ["desktop", "server"] as const) {
+      const { old, chrome, runtime } = onHost(host);
+      for (const call of OPENS_REDDIT) {
+        await expect(runtime.agentRpc("s", AGENT_BROWSER, "tools/call", call)).resolves.toBe("agent-browser");
+        await expect(runtime.agentRpc("s", CHROME, "tools/call", call)).resolves.toBe("chrome");
+      }
+      expect(old.agentRpc).toHaveBeenCalledTimes(OPENS_REDDIT.length);
+      expect(chrome.service.agentRpc).toHaveBeenCalledTimes(OPENS_REDDIT.length);
+    }
+    const { runtime } = onHost("cloud");
+    const myChrome = { ...AGENT_BROWSER, env: { ...AGENT_BROWSER.env, AGENT_BROWSER_AUTO_CONNECT: "1" } };
+    await expect(runtime.agentRpc("s", myChrome, "tools/call", OPENS_REDDIT[0])).resolves.toBe("agent-browser");
   });
 
   it("answers who holds a session and what was interrupted across both engines", () => {

@@ -81,7 +81,11 @@ export function createBrowserHost(deps: BrowserHostDeps) {
     idleMs: () => browserIdleMs(cfg),
     log: (line) => console.warn(line),
   });
-  const browserRuntime = new RuntimeRouter(agentBrowserRuntime, chromeEngine);
+  // A tool call that would open Reddit from MausBot Cloud is refused before it reaches the browser. My Chrome is the
+  // person's own, outside the egress gate too.
+  const browserRuntime = new RuntimeRouter(agentBrowserRuntime, chromeEngine, {
+    refusal: (spec, params) => (attachesToChrome(spec.env) ? null : browserEgress.callRefusal(params)),
+  });
   const browserLive = new LiveRouter(agentBrowserLive, chromeEngine);
   const usedBrowserSessions = new Map<string, Spec>();
   browserEgress.configure({ host: DESKTOP_MANAGED ? "desktop" : CLOUD_HOME ? "cloud" : "server", config: () => cfg.browserEngine?.egress });

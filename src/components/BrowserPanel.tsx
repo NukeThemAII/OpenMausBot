@@ -15,12 +15,16 @@ type ViewerFrame = BrowserFrame & { viewerId: string; generation: number };
 const button = "rounded-md p-1.5 text-ink-secondary hover:bg-inset hover:text-ink disabled:opacity-40 disabled:cursor-not-allowed";
 const RECONNECT_DELAYS = [1_000, 2_000, 4_000, 8_000, 15_000];
 const RECONNECT_MESSAGE = "Connection interrupted. Reconnecting the browser view…";
+// The server sends a heartbeat every 10 s: a view that heard nothing for longer lost its stream without an error.
+const SILENT_MS = 25_000;
+const SILENCE_CHECK_MS = 5_000;
 
 const NO_CONTROL = { held: false, controlling: false, owned: false };
 
 export type BrowserSignIn = { url: string; site: string; nonce: number };
 
-/** Security: a new connection never silently restores permission to type and never replays old frames. */
+/** Security: a new connection never silently restores permission to type and never replays old frames or input. Only the
+ * server returns a hold, and only to this panel's reconnect after its own stream dropped. */
 export function LiveBrowser({ bot, signIn }: { bot: Bot; signIn?: BrowserSignIn }) {
   const { state } = useStore();
   const [attempt, setAttempt] = useState(0);
@@ -53,6 +57,8 @@ export function LiveBrowser({ bot, signIn }: { bot: Bot; signIn?: BrowserSignIn 
   const urlEditing = useRef(false);
   const reconnectCount = useRef(0);
   const connectionProfile = useRef("");
+  const resumeFrom = useRef("");
+  const wake = useRef<((focused: boolean) => void) | null>(null);
   const keepNow = useRef(false);
   const signInHandled = useRef(0);
   const signInPage = useRef<string | null>(null);
@@ -82,6 +88,7 @@ export function LiveBrowser({ bot, signIn }: { bot: Bot; signIn?: BrowserSignIn 
     // Invalidate synchronously: an old request may finish before React runs this reconnect's effect cleanup.
     generation.current++;
     reconnectCount.current = 0;
+    resumeFrom.current = viewer.current || resumeFrom.current;
     viewer.current = "";
     inputQueue.current?.clear(); inputQueue.current = null;
     browserControl.current?.close(); browserControl.current = null;
@@ -96,37 +103,82 @@ export function LiveBrowser({ bot, signIn }: { bot: Bot; signIn?: BrowserSignIn 
     if (connectionProfile.current !== profile) {
       connectionProfile.current = profile;
       reconnectCount.current = 0;
+      resumeFrom.current = "";
     }
     let stopped = false;
+    let revivable = false;
+    let heardAt = Date.now();
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
     viewer.current = ""; pendingOperation.current = null; haltMessage.current = "";
     urlEditing.current = false; pageNow.current = null;
     setFrame(null); setTabs([]); setAddress(""); setConnected(false); setError(""); setBusy(false);
     setControl({ held: false, controlling: false, owned: false }); setPending(false);
     controlNow.current = NO_CONTROL; setTakeStatus("");
-    const source = new EventSource(`/api/bots/${encodeURIComponent(bot.id)}/browser/live`);
+    // The view this panel had when its stream dropped: the server returns its hold to this reconnect only.
+    const resume = resumeFrom.current ? `?resume=${encodeURIComponent(resumeFrom.current)}` : "";
+    const source = new EventSource(`/api/bots/${encodeURIComponent(bot.id)}/browser/live${resume}`);
     const listen = (name: string, handler: (data: any) => void) => source.addEventListener(name, (event) => {
       if (stopped || !ownsConnection()) return;
+      heardAt = Date.now();
       try { handler(JSON.parse((event as MessageEvent).data)); } catch {}
     });
+    const dropped = (message: string, retryable: boolean) => {
+      stopped = true;
+      revivable = retryable;
+      const delay = retryable ? RECONNECT_DELAYS[reconnectCount.current] : undefined;
+      if (delay !== undefined) {
+        reconnectCount.current++;
+        message = RECONNECT_MESSAGE;
+        reconnectTimer = setTimeout(() => {
+          if (!ownsConnection()) return;
+          generation.current++;
+          setAttempt((value) => value + 1);
+        }, delay);
+      }
+      setError(message); setBusy(false); setConnected(false); setFrame(null); setControl({ held: false, controlling: false, owned: false });
+      controlNow.current = NO_CONTROL; setTakeStatus("");
+      // Keep this generation alive: a successful restart closes its stream before the action reply arrives and must
+      // still reconnect.
+      resumeFrom.current = viewer.current || resumeFrom.current;
+      viewer.current = ""; inputQueue.current?.clear(); inputQueue.current = null;
+      browserControl.current?.close(); browserControl.current = null; source.close();
+    };
+    // A 404 from an action: the server closed this view, so input must go to a new one rather than halt here.
+    const viewGone = (cause: unknown, expected: string) => {
+      if ((cause as { status?: unknown } | null)?.status !== 404 || stopped || !ownsConnection() || viewer.current !== expected) return false;
+      dropped(RECONNECT_MESSAGE, true);
+      return true;
+    };
+    wake.current = (focused) => {
+      if (!ownsConnection()) return;
+      if (!stopped && viewer.current && Date.now() - heardAt > SILENT_MS) dropped(RECONNECT_MESSAGE, true);
+      if (!stopped || !focused || !revivable) return;
+      // Back at the window: retry now, whether a retry was waiting or they had run out.
+      clearTimeout(reconnectTimer);
+      reconnectCount.current = 0;
+      generation.current++;
+      setAttempt((value) => value + 1);
+    };
     listen("waiting", () => { if (!viewer.current) setBusy(true); });
     listen("ready", (data) => {
       if (typeof data.viewerId !== "string" || !data.viewerId) return;
       setBusy(false);
       const expected = data.viewerId;
       viewer.current = expected;
+      resumeFrom.current = "";
       const queue = createBrowserInputQueue(async (body) => {
         if (ownsConnection() && viewer.current === expected) await action(body, expected);
       }, (cause) => {
-        if (!ownsConnection() || viewer.current !== expected) return;
+        if (!ownsConnection() || viewer.current !== expected || viewGone(cause, expected)) return;
         haltMessage.current = cause instanceof Error ? cause.message : String(cause);
         setError(haltMessage.current);
       });
       inputQueue.current = queue;
+      const gone = (cause: unknown) => { viewGone(cause, expected); throw cause; };
       browserControl.current = createBrowserControl({
         queue,
-        take: () => action({ type: "take" }, expected),
-        release: () => action({ type: "release" }, expected),
+        take: () => action({ type: "take" }, expected).catch(gone),
+        release: () => action({ type: "release" }, expected).catch(gone),
         command: (body) => execute(body),
         busy: () => pendingOperation.current !== null,
         owned: () => controlNow.current.owned,
@@ -164,7 +216,6 @@ export function LiveBrowser({ bot, signIn }: { bot: Bot; signIn?: BrowserSignIn 
     source.addEventListener("error", (event) => {
       // A closed EventSource may still deliver a queued error; it must not clear the replacement viewer or input.
       if (stopped || !ownsConnection()) return;
-      stopped = true;
       let message = "Browser connection ended. Reconnect to continue watching.";
       let retryable = !(event instanceof MessageEvent);
       if (event instanceof MessageEvent) {
@@ -174,22 +225,7 @@ export function LiveBrowser({ bot, signIn }: { bot: Bot; signIn?: BrowserSignIn 
           retryable = data.retryable === true;
         } catch {}
       }
-      const delay = retryable ? RECONNECT_DELAYS[reconnectCount.current] : undefined;
-      if (delay !== undefined) {
-        reconnectCount.current++;
-        message = RECONNECT_MESSAGE;
-        reconnectTimer = setTimeout(() => {
-          if (!ownsConnection()) return;
-          generation.current++;
-          setAttempt((value) => value + 1);
-        }, delay);
-      }
-      setError(message); setBusy(false); setConnected(false); setFrame(null); setControl({ held: false, controlling: false, owned: false });
-      controlNow.current = NO_CONTROL; setTakeStatus("");
-      // Keep this generation alive: a successful restart closes its stream before the action reply arrives and must
-      // still reconnect.
-      viewer.current = ""; inputQueue.current?.clear(); inputQueue.current = null;
-      browserControl.current?.close(); browserControl.current = null; source.close();
+      dropped(message, retryable);
     });
     return () => {
       stopped = true;
@@ -221,6 +257,20 @@ export function LiveBrowser({ bot, signIn }: { bot: Bot; signIn?: BrowserSignIn 
     openSignInPage();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [signIn, connected]);
+  // Switching apps, sleep or a network change can drop the stream unnoticed or outlast the retries: check again on return.
+  useEffect(() => {
+    const returned = () => { if (document.visibilityState !== "hidden") wake.current?.(true); };
+    const check = setInterval(() => wake.current?.(false), SILENCE_CHECK_MS);
+    window.addEventListener("focus", returned);
+    window.addEventListener("online", returned);
+    document.addEventListener("visibilitychange", returned);
+    return () => {
+      clearInterval(check);
+      window.removeEventListener("focus", returned);
+      window.removeEventListener("online", returned);
+      document.removeEventListener("visibilitychange", returned);
+    };
+  }, []);
   function openSignInPage() {
     const url = signInPage.current;
     if (!url || pageNow.current === null) return;

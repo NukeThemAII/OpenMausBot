@@ -80,13 +80,15 @@ describe("bot-first sidebar", () => {
   });
 
   it.each([
-    { enabled: true, density: "comfortable", size: 32, spacing: ["gap-2", "py-2", "pl-6"] },
-    { enabled: true, density: "compact", size: 26, spacing: ["gap-1.5", "py-1", "pl-6"] },
-    { enabled: true, density: "icons", size: 44, spacing: ["justify-center", "px-1", "py-1.5"] },
-    { enabled: false, density: "comfortable", size: 44, spacing: ["gap-3", "py-2", "pl-2.5"] },
-    { enabled: false, density: "compact", size: 36, spacing: ["gap-2.5", "py-1.5", "pl-2"] },
-    { enabled: false, density: "icons", size: 44, spacing: ["justify-center", "px-1", "py-1.5"] },
-  ] as const)("sizes bot portraits and row spacing in $density density with threads $enabled", ({ enabled, density, size, spacing }) => {
+    { advanced: true, enabled: true, density: "comfortable", size: 32, spacing: ["gap-2", "py-2", "pl-6"] },
+    { advanced: true, enabled: true, density: "compact", size: 26, spacing: ["gap-1.5", "py-1", "pl-6"] },
+    { advanced: true, enabled: true, density: "icons", size: 44, spacing: ["justify-center", "px-1", "py-1.5"] },
+    { advanced: true, enabled: false, density: "comfortable", size: 44, spacing: ["gap-3", "py-2", "pl-2.5", "pr-9"] },
+    { advanced: false, enabled: false, density: "comfortable", size: 36, spacing: ["gap-2.5", "py-2", "pl-2", "pr-3", "group-hover:pr-9"] },
+    { advanced: false, enabled: false, density: "compact", size: 36, spacing: ["gap-2.5", "py-1.5", "pl-2", "pr-9"] },
+    { advanced: false, enabled: false, density: "icons", size: 36, spacing: ["h-[52px]", "justify-center"] },
+  ] as const)("sizes bot portraits and row spacing in $density density with threads $enabled (advanced $advanced)", ({ advanced, enabled, density, size, spacing }) => {
+    fixture.advanced = advanced;
     fixture.showThreads = enabled;
     for (const avatar of [{}, { avatarUrl: "/api/attachments/portrait.png", avatarCrop: "circle" as const }]) {
       let tree: ReactNode;
@@ -119,6 +121,34 @@ describe("bot-first sidebar", () => {
       }
     });
   }
+
+  it.each([false, true])("uses 14px regular names in Simple comfortable rows and keeps 15px semibold otherwise (advanced %s)", (advanced) => {
+    fixture.advanced = advanced;
+    fixture.showThreads = false;
+    const markup = renderToStaticMarkup(createElement(BotListItem, rowProps("comfortable", { ...bot, tasks: [], projects: [] })));
+    const name = markup.match(/<span class="flex min-w-0 grow items-center gap-1\.5 truncate text-ink ([^"]*)"/)?.[1];
+    expect(name).toBe(advanced ? "text-[15px] font-semibold leading-5" : "text-[14px] font-normal leading-[19px]");
+    expect(markup).toContain("truncate text-[13px] leading-[18px]");
+  });
+
+  it.each([
+    { advanced: false, density: "comfortable", face: 36, spacing: ["gap-2.5", "py-2", "pl-2", "pr-3"], name: "font-normal", preview: "text-[13px]" },
+    { advanced: false, density: "icons", face: 36, spacing: ["h-[52px]", "justify-center"], name: "font-semibold", preview: "text-[11px]" },
+    { advanced: true, density: "icons", face: 44, spacing: ["justify-center", "px-1", "py-1.5"], name: "font-semibold", preview: "text-[11px]" },
+    { advanced: true, density: "comfortable", face: 32, spacing: ["gap-2", "py-1.5", "pl-6", "pr-9"], name: "font-semibold", preview: "text-[11px]" },
+    { advanced: false, density: "compact", face: 26, spacing: ["gap-1.5", "py-1", "pl-6", "pr-9"], name: "font-semibold", preview: "text-[11px]" },
+  ] as const)("sizes group chat rows in $density density (advanced $advanced)", ({ advanced, density, face, spacing, name, preview }) => {
+    fixture.advanced = advanced;
+    const group: Group = { id: "room", threadId: "room-thread", name: "Launch", memberIds: [bot.id], messages: [], defaultResponder: { kind: "mentions" }, bulletin: "", unread: false, createdAt: 1 };
+    let tree: ReactNode;
+    function Capture() { tree = GroupListItem({ group, density, onMenu: vi.fn() }); return tree; }
+    const markup = renderToStaticMarkup(createElement(Capture));
+    const row = findElement(tree, "data-sidebar-group-row", group.id)!;
+    expect(String(row.props.className).split(" ")).toEqual(expect.arrayContaining([...spacing]));
+    expect(markup).toContain(`width="${face}px" height="${face}px"`);
+    expect(markup).toMatch(new RegExp(`truncate text-\\[14px\\] text-ink ${name}`));
+    expect(markup).toContain(`truncate text-ink-secondary ${preview}`);
+  });
 
   it("keeps the queued dot small", () => {
     const queuedBot: Bot = {

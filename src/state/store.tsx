@@ -80,7 +80,7 @@ function trimRoutineRuns(runs: readonly RoutineRun[]): RoutineRun[] {
 export type { MausColor } from "@/lib/mascot";
 export type { RoutineRunCardData } from "../../shared/routine-run";
 
-export interface OptionCardData extends Pick<WireOptionCard, "fixedOptions"> {
+export interface OptionCardData extends Pick<WireOptionCard, "fixedOptions" | "webhookRequest"> {
   title: string;
   subtitle: string;
   options: string[];
@@ -105,7 +105,7 @@ export interface OptionCardData extends Pick<WireOptionCard, "fixedOptions"> {
   routineRequest?: RoutineRequestCardData;
   skillRequest?: SkillRequestCardData;
   outboundRequest?: { tool: string; app: string | null; calls?: Array<{ app: string | null; label: string }> };
-  teamMemoryRequest?: { section: string; entryId: string; kind: string };
+  teamMemoryRequest?: { section: string; entryId: string; kind: string; revision?: string };
   profileRequest?: ProfileRequestCardData;
   modelRequest?: ModelRequestCardData;
   teamSetupRequest?: import("../../shared/team-setup").TeamSetupRequest;
@@ -623,7 +623,6 @@ export interface AppState {
   settingsOpen: boolean;
   pluginsOpen: boolean;
   pluginsSurface: "apps" | "mcp";
-  triggersOpen: boolean;
   newBotOpen: boolean;
   botCreationPending: boolean;
   computerOpen: boolean;
@@ -884,7 +883,6 @@ export type Action =
   | { type: "revealThread"; threadId: string }
   | { type: "toggleSettings"; open?: boolean; section?: BotSettingsSection; botId?: string }
   | { type: "togglePlugins"; open?: boolean; surface?: "apps" | "mcp" }
-  | { type: "toggleTriggers"; open?: boolean }
   | { type: "toggleNewBot"; open?: boolean }
   | { type: "toggleComputer"; open?: boolean }
   | { type: "openDataResult"; botId: string; cardId: string }
@@ -1100,7 +1098,6 @@ export function reducer(state: AppState, action: Action): AppState {
         notificationsOpen: false,
         appSettingsOpen: false,
         pluginsOpen: false,
-        triggersOpen: false,
       };
     case "showChat":
       return state.activeView === "chat" ? state : { ...state, activeView: "chat" };
@@ -1110,7 +1107,7 @@ export function reducer(state: AppState, action: Action): AppState {
         ...state,
         activeView: action.type === "showFiles" ? "files" : "team-map",
         filesSuggest: action.type === "showFiles" && action.suggest?.length ? action.suggest : null,
-        settingsOpen: false, computerOpen: false, inspectorOpen: false, activityOpen: false, appSettingsOpen: false, pluginsOpen: false, triggersOpen: false,
+        settingsOpen: false, computerOpen: false, inspectorOpen: false, activityOpen: false, appSettingsOpen: false, pluginsOpen: false,
       };
     case "routinesHydrated":
       return { ...state, routines: action.routines, routineRuns: trimRoutineRuns(action.runs), routinesLoadState: "ready" };
@@ -1553,15 +1550,7 @@ export function reducer(state: AppState, action: Action): AppState {
         ...state,
         pluginsOpen: open,
         pluginsSurface: action.surface ?? state.pluginsSurface,
-        ...(open ? { settingsOpen: false, appSettingsOpen: false, newBotOpen: false, shortcutsOpen: false, triggersOpen: false } : {}),
-      };
-    }
-    case "toggleTriggers": {
-      const open = action.open ?? !state.triggersOpen;
-      return {
-        ...state,
-        triggersOpen: open,
-        ...(open ? { settingsOpen: false, appSettingsOpen: false, newBotOpen: false, shortcutsOpen: false, pluginsOpen: false } : {}),
+        ...(open ? { settingsOpen: false, appSettingsOpen: false, newBotOpen: false, shortcutsOpen: false } : {}),
       };
     }
     case "botCreationPending":
@@ -1570,7 +1559,7 @@ export function reducer(state: AppState, action: Action): AppState {
       const open = action.open ?? !state.newBotOpen;
       return {
         ...state, newBotOpen: open,
-        ...(open ? { settingsOpen: false, appSettingsOpen: false, pluginsOpen: false, shortcutsOpen: false, triggersOpen: false } : {}),
+        ...(open ? { settingsOpen: false, appSettingsOpen: false, pluginsOpen: false, shortcutsOpen: false } : {}),
       };
     }
     case "notice":
@@ -1678,7 +1667,6 @@ export function reducer(state: AppState, action: Action): AppState {
         computerOpen: open ? false : state.computerOpen,
         inspectorOpen: open ? false : state.inspectorOpen,
         pluginsOpen: open ? false : state.pluginsOpen,
-        triggersOpen: open ? false : state.triggersOpen,
         notificationsOpen: open && !state.notificationsPinned ? false : state.notificationsOpen,
       };
     }
@@ -2055,7 +2043,6 @@ export const initialState: AppState = {
   settingsOpen: false,
   pluginsOpen: false,
   pluginsSurface: "apps",
-  triggersOpen: false,
   newBotOpen: false,
   botCreationPending: false,
   computerOpen: false,

@@ -8,17 +8,11 @@ import {
   Check,
   ChevronLeft,
   ChevronRight,
-  Bug,
   Copy,
   Crown,
-  Download,
-  Gauge,
-  ListChecks,
   Monitor,
-  MoreHorizontal,
   Pin,
   RefreshCw,
-  Search,
   Square,
   Reply,
   Webhook,
@@ -31,7 +25,6 @@ import { useSpeech } from "@/lib/tts/useSpeech";
 import { localSystemVoiceActive } from "@/lib/local-voice";
 import { computerStartLine } from "@/lib/computer-start";
 import { useCaptionChrome, useDesktopCapabilities } from "@/components/DesktopCapabilities";
-import { usageSummary } from "@/lib/chat-usage-summary";
 import {
   api,
   currentTaskBot,
@@ -60,6 +53,7 @@ import { plainErrorLine } from "@/lib/plain-error";
 import { openPlaceAction, placeRowViewFor, usePlaceSeat, worksOnSimpleLabel } from "@/lib/place-view";
 import type { PlaceRow } from "../../shared/place-view";
 import { trialCreditKind, type TrialCreditRefusal } from "../../shared/trial-credit";
+import { TrialCreditNotice } from "./TrialCreditNotice";
 import { isPureLeakedSystemHarnessMessage, stripLeakedSystemHarnessMessages } from "../../shared/system-message-guard.ts";
 import { ConversationalReply, QuickModelNote, isConversational, useReplySegments, useThreadOpenedAt } from "./ConversationalReply";
 import type { LocaleKey } from "@/locales";
@@ -105,14 +99,8 @@ import { CompactionChip, DigestChip } from "./DigestChip";
 import { RenameTitle } from "./RenameTitle";
 import { BotActivityPicker } from "./TaskPicker";
 import { ModelPicker } from "./ModelPicker";
-import { SidebarPopoverMenu, type SidebarMenuItem } from "./SidebarPopoverMenu";
-import { ShortcutHint } from "./ShortcutHint";
-import {
-  copyTranscriptToClipboard,
-  downloadMarkdownTranscript,
-  formatTranscriptMarkdown,
-  slugifyTranscriptFilename,
-} from "@/lib/export-transcript";
+import { ChatHeaderMenu } from "./ChatMoreMenu";
+import { useChatFindRequests } from "@/lib/chat-find";
 import { CitationSelectionToolbar, SentCitations } from "./CitationUI";
 
 import { SpeakButton } from "./SpeakButton";
@@ -148,6 +136,7 @@ import { JumpToLatestButton } from "./JumpToLatestButton";
 
 const USER_COLLAPSE_CHARS = 600;
 const USER_COLLAPSE_LINES = 8;
+export const SIMPLE_BUBBLE = "rounded-[23px] font-normal";
 
 interface ChatRows {
   botId: string;
@@ -166,7 +155,7 @@ interface ChatRows {
   bubbleStyle?: ReturnType<typeof userBubbleStyle>;
   dispatch: Dispatch<Action>;
   onBranch: (messageId: string) => boolean;
-  conversational: boolean;
+  conversational: boolean; simple?: boolean;
   openedAt: number;
 }
 
@@ -314,11 +303,10 @@ function PlaceFailedRow({ place, botId, threadId, onRetry }: {
   return <ErrorRow message={view.line} action={view.action && onClick ? { label: view.action.label, onClick } : null} />;
 }
 
-const TRIAL_CREDIT_LINE: Record<TrialCreditRefusal, LocaleKey> = {
-  used_up: "engines.trialCreditUsedUp", ended: "engines.trialCreditEnded", paused: "engines.trialCreditPaused", too_low: "engines.trialCreditTooLow",
-};
+const TRIAL_CREDIT_LINE: Record<"paused" | "too_low", LocaleKey> = { paused: "engines.trialCreditPaused", too_low: "engines.trialCreditTooLow" };
 function TrialCreditFailedRow({ kind, onRetry }: { kind: TrialCreditRefusal; onRetry?: () => void }) {
   const { dispatch } = useStore();
+  if (kind === "used_up" || kind === "ended") return <TrialCreditNotice kind={kind} />;
   if (kind === "paused") return <ErrorRow message={t(TRIAL_CREDIT_LINE[kind])} onRetry={onRetry} />;
   return <ErrorRow message={t(TRIAL_CREDIT_LINE[kind])} action={{ label: t("chat.error.connectOwnAi"), onClick: () => dispatch({ type: "toggleAppSettings", open: true, section: "engines" }) }} />;
 }
@@ -438,7 +426,7 @@ const Bubble = memo(function Bubble({
   replyTarget?: Message;
   onReply: (message: Message) => void;
 }) {
-  const { botId, threadId, botName, voiceId, tts, localVoice, busy, mentionPeers, mentionPerson, focus, dispatch, onBranch, bubbleStyle, conversational, openedAt } = useChatRows();
+  const { botId, threadId, botName, voiceId, tts, localVoice, busy, mentionPeers, mentionPerson, focus, dispatch, onBranch, bubbleStyle, conversational, simple, openedAt } = useChatRows();
   const remoteClient = window.ogb?.remoteClient?.active === true;
   const peer = peerLine(message) ?? peerRequest(message, botId);
   const user = message.role === "user" && !peer;
@@ -538,8 +526,8 @@ const Bubble = memo(function Bubble({
               : attachmentsOnly || split
                 ? "text-ink"
                 : user
-                  ? cn("bg-bubble-user px-4 py-2.5 whitespace-pre-wrap text-ink", bubbleStyle && "user-bubble-colored")
-                  : "bg-card px-4 py-2.5 text-ink",
+                  ? cn("bg-bubble-user px-4 py-2.5 whitespace-pre-wrap text-ink", bubbleStyle && "user-bubble-colored", simple && cn(SIMPLE_BUBBLE, bubbleStyle && "antialiased"))
+                  : cn("bg-card px-4 py-2.5 text-ink", simple && SIMPLE_BUBBLE),
           )}
           style={user && !webhookView && !attachmentsOnly ? bubbleStyle : undefined}
           title={new Date(message.at).toLocaleString()}
@@ -1045,6 +1033,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
     bot.messages,
   );
   useEffect(() => setFindOpen(false), [bot.threadId]);
+  useChatFindRequests(bot.threadId, findOpen, setFindOpen);
   useEffect(() => {
     const onFind = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
@@ -1114,8 +1103,8 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
   const bubbleStyle = useMemo(() => (colorMine ? userBubbleStyle(bot.color) : undefined), [colorMine, bot.color]);
   const hasMore = Boolean(bot.hasMore);
   const rows = useMemo<ChatRows>(
-    () => ({ botId: bot.id, threadId: bot.threadId, botName: bot.name, voiceId: bot.voice, tts, localVoice, busy, hasMore, bots, mentionPeers, mentionPerson: { profileName: state.config?.profile?.name }, focus, showToolCalls, locale, dispatch, onBranch, bubbleStyle, conversational: isConversational(bot.replyStyle), openedAt }),
-    [bot.id, bot.threadId, bot.name, bot.voice, tts, localVoice, busy, hasMore, bots, mentionPeers, state.config?.profile?.name, focus, showToolCalls, locale, dispatch, onBranch, bubbleStyle, bot.replyStyle, openedAt],
+    () => ({ botId: bot.id, threadId: bot.threadId, botName: bot.name, voiceId: bot.voice, tts, localVoice, busy, hasMore, bots, mentionPeers, mentionPerson: { profileName: state.config?.profile?.name }, focus, showToolCalls, locale, dispatch, onBranch, bubbleStyle, conversational: isConversational(bot.replyStyle), simple: !advanced, openedAt }),
+    [bot.id, bot.threadId, bot.name, bot.voice, tts, localVoice, busy, hasMore, bots, mentionPeers, state.config?.profile?.name, focus, showToolCalls, locale, dispatch, onBranch, bubbleStyle, bot.replyStyle, advanced, openedAt],
   );
   const place = effectivePlace(bot, bot.tasks?.find((task) => task.threadId === bot.threadId));
 
@@ -1262,22 +1251,17 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
           ) : (
             <button
               type="button"
-              data-chathead-pill
+              data-chathead-pill data-tour="bot-pill"
               onClick={() => dispatch({ type: "toggleSettings", open: true })}
               title={t("chat.openProfile")}
               aria-label={t("chat.openProfileAria", { name: bot.name })}
-              className={cn(CHATHEAD_PILL, "pr-3.5 hover:bg-raised-hover")}
+              className={cn(CHATHEAD_PILL, "group h-9 gap-2.5 pl-2 pr-3.5 hover:bg-raised-hover")}
             >
-              <BotAvatar
-                bot={bot}
-                state={stateForBot({ ...bot, messages })}
-                size={24}
-                motion={mascotMotion?.kind ?? "none"}
-                motionKey={mascotMotion?.nonce ?? 0}
-                animated={headerAnimated}
-              />
-              <span className="min-w-0 truncate text-[14px] font-semibold text-ink">{bot.name}</span>
+              <BotAvatar bot={bot} state={stateForBot({ ...bot, messages })} size={24}
+                motion={mascotMotion?.kind ?? "none"} motionKey={mascotMotion?.nonce ?? 0} animated={headerAnimated} />
+              <span className="min-w-0 truncate text-[14px] font-medium text-ink">{bot.name}</span>
               {chiefOfStaffBadge(bot)}
+              <ChevronRight size={14} aria-hidden="true" className="-ml-2.5 w-0 shrink-0 text-ink-secondary opacity-0 transition-[width,margin,opacity] duration-150 group-hover:ml-0 group-hover:w-3.5 group-hover:opacity-100 group-focus-visible:ml-0 group-focus-visible:w-3.5 group-focus-visible:opacity-100" />
             </button>
           )}
           <span role="status" className="sr-only" data-chathead-status>{bot.busy ? t("sidebar.preview.working") : ""}</span>
@@ -1312,9 +1296,10 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
             </button>
           )}
           <ThreadContextWarning bot={bot} messages={messages} />
-          {!remoteClient && <ModelPicker key={bot.threadId} bot={bot} threadId={bot.threadId} />}
+          {/* Simple mode moves the model, the computer and ⋯ into the bot panel; a remote client's panel has neither. */}
+          {advanced && !remoteClient && <ModelPicker key={bot.threadId} bot={bot} threadId={bot.threadId} />}
           <LiveCallChip currentBotId={bot.id} onOpen={(botId, threadId) => openThread(dispatch, { botId, threadId }, state, showThreads)} />
-          <button
+          {(advanced || remoteClient) && <button
             data-tour="computer"
             onClick={() => dispatch({ type: "toggleComputer" })}
             className={cn(
@@ -1324,8 +1309,8 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
             title={t("chat.computer")} aria-label={busy && place === "browser" ? `${t("chat.computer")}, ${t("place.live")}` : t("chat.computer")}
           >
             <Monitor size={18} />{busy && place === "browser" && <span aria-hidden="true" className="absolute right-1 top-1 size-1.5 animate-pulse rounded-full bg-success" data-testid="computer-button-live" />}
-          </button>
-          <ChatHeaderMenu key={`menu:${bot.threadId}`} bot={bot} messages={messages} findOpen={findOpen} onFind={() => setFindOpen((open) => !open)} />
+          </button>}
+          {(advanced || remoteClient) && <ChatHeaderMenu key={`menu:${bot.threadId}`} bot={bot} />}
         </div>
         </div>
       </div>
@@ -1363,7 +1348,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
       >
         <div
           ref={transcriptRef}
-          className="glass-scroller-content flex w-full flex-col gap-3"
+          className="glass-scroller-content chat-column flex w-full flex-col gap-3"
           style={{ paddingBottom: composerDock.pad }}
           role="log"
           // off: a polite log re-reads every tick and chip while the bot works; TranscriptAnnouncer speaks once when
@@ -1443,7 +1428,7 @@ export function ChatView({ bot: profile }: { bot: Bot }) {
 
       <TranscriptAnnouncer threadKey={transcriptKey} snapshot={announcement} />
 
-      <div ref={composerDockRef} className="pointer-events-none absolute inset-x-0 bottom-0 z-[2]">
+      <div ref={composerDockRef} className="pointer-events-none absolute inset-x-0 bottom-0 z-[2] chat-column-dock">
       {lastRunStep && showRun(recordedRun) && showRunCard && runDismissed.get(transcriptKey) !== lastRunStep.id && (
         <div className="flex justify-end px-5 pb-2">
           <VerifyCard
@@ -1503,96 +1488,5 @@ export function NewConversationInstead({ onNew }: { onNew: () => void }) {
         {t("chat.cloudGuest.newConversation")}
       </button>
     </div>
-  );
-}
-
-function ChatHeaderMenu({ bot, messages, findOpen, onFind }: {
-  bot: Bot;
-  messages: readonly Message[];
-  findOpen: boolean;
-  onFind: () => void;
-}) {
-  const { state, dispatch } = useStore();
-  const remoteClient = window.ogb?.remoteClient?.active === true;
-  const usage = usageSummary(bot, state.instances);
-  const advanced = useAdvancedMode();
-  const advancedOnly = advanced ? undefined : t("chat.advancedOnly");
-  const [copyStatus, setCopyStatus] = useState<"copied" | "failed" | null>(null);
-  const hasMessages = messages.length > 0;
-  const transcript = () => formatTranscriptMarkdown({ title: bot.name, messages, botName: bot.name, isGroup: false });
-  const items: SidebarMenuItem[] = [
-    {
-      key: "find",
-      label: t("chat.find"),
-      icon: <Search size={16} />,
-      active: findOpen,
-      trailing: <ShortcutHint id="find-conversation" />,
-      onSelect: onFind,
-    },
-    {
-      key: "copy",
-      heading: t("chat.export.heading"),
-      separatorBefore: true,
-      label: t("chat.export.copy"),
-      icon: <Copy size={16} />,
-      disabled: !hasMessages,
-      keepOpen: true,
-      trailing: copyStatus && <span role="status" className="text-[11px] text-ink-secondary">{t(copyStatus === "copied" ? "chat.export.copied" : "chat.export.copyFailed")}</span>,
-      onSelect: () => { void copyTranscriptToClipboard(transcript()).then((ok) => setCopyStatus(ok ? "copied" : "failed")); },
-    },
-    {
-      key: "download",
-      label: t("chat.export.download"),
-      icon: <Download size={16} />,
-      disabled: !hasMessages,
-      onSelect: () => downloadMarkdownTranscript(slugifyTranscriptFilename(bot.name), transcript()),
-    },
-    ...(usage ? [{
-      key: "usage",
-      label: t("chat.usage.menu"),
-      icon: <Gauge size={16} />,
-      separatorBefore: true,
-      heading: advancedOnly,
-      disabled: !advanced,
-      trailing: <span title={usage.detail} data-testid="usage-chip" className={cn("tabular-nums text-[12px]", usage.tone === "danger" ? "text-danger" : usage.tone === "warning" ? "text-warning" : "text-ink-secondary")}>{usage.short}</span>,
-      onSelect: () => dispatch({ type: "toggleSettings", open: true, section: "usage" }),
-    } satisfies SidebarMenuItem] : []),
-    ...(remoteClient ? [] : [{
-      key: "activity",
-      label: "Activity",
-      icon: <ListChecks size={16} />,
-      active: state.activityOpen,
-      separatorBefore: !usage,
-      onSelect: () => dispatch({ type: "toggleActivity" }),
-    } satisfies SidebarMenuItem, {
-      key: "inspector",
-      label: t("chat.inspector"),
-      icon: <Bug size={16} />,
-      active: advanced && state.inspectorOpen,
-      separatorBefore: true,
-      heading: usage ? undefined : advancedOnly,
-      disabled: !advanced,
-      onSelect: () => dispatch({ type: "toggleInspector" }),
-    } satisfies SidebarMenuItem]),
-  ];
-  return (
-    <SidebarPopoverMenu
-      items={items}
-      ariaLabel={t("chat.more")}
-      openOnHover
-      placement="below"
-      renderTrigger={({ open }) => (
-        <span
-          data-testid="chat-more"
-          className={cn(
-            "flex rounded-md p-1.5 hover:bg-raised",
-            open || findOpen || state.inspectorOpen || state.activityOpen ? "text-accent" : "text-ink-secondary hover:text-ink",
-          )}
-          title={t("chat.more")}
-        >
-          <MoreHorizontal size={18} />
-        </span>
-      )}
-    />
   );
 }

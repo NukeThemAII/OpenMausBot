@@ -90,6 +90,8 @@ export function spawnCli(
   return child;
 }
 
+const EXEC_KILL_GRACE_MS = 2_000;
+
 export function execCli(
   cli: string,
   args: string[],
@@ -103,9 +105,17 @@ export function execCli(
     queueMicrotask(() => cb(error instanceof Error ? error : new Error(String(error)), "", ""));
     return;
   }
-  execFile(resolved.command, resolved.args, { ...opts, windowsHide: true, encoding: "utf8" }, (err, stdout, stderr) =>
-    cb(err, stdout, stderr),
-  );
+  let escalate: NodeJS.Timeout | undefined;
+  const child = execFile(resolved.command, resolved.args, { ...opts, windowsHide: true, encoding: "utf8" }, (err, stdout, stderr) => {
+    clearTimeout(escalate);
+    cb(err, stdout, stderr);
+  });
+  // Node (24) calls back only once the child exits, and a CLI wrapper that traps SIGTERM outlives the timeout's signal.
+  // Only the child is stopped: execFile starts no process group, so a grandchild that ignores SIGTERM can outlive it.
+  if (opts.timeout) {
+    escalate = setTimeout(() => void killCliTree(child, 0), opts.timeout + EXEC_KILL_GRACE_MS);
+    escalate.unref?.();
+  }
 }
 
 /** Node reports a missing cwd as the CLI's own ENOENT, so pass `cwd` to tell a moved folder from a missing CLI. */

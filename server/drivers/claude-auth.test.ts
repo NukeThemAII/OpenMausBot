@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 
 import { claudeSignedIn } from "./claude-auth-status.ts";
 import { claudeAuthFailure, claudeResultError, claudeVersionTooOld } from "./claude.ts";
-import { claudeLimitMessage, claudeLimitRefusal, claudeUsageLimit } from "./claude-limits.ts";
+import { claudeApiErrorMessage, claudeLimitMessage, claudeLimitRefusal, claudeUsageLimit } from "./claude-limits.ts";
+import { classifyError } from "./retry.ts";
 
 describe("claudeSignedIn", () => {
   it("uses the CLI's machine-readable auth status", async () => {
@@ -127,5 +128,48 @@ describe("claudeResultError", () => {
       .toBe("No conversation found with session ID: 9de1");
     expect(claudeResultError({ subtype: "error_max_turns", result: "Reached the turn limit " })).toBe("Reached the turn limit");
     expect(claudeResultError({ subtype: "error_during_execution", errors: [" "] })).toBe("Claude ended the turn with an error (error_during_execution).");
+  });
+
+  it("shows an error result's own words, never its synthetic message's stop_sequence nor the subtype success", () => {
+    // 2.1.295's error result: subtype "success", is_error, the synthetic message's stop_reason, Claude's text as `result`
+    const result = { type: "result", subtype: "success", is_error: true, stop_reason: "stop_sequence", api_error_status: 402, result: "Credit balance is too low" };
+    expect(claudeResultError(result)).toBe('Your Claude account is out of credits (Claude says: "Credit balance is too low"). Add credits with Claude, then run it again.');
+    expect(claudeResultError({ ...result, api_error_status: undefined, result: "API Error: Repeated 529 Overloaded errors. The API is at capacity — this is usually temporary. Try again in a moment." }))
+      .toBe('Claude is overloaded right now (Claude says: "Repeated 529 Overloaded errors"). This is usually temporary, so try again in a few minutes.');
+    for (const frame of [{ ...result, result: "" }, { ...result, result: undefined, terminal_reason: undefined }]) {
+      expect(claudeResultError(frame)).toBe("Claude ended the turn with an error (unknown).");
+    }
+    expect(claudeResultError({ ...result, result: " ", terminal_reason: "api_error" })).toBe("Claude ended the turn with an error (api_error).");
+    expect(claudeResultError({ ...result, result: "", terminal_reason: "api_error" })).not.toMatch(/stop_sequence|success/);
+  });
+});
+
+describe("claudeApiErrorMessage", () => {
+  it("names the cause an api-error frame's kind or status gives, and keeps the class of Claude's own words", () => {
+    const cases: Array<[{ error?: string; api_error_status?: number }, string, string, string]> = [
+      [{ error: "billing_error" }, "Credit balance is too low",
+        'Your Claude account is out of credits (Claude says: "Credit balance is too low"). Add credits with Claude, then run it again.', "quota"],
+      [{ error: "overloaded" }, "API Error: Repeated 529 Overloaded errors. The API is at capacity — this is usually temporary. Try again in a moment.",
+        'Claude is overloaded right now (Claude says: "Repeated 529 Overloaded errors"). This is usually temporary, so try again in a few minutes.', "overloaded"],
+      [{ error: "unknown" }, 'API Error: 529 {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}',
+        "Claude is overloaded right now (HTTP 529). This is usually temporary, so try again in a few minutes.", "overloaded"],
+      [{ error: "server_error" }, "API Error: Connection to the API was lost (ECONNRESET). This is usually temporary — try again.",
+        'Claude had a temporary server problem (Claude says: "Connection to the API was lost (ECONNRESET)"). Try again in a few minutes.', "connection_reset"],
+      [{ error: "unknown" }, 'API Error: 500 {"type":"error","error":{"type":"api_error","message":"Internal server error"}}',
+        'Claude had a temporary server problem (HTTP 500; Claude says: "Internal server error"). Try again in a few minutes.', "server_error"],
+      [{ error: "rate_limit" }, "Opus is experiencing high load, please use /model to switch to Sonnet",
+        'Claude hit a rate limit (Claude says: "Opus is experiencing high load, please use /model to switch to Sonnet"). Wait a minute, then run it again.', "rate_limited"],
+      [{ error: "invalid_request" }, 'API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 215000 tokens > 200000 maximum"}}',
+        'Claude stopped with an error (HTTP 400; Claude says: "prompt is too long: 215000 tokens > 200000 maximum").', "invalid_request"],
+    ];
+    for (const [frame, text, words, kind] of cases) {
+      expect(claudeApiErrorMessage(frame, text), text).toBe(words);
+      expect(classifyError({ text: words }).reason, words).toBe(kind);
+    }
+  });
+
+  it("keeps Claude's own words for a cause it does not name", () => {
+    const text = "There's an issue with the selected model (claude-fixture). It may not exist or you may not have access to it.";
+    expect(claudeApiErrorMessage({ error: "model_not_found" }, `${text} `)).toBe(text);
   });
 });

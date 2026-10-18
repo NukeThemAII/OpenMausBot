@@ -28,7 +28,8 @@ import { MAUS_COLOR_NAMES, normalizeState, type MausColor } from "@/lib/mascot";
 import { botTextShowsSpeaker, laterTextOwns, runShowsSpeaker } from "@/lib/room-speaker";
 import { defaultResponderName, effectiveDefaultResponder, groupResponseHint, jevRoomRoutingOn } from "@/lib/group-routing";
 import { ChatMarkdown } from "./ChatMarkdown";
-import { CopyButton, FailedTurnRow, MessageBoundary, ReplyAction } from "./ChatView";
+import { CopyButton, FailedTurnRow, MessageBoundary, ReplyAction, SIMPLE_BUBBLE } from "./ChatView";
+import { useAdvancedMode } from "@/lib/interface-mode";
 import { MESSAGE_ROW, MessageActions, messageActionClass } from "./MessageActions";
 import { useBotMessageMenu, userMessageMenu, type PinAction } from "./message-menu";
 import { RawMarkdownView, RawToggleAction } from "./RawMarkdownToggle";
@@ -59,7 +60,7 @@ import { GoalRunCard } from "./GoalRunCard";
 import { AttachmentGallery, MessageAttachmentGallery, replyAttachmentGroup } from "./AttachmentGallery";
 import { VoiceNoteBubble, type VoiceNoteAttachment } from "./VoiceNoteBubble";
 import { OptionCard } from "./OptionCard";
-import { GroupCallButton, GroupCallOverlay } from "./GroupCallView";
+import { GroupCallOverlay, RoomHeaderCallButton } from "./GroupCallView";
 
 import { ApprovalCard } from "./ApprovalCard";
 import { QuestionCard } from "./QuestionCard";
@@ -209,9 +210,8 @@ function RoomTextMessage({
   const focus = state.focusMessage;
   const focusedSearch = focus?.messageId === m.id && Boolean(focus.matchText) && focus.threadId === group.threadId;
   const collapsible = user && !expanded && (display.length > USER_COLLAPSE_CHARS || display.split("\n").length > USER_COLLAPSE_LINES);
-  useEffect(() => {
-    if (focusedSearch && collapsible) setExpanded(true);
-  }, [focusedSearch, collapsible, focus?.nonce]);
+  useEffect(() => { if (focusedSearch && collapsible) setExpanded(true); }, [focusedSearch, collapsible, focus?.nonce]);
+  const simple = !useAdvancedMode();
   const speakerBot = members.find((member) => member.id === m.from?.botId);
   const botText = rawText;
   const pin = roomPin(group, m, dispatch);
@@ -244,7 +244,7 @@ function RoomTextMessage({
             !user && emerging && "turn-answer",
             !user && !m.text?.trim() && !m.replyToId && m.attachments?.length
               ? "text-ink"
-              : user ? "chat-text whitespace-pre-wrap bg-bubble-user px-4 py-2.5 text-ink" : "bg-card px-4 py-2.5 text-ink",
+              : cn(user ? "chat-text whitespace-pre-wrap bg-bubble-user px-4 py-2.5 text-ink" : "bg-card px-4 py-2.5 text-ink", simple && SIMPLE_BUBBLE),
           )}
           title={new Date(m.at).toLocaleString()}
         >
@@ -1354,7 +1354,7 @@ export function GroupView({ group }: { group: Group }) {
             isGroup
           />
           {!setupPending && <ConversationTurnLimit group={group} />}
-          <GroupCallButton group={group} members={members} />
+          <RoomHeaderCallButton group={group} members={members} />
           <GroupUsageChip usage={group.usage} />
           {!remoteClient && !setupPending && !group.dm && <RoomWorkingFolderChip group={group} onToggle={() => setFolderOpen((open) => !open)} />}
           {!remoteClient && !setupPending && !group.dm && <DefaultResponderSelect group={group} members={members} />}
@@ -1492,7 +1492,7 @@ export function GroupView({ group }: { group: Group }) {
         ) : (
         <div
           ref={transcriptRef}
-          className="glass-scroller-content flex w-full flex-col gap-3"
+          className="glass-scroller-content chat-column flex w-full flex-col gap-3"
           style={{ paddingBottom: composerDock.pad }}
           role="log"
           aria-live="off"
@@ -1593,7 +1593,7 @@ export function GroupView({ group }: { group: Group }) {
         <JumpToLatestButton onClick={jumpToLatest} style={{ bottom: composerDock.height }} />
       )}
 
-      <div ref={composerDockRef} className="absolute inset-x-0 bottom-0 z-[2]">
+      <div ref={composerDockRef} className="absolute inset-x-0 bottom-0 z-[2] chat-column-dock">
       <Composer
         key={group.threadId}
         group={group}

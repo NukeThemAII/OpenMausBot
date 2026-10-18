@@ -9,6 +9,7 @@ import { openBot, useStore, type Bot } from "@/state/store";
 import { BotAvatar } from "./Avatar";
 import { VoiceSettings } from "./VoiceSettings";
 import { useBotSettingsDerived } from "./bot-settings/useBotSettingsDerived";
+import { openBotSettings } from "./bot-panel/panel-link";
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])';
@@ -89,7 +90,7 @@ export function VoiceSetupDialog({
   const openAllSettings = () => {
     close();
     if (state.selectedId !== bot.id) openBot(dispatch, bot, showThreads);
-    dispatch({ type: "toggleSettings", open: true, section: "voice" });
+    openBotSettings(dispatch, "voice");
   };
 
   return createPortal(

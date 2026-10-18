@@ -11,7 +11,8 @@ import { findChrome, launchPipeChrome, type ChromePage } from "../../testing/chr
 import { hostTimeout } from "../../testing/host-timeout.ts";
 import { gateChromeFlags, openGate, resolveTarget } from "./gate.ts";
 import { ListenerOwnership } from "./ownership.ts";
-import { refusalFor, type EgressHost } from "./policy.ts";
+import { namesThisMachine, refusalFor, type EgressHost } from "./policy.ts";
+import { REDDIT_REFUSAL } from "./reddit.ts";
 import { BrowserEgress, OwnListeners } from "./registry.ts";
 
 const chrome = findChrome();
@@ -185,6 +186,44 @@ describe.skipIf(!chrome)("S6: a hostile page in a bot's browser", () => {
     expect(reasons("10.0.0.1")).toEqual(new Set(["local-network"]));
     expect(reasons("169.254.169.254")).toEqual(new Set(["metadata"]));
     expect(reasons("fd00:ec2::254")).toEqual(new Set(["metadata"]));
+  }, hostTimeout(240_000));
+
+  it("never opens Reddit on MausBot Cloud, by navigation, redirect, link, frame or request, and tells the bot why", async () => {
+    const targets = ["https://www.reddit.com/", "https://old.reddit.com/r/test/", "https://i.redd.it/", "https://www.redditstatic.com/", "https://reddit.app.link/"];
+    // Only this machine's names resolve, so nothing here can reach Reddit, even if the block broke.
+    const looked: string[] = [];
+    const egress = new BrowserEgress();
+    egress.configure({
+      host: "cloud", config: () => ({}), ownership: siteOwnership(),
+      listeners: new OwnListeners("cloud", { env: {}, streamPorts: () => [], devToolsPorts: () => [] }),
+      resolve: async (name) => { looked.push(name); return namesThisMachine(name) ? resolveTarget(name) : []; },
+    });
+    const browser = await launchPipeChrome(chrome!, gateChromeFlags(await egress.open("s6-reddit")));
+    try {
+      const page = await browser.page();
+      const home = `http://127.0.0.1:${sitePort}/`;
+      await page.navigate(home);
+      await page.loaded(home);
+      const { results, navigations } = await attack(page, targets);
+      blockedEverywhere(results, targets);
+      for (const target of targets) {
+        expect(navigations[target], target).toMatch(/ERR_(SOCKS|PROXY|TUNNEL)/);
+        expect(navigations[`redirect ${target}`], `redirect ${target}`).toMatch(/ERR_/);
+      }
+      const notice = egress.takeNotice("s6-reddit");
+      expect(notice).toContain('"www.reddit.com:443" (blocked: Reddit)');
+      expect(notice!.endsWith(` ${REDDIT_REFUSAL}`)).toBe(true);
+      // A link the bot clicks.
+      await page.navigate(home);
+      await page.loaded(home);
+      await page.evaluate(`(() => { const link = document.createElement("a"); link.href = "https://np.reddit.com/r/test/"; document.body.append(link); link.click(); return true; })()`);
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      expect(egress.takeNotice("s6-reddit")).toContain('"np.reddit.com:443" (blocked: Reddit)');
+      expect(looked.filter((name) => /redd/u.test(name)), "no Reddit name was looked up").toEqual([]);
+    } finally {
+      await browser.close();
+      await egress.close();
+    }
   }, hostTimeout(240_000));
 
   it("tells the bot what its page tried in its next browser result, and loads public pages unchanged", async () => {

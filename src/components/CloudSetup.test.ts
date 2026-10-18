@@ -75,7 +75,7 @@ beforeEach(() => {
   };
   bridge = {
     state: vi.fn().mockResolvedValue(overview()), start: vi.fn().mockResolvedValue({ phase: "done" }), cancel: vi.fn().mockResolvedValue({ phase: "failed" }),
-    restorePrevious: vi.fn().mockResolvedValue({ phase: "done" }), dismiss: vi.fn().mockResolvedValue(overview({ suggest: false })),
+    restorePrevious: vi.fn().mockResolvedValue({ phase: "done" }), bring: vi.fn(), dismiss: vi.fn().mockResolvedValue(overview({ suggest: false })),
     onState: vi.fn(callback => { push = callback; return () => {}; }),
   };
   open = vi.fn().mockResolvedValue(undefined);

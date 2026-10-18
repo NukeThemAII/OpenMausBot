@@ -47,10 +47,29 @@ function cliOfRaw(raw: unknown): string | undefined {
   return typeof cli === "string" && cli ? cli : undefined;
 }
 
+export const SNAPSHOT_DEADLINE_MS = 60_000;
+/** How long a finished status read answers later reads, so a start-up's model lists and engine-list reads probe each CLI once. */
+export const SNAPSHOT_REUSE_MS = 3_000;
+const SNAPSHOT_DEADLINE_REASON = "This engine did not report its status within a minute. Check that its CLI starts in a terminal.";
+
+function withinDeadline(read: () => Promise<ProviderSnapshot>): Promise<ProviderSnapshot> {
+  let deadline: NodeJS.Timeout | undefined;
+  return Promise.race([
+    read(),
+    new Promise<never>((_resolve, reject) => {
+      deadline = setTimeout(() => reject(new Error(SNAPSHOT_DEADLINE_REASON)), SNAPSHOT_DEADLINE_MS);
+      deadline.unref?.();
+    }),
+  ]).finally(() => clearTimeout(deadline));
+}
+
+type SharedRead = { generation: number; settledAt?: number; read: Promise<ProviderSnapshot> };
+
 export class ProviderRegistry {
   private byId = new Map<InstanceId, RegistryEntry>();
   private cliByInstance = new Map<InstanceId, string>();
   private lastSnapshots = new Map<InstanceId, ProviderSnapshot>();
+  private snapshotGeneration = 0;
   private driversByKind: Map<string, AnyProviderDriver>;
   private readonly enginesBaseDir: string | undefined;
   private readonly npmPresent: () => boolean;
@@ -112,6 +131,7 @@ export class ProviderRegistry {
         enabled: entry.enabled ?? true,
         config,
       });
+      this.shareSnapshot(live);
       return { instanceId, live: decorate ? decorate(live) : live };
     } catch (e) {
       return {
@@ -126,6 +146,30 @@ export class ProviderRegistry {
         },
       };
     }
+  }
+
+  /**
+   * One engine's status read, bounded and shared: callers join the probe in flight, and one that finished within
+   * SNAPSHOT_REUSE_MS answers again, so the CLI is not spawned twice for the same answer. A failed read is never reused.
+   * Replaced on the driver's own instance, beneath a decorator's checks, which still run on every read; an object
+   * spread would evaluate getters such as `models` once.
+   */
+  private shareSnapshot(instance: ProviderInstance): void {
+    const read = instance.snapshot.bind(instance);
+    let held: SharedRead | undefined;
+    instance.snapshot = () => {
+      if (held && held.generation === this.snapshotGeneration
+        && (held.settledAt === undefined || Date.now() - held.settledAt < SNAPSHOT_REUSE_MS)) return held.read;
+      const current: SharedRead = { generation: this.snapshotGeneration, read: withinDeadline(read) };
+      held = current;
+      current.read.then(() => { current.settledAt = Date.now(); }, () => { if (held === current) held = undefined; });
+      return current.read;
+    };
+  }
+
+  /** Every engine's next status read probes its CLI again: an install, update, sign-in or key change may alter what it reports. */
+  forgetSnapshots(): void {
+    this.snapshotGeneration += 1;
   }
 
   get(instanceId: InstanceId): ProviderInstance | null {
@@ -161,25 +205,35 @@ export class ProviderRegistry {
     return [...this.byId.values()].flatMap((e) => (e.live ? [e.live] : []));
   }
 
+  /** Settings' Check and Refresh, and OpenCode's key policy changing: the engine's status is read again too. */
   async refreshModels(instanceId: InstanceId): Promise<boolean> {
     const instance = this.get(instanceId);
     if (!instance) return false;
-    await instance.refreshModels?.();
+    try {
+      await instance.refreshModels?.();
+    } finally {
+      this.forgetSnapshots();
+    }
     return true;
   }
 
   async installRuntime(instanceId: InstanceId): Promise<boolean> {
     const entry = this.byId.get(instanceId);
     if (!entry) return false;
-    if (entry.live?.installRuntime) {
-      await entry.live.installRuntime();
+    // A failed install changes the status too: Antigravity reports the failure as its reason.
+    try {
+      if (entry.live?.installRuntime) {
+        await entry.live.installRuntime();
+        return true;
+      }
+      const driver = this.driversByKind.get(entry.shadow?.driverKind ?? entry.live!.driverKind);
+      const server = serverInstallFor(driver?.install, this.npmPresent());
+      if (!server) return false;
+      await installNpmEngine(server.package, { baseDir: this.enginesBaseDir, cli: cliDefaultOf(driver) });
       return true;
+    } finally {
+      this.forgetSnapshots();
     }
-    const driver = this.driversByKind.get(entry.shadow?.driverKind ?? entry.live!.driverKind);
-    const server = serverInstallFor(driver?.install, this.npmPresent());
-    if (!server) return false;
-    await installNpmEngine(server.package, { baseDir: this.enginesBaseDir, cli: cliDefaultOf(driver) });
-    return true;
   }
 
   async startAuthentication(instanceId: InstanceId): Promise<ProviderAuthenticationStart | null> {

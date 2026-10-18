@@ -179,6 +179,39 @@ describe("composer call button", () => {
     }
   });
 
+  it("is round and filled with the bot's colour in the Simple composer, the call mode left to its + menu", () => {
+    let tree: ReactNode = null;
+    function Capture() {
+      const element = CallButton({ bot, placement: "composer", fill: "#8057C8" }) as ReactElement<Parameters<typeof CallTargetButton>[0]>;
+      tree = CallTargetButton(element.props);
+      return tree;
+    }
+    const html = renderToStaticMarkup(createElement(Capture));
+    const button = findButton(tree)!;
+    const classes = String(button.props.className).split(" ");
+    expect(classes).toEqual(expect.arrayContaining(["size-8", "rounded-full", "text-white"]));
+    expect(classes).not.toContain("rounded-l-3xl");
+    expect(classes).not.toContain("bg-control");
+    expect(button.props.style).toEqual({ backgroundColor: "#8057C8" });
+    expect(html).toContain("lucide-audio-lines");
+    expect(html).not.toContain('aria-label="Call mode"');
+    expect(renderToStaticMarkup(createElement(() => CallButton({ bot, placement: "composer" })))).toContain('aria-label="Call mode"');
+  });
+
+  it("drops the bot's colour for the red hang-up during a call", () => {
+    fixture.onCall = "pepper";
+    let tree: ReactNode = null;
+    function Capture() {
+      const element = CallButton({ bot, placement: "composer", fill: "#8057C8" }) as ReactElement<Parameters<typeof CallTargetButton>[0]>;
+      tree = CallTargetButton(element.props);
+      return tree;
+    }
+    renderToStaticMarkup(createElement(Capture));
+    const button = findButton(tree)!;
+    expect(String(button.props.className)).toContain("bg-danger");
+    expect(button.props.style).toBeUndefined();
+  });
+
   it("leaves the header placement (rooms) as it was", () => {
     fixture.helpShown = true;
     fixture.config = { tts: { configured: false } };

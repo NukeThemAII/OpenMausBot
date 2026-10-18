@@ -48,6 +48,16 @@ describe("a turn the trial's Claude credit refused", () => {
     expect(paused.buttons.some(label => label.includes("Eigene KI"))).toBe(false);
   });
 
+  it("used up or gone, is a quiet note with the one way on, never an error; paused and too low stay errors", () => {
+    for (const kind of ["used_up", "ended"] as const) {
+      const { html, buttons } = show(stored(kind));
+      expect(html).toContain(`role="note" data-trial-credit-notice="${kind}"`);
+      expect(html).not.toMatch(/danger|lucide-triangle-alert|lucide-alert-triangle/);
+      expect(buttons).toEqual(["Connect your own AI"]);
+    }
+    for (const kind of ["paused", "too_low"] as const) expect(show(stored(kind), vi.fn()).html).toContain("danger");
+  });
+
   it("is told apart by its words alone, whichever engine the turn ran on", () => {
     const html = renderToStaticMarkup(createElement(FailedTurnRow, { tool: stored("used_up"), engine: undefined }));
     expect(html).toContain("Your trial Claude credit is used up. Sign in with your own Claude or ChatGPT account, or add an API key, to keep your bots working.");

@@ -5,8 +5,8 @@ import { openExternalLink } from "@/lib/app-links";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 import {
-  widgetActions, widgetFields, widgetInitialValues, widgetScope, widgetString, type WidgetField, type WidgetNode, type WidgetPayload, type WidgetSettled,
-  type WidgetValues,
+  widgetActions, widgetFields, widgetInitialValues, widgetScope, widgetString, type WidgetField, type WidgetNode, type WidgetOther, type WidgetPayload,
+  type WidgetSettled, type WidgetValues,
 } from "../../../shared/widget";
 import { ASK_QUIET_BUTTON, AskSettledLine, returnFocusToComposer } from "../AskCard";
 import { WidgetBody } from "./WidgetBody";
@@ -24,7 +24,8 @@ function labelledFields(node: WidgetNode, into = new Set<string>()): Set<string>
   return into;
 }
 
-function isEmpty(field: WidgetField, values: WidgetValues): boolean {
+function isEmpty(field: WidgetField, values: WidgetValues, other: WidgetOther): boolean {
+  if (Object.hasOwn(other, field.name)) return !other[field.name]!.trim();
   const value = values[field.name];
   return field.type === "Checkbox" ? value !== true : typeof value !== "string" || !value.trim();
 }
@@ -69,6 +70,7 @@ function WidgetCard({ botId, threadId, messageId, payload }: { botId: string; th
     return () => observer.disconnect();
   }, []);
   const [edits, setEdits] = useState<WidgetValues>({});
+  const [otherEdits, setOtherEdits] = useState<WidgetOther>({});
   const [pending, setPending] = useState<string>();
   const [sent, setSent] = useState<string>();
   const [problem, setProblem] = useState<{ text: string; field?: string }>();
@@ -100,6 +102,7 @@ function WidgetCard({ botId, threadId, messageId, payload }: { botId: string; th
   const fields = useMemo(() => new Map(widgetFields(root).map((field) => [field.name, field])), [root]);
   const labelled = useMemo(() => labelledFields(root), [root]);
   const values = useMemo(() => ({ ...widgetInitialValues(root), ...edits, ...settled?.values }), [root, edits, settled]);
+  const other = settled ? settled.other ?? {} : otherEdits;
 
   const press = (ref: string) => {
     const entry = actions.get(ref);
@@ -111,17 +114,21 @@ function WidgetCard({ botId, threadId, messageId, payload }: { botId: string; th
     }
     if (settled) return;
     let sending: WidgetValues | undefined;
+    let sendingOther: WidgetOther | undefined;
     if (entry.tone !== "cancel") {
       const scope = widgetFields(widgetScope(root, ref), root);
-      const empty = entry.tone ? scope.find((field) => field.node.required === true && isEmpty(field, values)) : undefined;
+      const empty = entry.tone ? scope.find((field) => field.node.required === true && isEmpty(field, values, other)) : undefined;
       if (empty) {
         setProblem({ text: t("widget.required", { label: empty.label }), field: empty.name });
-        frame.current?.querySelector<HTMLElement>(`[data-widget-field="${empty.name}"]`)?.focus();
+        const where = Object.hasOwn(other, empty.name) ? "data-widget-other" : "data-widget-field";
+        frame.current?.querySelector<HTMLElement>(`[${where}="${empty.name}"]`)?.focus();
         return;
       }
-      sending = Object.fromEntries(scope.map((field) => [field.name, values[field.name] ?? (field.type === "Checkbox" ? false : "")]));
+      const typed = scope.filter((field) => Object.hasOwn(other, field.name) && other[field.name]!.trim());
+      sending = Object.fromEntries(scope.map((field) => [field.name, Object.hasOwn(other, field.name) ? "" : values[field.name] ?? (field.type === "Checkbox" ? false : "")]));
+      if (typed.length) sendingOther = Object.fromEntries(typed.map((field) => [field.name, other[field.name]!]));
     }
-    const key = `${ref}\n${JSON.stringify(sending ?? null)}`;
+    const key = `${ref}\n${JSON.stringify(sending ?? null)}\n${JSON.stringify(sendingOther ?? null)}`;
     const sendId = retry.current?.key === key ? retry.current.sendId : newWidgetSendId();
     retry.current = { key, sendId };
     sendingNow.current = true;
@@ -134,7 +141,7 @@ function WidgetCard({ botId, threadId, messageId, payload }: { botId: string; th
     // Pending bot settings save before the press starts a turn; if that save fails, nothing is posted.
     const saved: Promise<unknown> = Promise.resolve().then(() => flushBotPatches(botId));
     const unsaved = (): WidgetSendResult => ({ ok: false, refused: false });
-    void saved.then(() => sendWidgetAction({ botId, threadId, messageId, ref, rev: payload.rev ?? 0, values: sending, sendId }), unsaved).then((result) => {
+    void saved.then(() => sendWidgetAction({ botId, threadId, messageId, ref, rev: payload.rev ?? 0, values: sending, other: sendingOther, sendId }), unsaved).then((result) => {
       sendingNow.current = false;
       if (!mounted.current) return;
       if (!result.ok) {
@@ -146,7 +153,7 @@ function WidgetCard({ botId, threadId, messageId, payload }: { botId: string; th
       }
       retry.current = undefined;
       if (entry.tone) {
-        setSettledHere({ ref, label: entry.label, tone: entry.tone, at: Date.now(), sendId, ...(sending ? { values: sending } : {}) });
+        setSettledHere({ ref, label: entry.label, tone: entry.tone, at: Date.now(), sendId, ...(sending ? { values: sending } : {}), ...(sendingOther ? { other: sendingOther } : {}) });
         return;
       }
       setPending(undefined);
@@ -169,6 +176,17 @@ function WidgetCard({ botId, threadId, messageId, payload }: { botId: string; th
     values,
     setValue: (name, value) => {
       setEdits((current) => ({ ...current, [name]: value }));
+      setOtherEdits(({ [name]: _dropped, ...rest }) => rest);
+      if (problem?.field === name) setProblem(undefined);
+    },
+    other,
+    chooseOther: (name) => {
+      setEdits((current) => ({ ...current, [name]: "" }));
+      setOtherEdits((current) => ({ ...current, [name]: current[name] ?? "" }));
+      if (problem?.field === name) setProblem(undefined);
+    },
+    setOther: (name, text) => {
+      setOtherEdits((current) => ({ ...current, [name]: text }));
       if (problem?.field === name) setProblem(undefined);
     },
     locked: isSettled || pending !== undefined,

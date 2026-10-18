@@ -249,4 +249,16 @@ describe("propose_team_memory", () => {
       fromBotId: "bot-voice", fromThreadId: "thread-voice", kind, name: "Fixture name", detail: "Unreviewed detail", aliases: ["Alias"],
     } }]);
   });
+
+  it("reports a fact that applied on its own as applied, with no card to wait for", async () => {
+    const result = await callTool("propose_team_memory", { kind: "term", name: "OKR", detail: "The quarter's goals." }, context({
+      client: {
+        api: async () => ({ status: "applied", state: "applied", requestId: "entry-fixture", summary: "Term: OKR — The quarter's goals." }),
+        apiResponse: async () => ({ ok: true, status: 200, body: {} }),
+      },
+    }));
+    expect(result.isError).not.toBe(true);
+    expect(result.text).toContain("Applied the team memory entry for OKR.");
+    expect(result.text).not.toContain("confirmation card");
+  });
 });

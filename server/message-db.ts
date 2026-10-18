@@ -445,13 +445,20 @@ export function insertMessage(threadId: string, message: Message): void {
     .run(threadId, message.id, message.at, message.role, message.kind, message.text ?? null, JSON.stringify(message));
 }
 
-export function importThread(threadId: string, messages: Message[], activeLeafId: string | null): void {
+/** `relinked`: adds `messages` to a conversation that has rows; each row it names changes only its parentId, and an id it already has fails the whole import. */
+export function importThread(threadId: string, messages: Message[], activeLeafId: string | null, relinked?: ReadonlyArray<{ id: string; parentId: string | null }>): void {
   transaction((database) => {
-    if (database.prepare("SELECT 1 FROM messages WHERE thread_id = ? LIMIT 1").get(threadId) ||
-        database.prepare("SELECT 1 FROM thread_state WHERE thread_id = ?").get(threadId)) {
+    if (!relinked && (database.prepare("SELECT 1 FROM messages WHERE thread_id = ? LIMIT 1").get(threadId) ||
+        database.prepare("SELECT 1 FROM thread_state WHERE thread_id = ?").get(threadId))) {
       throw new Error("Cannot import over an existing conversation");
     }
-    for (const message of messages) insertMessage(threadId, message);
+    const insert = relinked && database.prepare("INSERT INTO messages (thread_id, id, at, role, kind, text, json) VALUES (?, ?, ?, ?, ?, ?, ?)");
+    for (const message of messages) {
+      if (insert) insert.run(threadId, message.id, message.at, message.role, message.kind, message.text ?? null, JSON.stringify(message));
+      else insertMessage(threadId, message);
+    }
+    const link = database.prepare("UPDATE messages SET json = json_set(json, '$.parentId', ?) WHERE thread_id = ? AND id = ?");
+    for (const row of relinked ?? []) link.run(row.parentId, threadId, row.id);
     setActiveLeaf(threadId, activeLeafId);
   });
 }
@@ -520,9 +527,9 @@ export function deleteThread(threadId: string): void {
   deleteThreads([threadId]);
 }
 
-/** One transaction: every listed thread goes, or none does. */
-export function deleteThreads(threadIds: readonly string[]): void {
-  if (threadIds.length === 0) return;
+/** One transaction: every listed thread goes, or none does; `beforeCommit` throwing keeps them all. */
+export function deleteThreads(threadIds: readonly string[], beforeCommit?: () => void): void {
+  if (threadIds.length === 0 && !beforeCommit) return;
   writeFollowups((connection) => {
     const statements = [
       connection.prepare("DELETE FROM chat_followups WHERE thread_id = ?"),
@@ -531,6 +538,7 @@ export function deleteThreads(threadIds: readonly string[]): void {
       connection.prepare("DELETE FROM notification_log WHERE thread_id = ?"),
     ];
     for (const id of threadIds) for (const statement of statements) statement.run(id);
+    beforeCommit?.();
   });
 }
 

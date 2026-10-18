@@ -5,6 +5,8 @@
 //     | error-result | resume-dies-after-init | stream (partial deltas plus subagent noise)
 //     | not-logged-in (2.1.263's frames) | api-error | usage-limit (2.1.295's usage_limit_reached frames)
 //   FAKE_CLAUDE_API_ERROR  text for the api-error frame (default: overloaded)
+//   FAKE_CLAUDE_API_ERROR_KIND  the api-error frame's `error` (default: unknown); FAKE_CLAUDE_API_ERROR_STATUS its result's
+//     api_error_status; FAKE_CLAUDE_NO_TERMINAL_REASON=1: the result has no terminal_reason, only stop_reason "stop_sequence"
 //   FAKE_CLAUDE_RATE_LIMIT  JSON rate_limit_info reported in a `rate_limit_event` after init
 //   FAKE_CLAUDE_MCP_FAILED  comma list of MCP servers init reports as failed (`mcp_servers`)
 //   FAKE_CLAUDE_RELEASE  with hang: the turn ends normally once this file exists
@@ -655,8 +657,9 @@ const playTurn = (prompt: JsonValue, late = false) => {
   }
   if (mode === "api-error" || resumedError) {
     const text = process.env.FAKE_CLAUDE_API_ERROR ?? "API Error: 529 Overloaded. This is a server-side issue, usually temporary.";
-    out({ type: "assistant", message: { model: "<synthetic>", content: [{ type: "text", text }] }, error: "unknown", is_api_error_message: true });
-    out({ type: "result", is_error: true, stop_reason: "stop_sequence", terminal_reason: "api_error", result: text });
+    out({ type: "assistant", message: { model: "<synthetic>", stop_reason: "stop_sequence", content: [{ type: "text", text }] }, error: process.env.FAKE_CLAUDE_API_ERROR_KIND ?? "unknown", is_api_error_message: true });
+    const status = Number(process.env.FAKE_CLAUDE_API_ERROR_STATUS) || undefined;
+    out({ type: "result", subtype: "success", is_error: true, stop_reason: "stop_sequence", ...(process.env.FAKE_CLAUDE_NO_TERMINAL_REASON === "1" ? {} : { terminal_reason: "api_error" }), ...(status ? { api_error_status: status } : {}), result: text });
     turnRunning = false;
     finishIfDone();
     return;

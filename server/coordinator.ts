@@ -3,6 +3,22 @@ import type { WorkOrigin } from "./peer-provenance.ts";
 import type { LegacyThreadResolver } from "./runtime/import-legacy.ts";
 import type { Assignment, EnvelopeNames, Level, Limits, Mode, Origin, Outcome, Owner, Reply, Requester, StatusView, TurnEvidence } from "./runtime/types.ts";
 
+/** One coordinate_bots call, as the internal route hands it to the server. */
+export type CoordinateBotsCall = {
+  groupId?: string;
+  botIds: string[];
+  message: string;
+  reason?: string;
+  rework: boolean;
+  thread: "standing" | "new";
+  reply: "resume" | "none";
+  consult: boolean;
+  inMyFolder?: boolean;
+  doneWhen?: string;
+  title?: string;
+  projectId?: string;
+};
+
 export type { LegacyThreadResolver };
 
 export type HandoffStatus = "source" | "queued" | "running" | "waiting" | "resume" | "completed" | "failed" | "cancelled";

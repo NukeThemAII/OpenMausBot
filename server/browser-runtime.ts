@@ -778,6 +778,15 @@ export class BrowserRuntime {
     this.changed(gate);
   }
 
+  /** The same person's hold, moved to their view that replaced one whose stream dropped; agents stay paused throughout. */
+  transfer(session: string, from: string, to: string): boolean {
+    const gate = this.gates.get(session);
+    if (!from || !to || !gate || gate.owner !== from || gate.releasing || gate.closing) return false;
+    gate.owner = to;
+    this.changed(gate);
+    return true;
+  }
+
   release(session: string, owner: string): void {
     const gate = this.gates.get(session);
     if (!owner || !gate || gate.owner !== owner) return;

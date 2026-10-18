@@ -88,7 +88,7 @@ function fixture(kind: "direct" | "group", threadIds = ["first"]) {
     activeGroupSpeaker: (groupId: string) => speakers.get(groupId),
     directRequestOwners,
     autoVmClaims,
-    turnResources: { release() {} }, settlingResourceOwners: new Map(), turnComputerResources: new Map(), teamComputerTurns: new Map(),
+    turnResources: { release() {} }, cloudComputerPower: { released() {} }, settlingResourceOwners: new Map(), turnComputerResources: new Map(), teamComputerTurns: new Map(),
     coordinator: { stopAwaitingDirect: (threadId: string) => { stopAwaiting.push(threadId); return []; } },
     noteTeammatesLeftRunning() {}, stopParkedCards: (threadId: string) => stoppedCards.push(threadId),
     cancelDirectTurnDispatch: (_botId: string, threadId: string) => cancelled.push(threadId),

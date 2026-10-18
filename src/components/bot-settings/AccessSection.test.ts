@@ -276,3 +276,19 @@ describe("AccessSection per-app scopes", () => {
     expect(html).not.toContain("Limit this bot to specific apps");
   });
 });
+
+describe("AccessSection parts", () => {
+  it("renders only the cards a page asks for, and every card without parts", () => {
+    fixture.servers = [{ name: "notes", enabled: true }];
+    const full = render(makeBot());
+    for (const text of ["Where Scout works", "Working folder", "Connected apps", "Let this bot use notes", "Browser", "Webhooks", "Always allowed"]) {
+      expect(full).toContain(text);
+    }
+    const mcp = renderToStaticMarkup(createElement(StoreProvider, null, createElement(AccessSection, { bot: makeBot(), derived: makeDerived(), parts: ["mcp"] })));
+    expect(mcp).toContain("Let this bot use notes");
+    for (const text of ["Where Scout works", "Working folder", "Connected apps", "Webhooks", "Always allowed"]) expect(mcp).not.toContain(text);
+    const folder = renderToStaticMarkup(createElement(StoreProvider, null, createElement(AccessSection, { bot: makeBot(), derived: makeDerived(), parts: ["folder"] })));
+    expect(folder).toContain("Working folder");
+    expect(folder).not.toContain("Let this bot use notes");
+  });
+});

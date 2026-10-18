@@ -1,21 +1,15 @@
 import { boatCapableEngine } from "@/lib/remote-desktop";
 import {
-  useCallback,
   useEffect,
   useLayoutEffect,
-  useMemo,
   useRef,
   useState,
   type DragEvent as ReactDragEvent,
   type PointerEvent as ReactPointerEvent,
-  type CSSProperties,
   type ReactNode,
 } from "react";
 import {
-  ArrowLeft,
-  CheckCheck,
   CheckCircle2,
-  ChevronLeft,
   ChevronRight,
   CircleAlert,
   Clock3,
@@ -27,7 +21,6 @@ import {
   Paperclip,
   Pause,
   Play,
-  Plus,
   Repeat2,
   Search,
   Target,
@@ -35,7 +28,6 @@ import {
   UserRoundPlus,
   UsersRound,
   Video,
-  Webhook,
   X,
   XCircle,
 } from "lucide-react";
@@ -43,9 +35,6 @@ import {
 import { BotAvatar } from "@/components/Avatar";
 import { useBotEditor } from "./bot-settings/BotEditorContext";
 import { pathForFile } from "@/components/ComposerAttachments";
-import { CalendarSidebar } from "@/components/routines/CalendarSidebar";
-import { RoutineList } from "@/components/routines/RoutineList";
-import { RoutineLogs } from "@/components/routines/RoutineLogs";
 import { ResultsDestination } from "@/components/routines/ResultsDestination";
 import { CronScheduleFields, CronSchedulePreview } from "@/components/routines/CronScheduleFields";
 import { cronChoiceFor, cronDraftFor, cronEditorValue, isCronChoice, type CronChoice } from "@/components/routines/cron-editor";
@@ -54,8 +43,6 @@ import { useAdvancedMode } from "@/lib/interface-mode";
 import { useShowThreads } from "@/lib/thread-preferences";
 import { t } from "@/lib/i18n";
 import { useModalDialog } from "@/hooks/use-modal-dialog";
-import { useDesktopCapabilities } from "@/components/DesktopCapabilities";
-import { WebhooksPanel } from "@/components/WebhooksPanel";
 import type { CalendarCall, CalendarCallAttachment, CalendarCallInput } from "@/lib/calendar-calls";
 import { cn } from "@/lib/cn";
 import {
@@ -68,24 +55,19 @@ import {
   addDays,
   atLocalTime,
   CALENDAR_SLOT_MINUTES,
-  calendarRangeLabel,
   formatGmtOffset,
   fromLocalDateAndTime,
   intervalAnchorForSave,
   nextIntervalForSave,
   packCalendarCollisions,
-  projectedRoutineItems,
-  scheduleAt,
   slotAt,
   startOfDay,
-  startOfWeek,
   toLocalDateInput,
   toLocalTimeInput,
   type RoutineCalendarItem,
 } from "@/lib/routine-calendar";
 import { DAY_NAMES, durationLabel, intervalLabel, niceDate, niceTime, scheduleLabel } from "@/lib/schedule-label";
 import { Select } from "./Select";
-import { Switch } from "./SettingsPrimitives";
 import {
   isRoutineProblemRun,
   type Routine,
@@ -94,7 +76,6 @@ import {
   type RoutineRunOn,
   type RoutineRun,
   type RoutineRunStatus,
-  type RoutineRunStatusFilter,
   type RoutineSchedule,
   type RoutineScheduleInput,
   type RoutineTarget,
@@ -111,8 +92,8 @@ const EVENT_DURATION_OPTIONS = Array.from({ length: 240 / CALENDAR_SLOT_MINUTES 
 const BOT_DRAG_TYPE = "application/x-openmaus-bot";
 const EVENT_DRAG_TYPE = "application/x-openmaus-calendar-event";
 
-type EventKind = "routine" | "call";
-type RoutinesLayout = "day" | "week" | "list";
+export type EventKind = "routine" | "call";
+export type RoutinesLayout = "day" | "week" | "list";
 type CalendarRecurrenceChoice = "none" | "daily" | "weekdays" | "weekly" | "custom";
 type RecurrenceChoice = CalendarRecurrenceChoice | "interval" | CronChoice;
 type IntervalDayChoice = "every-day" | "weekdays" | "custom";
@@ -126,11 +107,11 @@ type CallOccurrence = {
   call: CalendarCall;
 };
 
-type CalendarEventItem =
+export type CalendarEventItem =
   | ({ kind: "routine" } & RoutineCalendarItem)
   | ({ kind: "call" } & CallOccurrence);
 
-type EventSeed = {
+export type EventSeed = {
   kind: EventKind;
   at: number;
   durationMinutes: number;
@@ -171,7 +152,7 @@ function preferredRoomLead(group: Group | undefined, bots: Bot[], preferredId?: 
     ?? members[0];
 }
 
-function nextHour(): number {
+export function nextHour(): number {
   const date = new Date(Date.now() + 60 * 60_000);
   date.setMinutes(0, 0, 0);
   return date.getTime();
@@ -229,7 +210,7 @@ function makeRoutineSchedule(
   return makeCalendarSchedule(choice, at, weekdays);
 }
 
-function projectCalls(calls: CalendarCall[], from: number, to: number): CallOccurrence[] {
+export function projectCalls(calls: CalendarCall[], from: number, to: number): CallOccurrence[] {
   const items: CallOccurrence[] = [];
   for (const call of calls) {
     if (call.schedule.type === "once") {
@@ -340,14 +321,14 @@ export function EventEditor({
   lockedBotId,
   defaultRunOn,
   routinesOnly = false,
-  onClose,
+  plain = false, onClose,
   onSavedCall,
 }: {
   seed: EventSeed;
   bots: Bot[];
   lockedBotId?: string;
   defaultRunOn?: RoutineRunOn;
-  routinesOnly?: boolean;
+  routinesOnly?: boolean; plain?: boolean;
   onClose: () => void;
   onSavedCall: (call: CalendarCall) => void;
 }) {
@@ -602,7 +583,7 @@ export function EventEditor({
     && !cron?.error,
   );
   const canSwitchKind = !routinesOnly && !existingRoutine && !existingCall && !lockedBotId;
-  const advanced = useAdvancedMode();
+  const advanced = useAdvancedMode() && !plain;
   const [moreOpen, setMoreOpen] = useState(() => !(["none", "daily", "weekdays", "weekly"] as RecurrenceChoice[]).includes(recurrence)
     || routineTarget === "room-goal"
     || attachments.length > 0
@@ -902,7 +883,7 @@ export function EventEditor({
             </div>
           );
   const headerTitle = !advanced && kind === "routine"
-    ? t(existingRoutine ? "routines.editor.edit" : "routines.editor.new")
+    ? t(plain ? (existingRoutine ? "automations.editor.edit" : "automations.editor.new") : existingRoutine ? "routines.editor.edit" : "routines.editor.new")
     : existingRoutine || existingCall ? "Edit event" : "New event";
   const repeatChoices = [
     ["none", "routines.repeat.once"],
@@ -1067,7 +1048,7 @@ export function EventEditor({
   );
 }
 
-function QuickComposer({
+export function QuickComposer({
   seed,
   bots,
   routinesOnly = false,
@@ -1244,7 +1225,7 @@ function CalendarEventCard({
   const ownerIds = isCall ? item.call.botIds : [run?.botId ?? routine?.botId ?? ""];
   const ownerBots = ownerIds.flatMap((id) => bots.find((bot) => bot.id === id) ?? []);
   const primary = ownerBots[0];
-  const name = isCall ? item.call.name : run?.routineName ?? routine?.name ?? "Routine";
+  const name = isCall ? item.call.name : run?.routineName ?? routine?.name ?? "Automation";
   const color = isCall ? "var(--color-accent)" : primary ? MAUS_COLORS[primary.color] : "var(--color-ink-tertiary)";
   const paused = Boolean(routine && !run && !routine.enabled);
   const [previewDuration, setPreviewDuration] = useState(item.durationMinutes);
@@ -1285,7 +1266,7 @@ function CalendarEventCard({
       data-event-card
       type="button"
       draggable={canMove}
-      title={routine?.schedule.type === "cron" ? "Open this routine to edit its repeating schedule and time zone." : undefined}
+      title={routine?.schedule.type === "cron" ? "Open this automation to change its repeating schedule and time zone." : undefined}
       onDragStart={(event) => {
         if (!canMove) return event.preventDefault();
         event.dataTransfer.effectAllowed = "move";
@@ -1317,7 +1298,7 @@ function CalendarEventCard({
         {previewDuration >= 30 && (isCall ? <Video size={compact ? 11 : 13} className="mt-0.5 shrink-0" /> : primary ? <BotAvatar bot={primary} state={status ? statusState(status) : paused ? "sleeping" : "idle"} size={compact ? 18 : 22} animated={status === "running" || status === "waiting"} /> : null)}
         <div className="min-w-0 flex-1">
           <div className={cn("truncate text-[11px] font-semibold", previewDuration < 30 ? "leading-none" : "leading-tight")}>{name}</div>
-          {previewDuration >= 30 && <div className="mt-0.5 truncate text-[9.5px] opacity-80">{niceTime(item.at)} · {paused ? t("routines.pausedSchedule") : intervalCadence ?? (isCall ? `${ownerBots.length} bot${ownerBots.length === 1 ? "" : "s"}` : isRoomGoal ? `Team goal · ${room?.name ?? "Group"}${statusLabel ? ` · ${statusLabel}` : ""}` : statusLabel ?? primary?.name)}</div>}
+          {previewDuration >= 30 && <div className="mt-0.5 flex min-w-0 items-center gap-1 text-[9.5px] opacity-80">{!isCall && <span data-event-status={paused ? "paused" : status === "failed" || status === "missed" || status === "waiting" ? "needs-you" : "working"} className={cn("size-1.5 shrink-0 rounded-full", paused ? "bg-ink-tertiary" : status === "failed" || status === "missed" || status === "waiting" ? "bg-warning" : "bg-success")} />}<span className="truncate">{niceTime(item.at)} · {isCall ? `${ownerBots.length} bot${ownerBots.length === 1 ? "" : "s"}` : isRoomGoal ? room?.name ?? "Group" : intervalCadence ? `${primary?.name ?? ""} · ${intervalCadence}` : primary?.name}</span></div>}
         </div>
         {previewDuration >= 30 && ownerBots.length > 1 && <span className="rounded bg-inset/60 px-1 py-0.5 text-[8px]">+{ownerBots.length - 1}</span>}
       </div>
@@ -1326,7 +1307,7 @@ function CalendarEventCard({
   );
 }
 
-function CalendarGrid({
+export function CalendarGrid({
   anchor,
   days,
   items,
@@ -1762,13 +1743,13 @@ export function RoutineEditor({
   routine,
   bots,
   lockedBotId,
-  defaultRunOn,
+  defaultRunOn, plain,
   onClose,
 }: {
   routine?: Routine;
   bots: Bot[];
   lockedBotId?: string;
-  defaultRunOn?: RoutineRunOn;
+  defaultRunOn?: RoutineRunOn; plain?: boolean;
   onClose: () => void;
 }) {
   const at = routine?.schedule.type === "once"
@@ -1780,320 +1761,5 @@ export function RoutineEditor({
       : routine?.schedule.type === "cron"
         ? routine.nextRunAt ?? nextHour()
       : nextHour();
-  return <EventEditor seed={{ kind: "routine", at, durationMinutes: routine?.durationMinutes ?? 30, botIds: lockedBotId ? [lockedBotId] : routine ? [routine.botId] : [], routine }} bots={bots} lockedBotId={lockedBotId} defaultRunOn={defaultRunOn} onClose={onClose} onSavedCall={() => {}} />;
-}
-
-export function RoutinesPage({ onBack, onOpenRoom }: { onBack: () => void; onOpenRoom: (id: string) => void }) {
-  const { state, dispatch } = useStore();
-  const { capabilities } = useDesktopCapabilities();
-  const advanced = useAdvancedMode();
-  const routinesOnly = window.ogb?.remoteClient?.active === true;
-  const backButtonRef = useRef<HTMLButtonElement>(null);
-  const [section, setSection] = useState<"calendar" | "logs" | "webhooks">(state.routinesFocus?.section === "logs" ? "logs" : "calendar");
-  const [layout, setLayout] = useState<RoutinesLayout>(state.routinesFocus?.view === "list" ? "list" : "week");
-  const [anchor, setAnchor] = useState(() => startOfDay(Date.now()));
-  const [botFilter, setBotFilter] = useState(state.routinesFocus?.botId ?? "all");
-  const [routineFilter, setRoutineFilter] = useState<string | undefined>(state.routinesFocus?.routineId);
-  const [statusFilter, setStatusFilter] = useState<RoutineRunStatusFilter>(state.routinesFocus?.runStatus ?? "all");
-  const [calls, setCalls] = useState<CalendarCall[]>([]);
-  const [quick, setQuick] = useState<EventSeed | null>(null);
-  const [editor, setEditor] = useState<EventSeed | null>(null);
-  const [selected, setSelected] = useState<CalendarEventItem | null>(null);
-  const [pausedOpen, setPausedOpen] = useState(false);
-  const [webhookCreateRequest, setWebhookCreateRequest] = useState(0);
-  const [error, setError] = useState("");
-  const visibleBots = state.bots.filter((bot) => !bot.hidden);
-  const webhooksAvailable = advanced && !routinesOnly;
-  const shownSection = section === "webhooks" && !webhooksAvailable ? "calendar" : section;
-  const viewDays = layout === "day" ? 1 : 7;
-  const rangeStart = viewDays === 7 ? startOfWeek(anchor) : startOfDay(anchor);
-  const rangeEnd = addDays(rangeStart, viewDays);
-  const datedView = shownSection === "calendar" && layout !== "list";
-
-  useEffect(() => {
-    const focus = state.routinesFocus;
-    setSection(focus?.section === "logs" ? "logs" : "calendar");
-    setLayout(focus?.view === "list" ? "list" : "week");
-    setBotFilter(focus?.botId ?? "all");
-    setRoutineFilter(focus?.routineId);
-    setStatusFilter(focus?.runStatus ?? "all");
-  }, [state.routinesFocus]);
-
-  const loadCalls = useCallback(async () => {
-    try {
-      const response = await api("/api/calendar-calls");
-      setCalls(response.calls ?? []);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    }
-  }, []);
-  useEffect(() => {
-    if (!routinesOnly) void loadCalls();
-  }, [loadCalls, routinesOnly]);
-  useEffect(() => { backButtonRef.current?.focus({ preventScroll: true }); }, []);
-
-  const items = useMemo<CalendarEventItem[]>(() => {
-    const routineItems = projectedRoutineItems(state.routines, state.routineRuns, rangeStart, rangeEnd).map((item) => ({ ...item, kind: "routine" as const }));
-    const now = Date.now();
-    const pausedRoutines = state.routines.filter((routine) => !routine.enabled);
-    const pausedItems = projectedRoutineItems(pausedRoutines.map((routine) => ({ ...routine, enabled: true })), state.routineRuns, rangeStart, rangeEnd)
-      .filter((item) => !item.run && item.at >= now)
-      .map((item) => ({
-        ...item,
-        id: `paused-${item.id}`,
-        routine: pausedRoutines.find((routine) => routine.id === item.routine?.id) ?? item.routine,
-        kind: "routine" as const,
-      }));
-    const callItems = projectCalls(calls, rangeStart, rangeEnd).map((item) => ({ ...item, kind: "call" as const }));
-    return [...routineItems, ...pausedItems, ...callItems]
-      .filter((item) => botFilter === "all" || (item.kind === "call" ? item.call.botIds.includes(botFilter) : (item.routine?.botId ?? item.run?.botId) === botFilter))
-      .sort((left, right) => left.at - right.at);
-  }, [state.routines, state.routineRuns, calls, rangeStart, rangeEnd, botFilter]);
-
-  const liveSelected = selected?.kind === "call"
-    ? (() => { const call = calls.find((candidate) => candidate.id === selected.call.id); return call ? { ...selected, call } : null; })()
-    : selected?.kind === "routine"
-      ? {
-          ...selected,
-          routine: selected.routine ? state.routines.find((routine) => routine.id === selected.routine?.id) ?? null : null,
-          run: selected.run ? state.routineRuns.find((run) => run.id === selected.run?.id) ?? selected.run : null,
-        }
-      : null;
-  const paused = state.routines.filter((routine) => !routine.enabled && (routine.schedule.type !== "once" || routine.schedule.at > Date.now()));
-  const running = state.routineRuns.filter((run) => ["queued", "running", "waiting"].includes(run.status)).length;
-  const unseenFailures = state.routineRuns.filter((run) => isRoutineProblemRun(run) && !run.seenAt).length;
-  const filteredRoutines = state.routines.filter((routine) => botFilter === "all" || routine.botId === botFilter);
-  const filteredRuns = state.routineRuns.filter((run) => botFilter === "all" || run.botId === botFilter);
-  const routineAt = (routine: Routine) => routine.schedule.type === "once"
-    ? routine.schedule.at
-    : routine.schedule.type === "interval"
-      ? routine.schedule.anchorAt
-      : routine.schedule.type === "cron"
-        ? routine.nextRunAt ?? nextHour()
-        : atLocalTime(Date.now(), routine.schedule.time);
-  const openRoutine = (routine: Routine) => setSelected({ kind: "routine", id: routine.id, at: routine.nextRunAt ?? routineAt(routine), durationMinutes: routine.durationMinutes, routine, run: null });
-  const openLogs = (routine: Routine) => { setRoutineFilter(routine.id); setSection("logs"); };
-  const openRun = (run: RoutineRun) => {
-    setSelected({ kind: "routine", id: run.id, at: run.scheduledFor, durationMinutes: run.durationMinutes ?? 30, routine: state.routines.find((routine) => routine.id === run.routineId) ?? null, run });
-    if (["failed", "missed"].includes(run.status) && !run.seenAt) dispatch({ type: "markRoutineRunSeen", runId: run.id });
-  };
-  const openItem = (item: CalendarEventItem) => {
-    setSelected(item);
-    if (item.kind === "routine" && item.run && ["failed", "missed"].includes(item.run.status) && !item.run.seenAt) dispatch({ type: "markRoutineRunSeen", runId: item.run.id });
-  };
-  const macInset = capabilities.windowChrome === "mac-inset";
-  const windowDragStyle = macInset
-    ? ({ WebkitAppRegion: "drag" } as CSSProperties)
-    : undefined;
-  const windowNoDragStyle = macInset
-    ? ({ WebkitAppRegion: "no-drag" } as CSSProperties)
-    : undefined;
-
-  const showLayout = (next: RoutinesLayout) => {
-    setSection("calendar");
-    setLayout(next);
-    setAnchor((current) => startOfDay(current));
-  };
-  const goToday = useCallback(() => setAnchor(startOfDay(Date.now())), []);
-  const handleWebhookCreateHandled = useCallback(() => setWebhookCreateRequest(0), []);
-  const openCreate = useCallback((seed?: Partial<EventSeed>) => {
-    setSelected(null);
-    setQuick({ kind: "routine", at: nextHour(), durationMinutes: 30, botIds: [], ...seed });
-  }, []);
-  const createRoutine = () => {
-    if (section === "webhooks") setSection("calendar");
-    if (advanced) return openCreate({ kind: "routine" });
-    setSelected(null);
-    setEditor({ kind: "routine", at: nextHour(), durationMinutes: 30, botIds: botFilter !== "all" ? [botFilter] : [] });
-  };
-
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (target?.matches("input, textarea, select, [contenteditable=true]")) return;
-      if (event.key === "Escape") { setQuick(null); setEditor(null); setSelected(null); return; }
-      if (shownSection !== "calendar" || event.metaKey || event.ctrlKey || event.altKey) return;
-      if (event.key.toLowerCase() === "c") { event.preventDefault(); openCreate(); }
-      if (event.key.toLowerCase() === "t") goToday();
-      if (event.key === "1" || event.key.toLowerCase() === "d") showLayout("day");
-      if (event.key.toLowerCase() === "w") showLayout("week");
-      if (event.key.toLowerCase() === "l") showLayout("list");
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [shownSection, openCreate, goToday, anchor]);
-
-  const upsertCall = (call: CalendarCall) => setCalls((current) => current.some((candidate) => candidate.id === call.id) ? current.map((candidate) => candidate.id === call.id ? call : candidate) : [call, ...current]);
-  const moveEvent = async (dragged: { kind: EventKind; id: string; at: number }, nextAt: number) => {
-    if (nextAt === dragged.at) return;
-    try {
-      if (dragged.kind === "routine") {
-        const routine = state.routines.find((candidate) => candidate.id === dragged.id);
-        if (!routine) return;
-        if (routine.schedule.type === "cron") throw new Error("Open this routine to edit its repeating schedule and time zone.");
-        if (routine.schedule.type !== "once" && !window.confirm("Move this entire recurring series?")) return;
-        const response = await api(`/api/routines/${routine.id}`, { method: "PATCH", body: JSON.stringify({ schedule: scheduleAt(routine.schedule, dragged.at, nextAt) }) });
-        dispatch({ type: "routinePatched", routine: response.routine });
-      } else {
-        const call = calls.find((candidate) => candidate.id === dragged.id);
-        if (!call) return;
-        if (call.schedule.type === "daily" && !window.confirm("Move this entire recurring series?")) return;
-        const response = await api(`/api/calendar-calls/${call.id}`, { method: "PATCH", body: JSON.stringify({ schedule: scheduleAt(call.schedule, dragged.at, nextAt) }) });
-        upsertCall(response.call);
-      }
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    }
-  };
-  const resizeEvent = async (item: CalendarEventItem, durationMinutes: number) => {
-    try {
-      if (item.kind === "routine" && item.routine) {
-        const response = await api(`/api/routines/${item.routine.id}`, { method: "PATCH", body: JSON.stringify({ durationMinutes }) });
-        dispatch({ type: "routinePatched", routine: response.routine });
-      } else if (item.kind === "call") {
-        const response = await api(`/api/calendar-calls/${item.call.id}`, { method: "PATCH", body: JSON.stringify({ durationMinutes }) });
-        upsertCall(response.call);
-      }
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    }
-  };
-  const editSelected = () => {
-    if (!liveSelected) return;
-    const seed: EventSeed = liveSelected.kind === "call"
-      ? { kind: "call", at: liveSelected.at, durationMinutes: liveSelected.call.durationMinutes, botIds: liveSelected.call.botIds, call: liveSelected.call }
-      : { kind: "routine", at: liveSelected.at, durationMinutes: liveSelected.routine?.durationMinutes ?? liveSelected.run?.durationMinutes ?? 30, botIds: [liveSelected.routine?.botId ?? liveSelected.run?.botId ?? ""].filter(Boolean), routine: liveSelected.routine ?? undefined };
-    setSelected(null);
-    setEditor(seed);
-  };
-  const segment = (active: boolean) => cn("flex items-center gap-1.5 rounded-md px-3 py-1.5 text-[12px] font-medium", active ? "bg-raised text-ink shadow-sm" : "text-ink-secondary hover:text-ink");
-  const drawerOpen = Boolean(liveSelected) && shownSection !== "webhooks";
-
-  return (
-    <main className="flex h-full min-w-0 flex-1 flex-col bg-app animate-workspace-in">
-      <header
-        className={cn("shrink-0 border-b border-hairline/35 bg-app py-3 pr-4", macInset ? "pl-[86px]" : "pl-4")}
-        style={windowDragStyle}
-      >
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            ref={backButtonRef}
-            onClick={onBack}
-            aria-label="Back"
-            title="Back"
-            className="flex size-9 shrink-0 items-center justify-center rounded-lg text-ink-secondary hover:bg-raised hover:text-ink"
-            style={windowNoDragStyle}
-          >
-            <ArrowLeft size={18} />
-          </button>
-          <h1 data-tour="automations-page" className="mr-1 text-[18px] font-semibold tracking-tight text-ink">{t("routines.title")}</h1>
-          {datedView && (
-            <div className="flex min-w-0 items-center gap-1" style={windowNoDragStyle}>
-              <button type="button" onClick={() => setAnchor((current) => addDays(current, -viewDays))} className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink" aria-label={t("routines.previous")}><ChevronLeft size={16} /></button>
-              <button type="button" onClick={() => setAnchor((current) => addDays(current, viewDays))} className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink" aria-label={t("routines.next")}><ChevronRight size={16} /></button>
-              <div className="min-w-0 truncate px-1 text-[14px] font-medium text-ink" aria-live="polite">{calendarRangeLabel(rangeStart, viewDays)}</div>
-              <button type="button" onClick={goToday} className="ml-1 rounded-lg border border-hairline/50 bg-panel px-2.5 py-1 text-[12px] font-medium text-ink hover:bg-raised">{t("routines.today")}</button>
-            </div>
-          )}
-          <div className="ml-auto flex flex-wrap items-center gap-2" style={windowNoDragStyle}>
-            <div role="group" className="flex items-center rounded-lg border border-hairline/50 bg-panel p-0.5" aria-label={t("routines.view.label")}>
-              <button type="button" aria-pressed={shownSection === "calendar" && layout === "day"} onClick={() => showLayout("day")} className={segment(shownSection === "calendar" && layout === "day")}>{t("routines.view.day")}</button>
-              <button type="button" aria-pressed={shownSection === "calendar" && layout === "week"} onClick={() => showLayout("week")} className={segment(shownSection === "calendar" && layout === "week")}>{t("routines.view.week")}</button>
-              <button type="button" aria-pressed={shownSection === "calendar" && layout === "list"} onClick={() => showLayout("list")} className={segment(shownSection === "calendar" && layout === "list")}>{t("routines.view.list")}</button>
-            </div>
-            <button type="button" aria-pressed={shownSection === "logs"} onClick={() => { if (shownSection === "logs") { setSection("calendar"); return; } setSection("logs"); setRoutineFilter(undefined); }} className={cn("flex items-center gap-1.5 rounded-lg border border-hairline/50 px-2.5 py-1.5 text-[12px] font-medium", shownSection === "logs" ? "bg-raised text-ink" : "bg-panel text-ink-secondary hover:text-ink")}><FileText size={13} />{t("routines.logs")}{unseenFailures > 0 && <span className="rounded-full bg-danger/10 px-1.5 text-[9px] text-danger">{unseenFailures}</span>}</button>
-            {webhooksAvailable && <button type="button" aria-pressed={shownSection === "webhooks"} onClick={() => setSection(shownSection === "webhooks" ? "calendar" : "webhooks")} className={cn("flex items-center gap-1.5 rounded-lg border border-hairline/50 px-2.5 py-1.5 text-[12px] font-medium", shownSection === "webhooks" ? "bg-raised text-ink" : "bg-panel text-ink-secondary hover:text-ink")}><Webhook size={13} />{t("routines.webhooks")}{state.webhooks.length > 0 && <span className="rounded-full bg-accent/15 px-1.5 text-[9px] text-accent-text">{state.webhooks.length}</span>}</button>}
-            {shownSection === "webhooks"
-              ? <button type="button" disabled={visibleBots.length === 0} onClick={() => setWebhookCreateRequest((request) => request + 1)} className="flex items-center gap-1.5 rounded-lg bg-accent px-3.5 py-2 text-[12px] font-semibold text-accent-ink hover:brightness-110 disabled:opacity-40"><Plus size={15} aria-hidden="true" />{t("routines.newWebhook")}</button>
-              : <button type="button" onClick={createRoutine} className="flex items-center gap-1.5 rounded-lg bg-accent px-3.5 py-2 text-[12px] font-semibold text-accent-ink hover:brightness-110"><Plus size={15} aria-hidden="true" />{t("routines.newRoutine")}</button>}
-          </div>
-        </div>
-        {shownSection !== "webhooks" && <div className="mt-2 flex flex-wrap items-center gap-2" style={windowNoDragStyle}>
-          {unseenFailures > 0 && <button type="button" onClick={() => dispatch({ type: "markAllRoutineRunsSeen" })} className="flex items-center gap-1.5 rounded-lg border border-hairline/50 bg-panel px-2.5 py-1.5 text-[11.5px] text-ink-secondary hover:bg-raised hover:text-ink" title={t("routines.markAllSeen")} aria-label={t("routines.markAllSeen")}><CheckCheck size={12} />{t("routines.markAllSeen")}</button>}
-          {running > 0 && <span className="flex items-center gap-1.5 rounded-full bg-accent/10 px-2.5 py-1.5 text-[10.5px] text-accent-text"><Loader2 size={11} className="animate-spin" />{running} active</span>}
-          {unseenFailures > 0 && <button type="button" onClick={() => dispatch({ type: "showRoutines", section: "logs", runStatus: "problems" })} className="flex items-center gap-1.5 rounded-full bg-danger/10 px-2.5 py-1.5 text-[10.5px] text-danger" title="Open problem run logs" aria-label="Open problem run logs"><CircleAlert size={11} />{unseenFailures}</button>}
-          {paused.length > 0 && <button type="button" onClick={() => setPausedOpen(true)} aria-label="View paused routines" className="flex items-center gap-1.5 rounded-full border border-hairline/50 px-2.5 py-1.5 text-[10.5px] text-ink-secondary hover:bg-raised"><Pause size={11} />{paused.length}</button>}
-          <div className="ml-auto flex items-center gap-2">
-            <Select size="sm" aria-label="Filter schedule by bot" value={botFilter} onChange={(event) => { setBotFilter(event.target.value); setRoutineFilter(undefined); }} className="max-w-[180px]"><option value="all">All bots</option>{visibleBots.map((bot) => <option key={bot.id} value={bot.id}>{bot.name}</option>)}</Select>
-          </div>
-          {error && <button type="button" onClick={() => setError("")} className="flex items-center gap-1.5 rounded-lg bg-danger/10 px-2.5 py-1.5 text-[10.5px] text-danger"><CircleAlert size={11} />{error}<X size={11} /></button>}
-          {datedView && state.routinesLoadState === "error" && <p role="alert" className="w-full text-[11.5px] text-danger">{t("routines.loadError")}</p>}
-          {datedView && state.routinesLoadState === "loading" && state.routines.length === 0 && <p role="status" className="w-full text-[11.5px] text-ink-secondary">{t("routines.loading")}</p>}
-        </div>}
-      </header>
-      <RoutineWakeBar />
-
-      <div className="@container/routines relative flex min-h-0 flex-1">
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          {shownSection === "webhooks" ? <WebhooksPanel bots={visibleBots} createRequest={webhookCreateRequest} onCreateHandled={handleWebhookCreateHandled} /> : shownSection === "logs" ? (
-            <div className="min-h-0 flex-1 overflow-y-auto"><RoutineLogs runs={filteredRuns} bots={state.bots} loading={state.routinesLoadState === "loading" && filteredRuns.length === 0} error={state.routinesLoadState === "error"} routineId={routineFilter} status={statusFilter} onStatusChange={setStatusFilter} onClearRoutine={() => setRoutineFilter(undefined)} onOpen={openRun} /></div>
-          ) : layout === "list" ? (
-            <div className="min-h-0 flex-1 overflow-y-auto"><div className="mx-auto w-full max-w-4xl space-y-5 p-4 sm:p-6">
-              <div><h2 className="text-[17px] font-semibold text-ink">{t("routines.title")}</h2><p className="mt-1 text-[12px] text-ink-secondary">All schedules, including paused and finished routines.</p></div>
-              <RoutineList routines={filteredRoutines} runs={state.routineRuns} bots={state.bots} loading={state.routinesLoadState === "loading" && filteredRoutines.length === 0} error={state.routinesLoadState === "error"} onOpen={openRoutine} onLogs={openLogs} onToggle={(routine) => dispatch({ type: "updateRoutine", routineId: routine.id, patch: { enabled: !routine.enabled } })} />
-              {!routinesOnly && calls.some((call) => botFilter === "all" || call.botIds.includes(botFilter)) && <section className="space-y-2" aria-label="Scheduled calls"><h2 className="text-[15px] font-semibold text-ink">Scheduled calls</h2>{calls.filter((call) => botFilter === "all" || call.botIds.includes(botFilter)).map((call) => <button key={call.id} type="button" onClick={() => setSelected({ kind: "call", id: call.id, at: call.schedule.type === "once" ? call.schedule.at : atLocalTime(Date.now(), call.schedule.time), durationMinutes: call.durationMinutes, call })} className="flex w-full items-center gap-3 rounded-xl border border-hairline/40 bg-card p-4 text-left hover:bg-raised"><Video size={17} className="text-accent" /><span><span className="block text-[13px] font-medium text-ink">{call.name}</span><span className="mt-1 block text-[11.5px] text-ink-secondary">{scheduleLabel(call.schedule)}</span></span></button>)}</section>}
-            </div></div>
-          ) : (
-            <div className="flex min-h-0 flex-1">
-              {!drawerOpen && <div className="hidden shrink-0 @min-[1040px]/routines:block"><CalendarSidebar bots={visibleBots} anchor={anchor} onSelectDate={(at) => setAnchor(startOfDay(at))} /></div>}
-              <CalendarGrid anchor={rangeStart} days={viewDays} items={items} bots={state.bots} groups={state.groups} selectedId={liveSelected?.id} onOpen={openItem} onCreate={openCreate} onMove={(item, at) => void moveEvent(item, at)} onResize={(item, duration) => void resizeEvent(item, duration)} />
-            </div>
-          )}
-        </div>
-        {drawerOpen && liveSelected && (
-          <div className="absolute inset-y-0 right-0 z-30 flex shadow-2xl @min-[760px]/routines:static @min-[760px]/routines:shadow-none">
-            <EventDetails key={`${liveSelected.kind}:${liveSelected.id}`} item={liveSelected} bots={state.bots} onClose={() => setSelected(null)} onEdit={editSelected} onOpenRun={openRun} onCallChanged={(id) => { if (id) setCalls((current) => current.filter((call) => call.id !== id)); else void loadCalls(); }} onOpenRoom={onOpenRoom} />
-          </div>
-        )}
-      </div>
-
-      {quick && <><div className="fixed inset-0 z-40 bg-black/25" onMouseDown={() => setQuick(null)} /><QuickComposer seed={quick} bots={visibleBots} routinesOnly={routinesOnly} onClose={() => setQuick(null)} onMore={(seed) => { setQuick(null); setEditor(seed); }} onSavedRoutine={(routine) => dispatch({ type: "routinePatched", routine })} onSavedCall={upsertCall} /></>}
-      {editor && <EventEditor seed={editor} bots={visibleBots} routinesOnly={routinesOnly} onClose={() => setEditor(null)} onSavedCall={upsertCall} />}
-      {pausedOpen && <PausedList routines={paused} bots={state.bots} groups={state.groups} onClose={() => setPausedOpen(false)} onEdit={(routine) => { setPausedOpen(false); setEditor({ kind: "routine", at: routineAt(routine), durationMinutes: routine.durationMinutes, botIds: [routine.botId], routine }); }} onOpenRoom={onOpenRoom} />}
-    </main>
-  );
-}
-
-/**
- * While the Mac sleeps no routine fires: the shell holds a power assertion the hour before a due routine and while one
- * runs, plugged in only.
- */
-function RoutineWakeBar() {
-  const bridge = typeof window !== "undefined" ? window.ogb?.routines : undefined;
-  const [state, setState] = useState<DesktopRoutineWake | null>(null);
-  const [busy, setBusy] = useState(false);
-  useEffect(() => {
-    if (!bridge) return;
-    let cancelled = false;
-    const load = () => bridge.wakeState().then((next) => { if (!cancelled) setState(next); }).catch(() => {});
-    void load();
-    const timer = window.setInterval(load, 30_000);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, [bridge]);
-  if (!bridge || !state) return null;
-  const status = !state.keepAwake
-    ? "Off — this computer may sleep through a scheduled routine."
-    : state.onBattery
-      ? "On battery, so not holding; plug in to keep it awake."
-      : state.hold
-        ? state.reason === "running" ? "Holding it awake now: a routine is running." : `Holding it awake now: a routine is due at ${state.at ? niceTime(state.at) : "the top of the hour"}.`
-        : "Holds it awake for the hour before a routine and while one runs, while plugged in. A closed lid still sleeps.";
-  return (
-    <div className="flex items-center justify-between gap-4 border-b border-hairline/35 bg-panel/60 px-4 py-2.5">
-      <div className="min-w-0 text-[12px] leading-relaxed text-ink-secondary">
-        <span className="font-medium text-ink">Keep this computer awake for routines.</span> {status}
-      </div>
-      <Switch
-        checked={state.keepAwake}
-        disabled={busy}
-        aria-label="Keep this computer awake for scheduled routines"
-        onClick={() => {
-          setBusy(true);
-          bridge.keepAwake(!state.keepAwake).then(setState).catch(() => {}).finally(() => setBusy(false));
-        }}
-        className="shrink-0 disabled:cursor-wait disabled:opacity-50"
-      />
-    </div>
-  );
+  return <EventEditor seed={{ kind: "routine", at, durationMinutes: routine?.durationMinutes ?? 30, botIds: lockedBotId ? [lockedBotId] : routine ? [routine.botId] : [], routine }} bots={bots} lockedBotId={lockedBotId} defaultRunOn={defaultRunOn} plain={plain} onClose={onClose} onSavedCall={() => {}} />;
 }

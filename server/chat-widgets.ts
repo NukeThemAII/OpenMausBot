@@ -151,12 +151,17 @@ export type WidgetPress =
     }
   | { ok: false; status: 400 | 404 | 409; error: string };
 
-const BAD_PRESS = "widgetAction must be {messageId, ref, values?, rev?}, with values an object of text and on/off fields.";
+const BAD_PRESS = "widgetAction must be {messageId, ref, values?, other?, rev?}, with values an object of text and on/off fields and other an object of text.";
 const STALE_PRESS = "This widget changed. Check it and press again.";
 
 function isValues(value: unknown): value is Record<string, string | boolean> | undefined | null {
   if (value === undefined || value === null) return true;
   return isRecord(value) && Object.values(value).every((entry) => typeof entry === "string" || typeof entry === "boolean");
+}
+
+function isOther(value: unknown): value is Record<string, string> | undefined | null {
+  if (value === undefined || value === null) return true;
+  return isRecord(value) && Object.values(value).every((entry) => typeof entry === "string");
 }
 
 function isRevision(value: unknown): value is number | undefined | null {
@@ -172,9 +177,9 @@ export function prepareWidgetPress(
   sendId: string | undefined,
 ): WidgetPress {
   if (!isRecord(widgetAction)) return { ok: false, status: 400, error: BAD_PRESS };
-  const { messageId, ref, values, rev } = widgetAction;
+  const { messageId, ref, values, other, rev } = widgetAction;
   if (typeof messageId !== "string" || !/^[\w-]+$/.test(messageId) ||
-      typeof ref !== "string" || ref.length < 1 || ref.length > 64 || !isValues(values) || !isRevision(rev)) {
+      typeof ref !== "string" || ref.length < 1 || ref.length > 64 || !isValues(values) || !isOther(other) || !isRevision(rev)) {
     return { ok: false, status: 400, error: BAD_PRESS };
   }
   const stored = () => storedWidget(store, threadId, messageId);
@@ -182,10 +187,10 @@ export function prepareWidgetPress(
   if (!payload?.root) return { ok: false, status: 404, error: "That widget is not in this conversation." };
   const retry = sendId !== undefined && payload.settled?.sendId === sendId;
   if (!retry && !payload.settled && (rev ?? 0) !== (payload.rev ?? 0)) return { ok: false, status: 409, error: STALE_PRESS };
-  const resolved = resolveWidgetAction(retry ? { v: 1, root: payload.root } : payload, ref, values ?? undefined);
+  const resolved = resolveWidgetAction(retry ? { v: 1, root: payload.root } : payload, ref, values ?? undefined, other ?? undefined);
   if (!resolved.ok) return resolved;
   const { label, action, tone } = resolved;
-  const sent = Object.keys(resolved.values).length > 0 ? { values: resolved.values } : {};
+  const sent = { ...(Object.keys(resolved.values).length > 0 ? { values: resolved.values } : {}), ...(resolved.other ? { other: resolved.other } : {}) };
   return {
     ok: true,
     messageId,

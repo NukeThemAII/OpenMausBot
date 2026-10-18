@@ -165,7 +165,7 @@ export class TeamMemory {
     return { kind: input.kind, name, detail, aliases, key };
   }
 
-  /** Every autonomous addition or replacement waits for admin review, including terms and places from untrusted input. */
+  /** A bot's addition starts proposed; the caller accepts it at once, or the owner does on a card (direct-apply.ts). */
   propose(
     section: string | null | undefined,
     input: TeamMemoryInput,
@@ -257,6 +257,20 @@ export class TeamMemory {
     rememberVersion(entries[index]);
     entries[index].status = "deleted";
     entries[index].updatedAt = Date.now();
+    this.save();
+    return true;
+  }
+
+  /** Undoes an addition that applied on its own: the entry goes and any fact it replaced comes back, unless either changed since. */
+  undoAccept(section: string | null | undefined, id: string, revision: string): boolean {
+    const entries = this.entries(section, true);
+    const entry = entries.find((candidate) => candidate.id === id);
+    if (!entry || entry.status !== "accepted" || teamMemoryRevision(entry) !== revision) return false;
+    const replaced = entries.filter((previous) => previous.status === "superseded" && previous.supersededBy === id);
+    if (replaced.some((previous) => entries.some((other) => other.status === "accepted" && other.id !== id && other.key === previous.key))) return false;
+    entry.status = "deleted";
+    entry.updatedAt = Date.now();
+    for (const previous of replaced) { previous.status = "accepted"; delete previous.supersededBy; }
     this.save();
     return true;
   }

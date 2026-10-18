@@ -90,7 +90,7 @@ it("connects from the card through the relay, keeps the tokens out of every answ
   relay.complete([...relay.states.keys()].at(-1)!);
   await expect.poll(async () => (await api("GET", `/api/highlevel/sign-in/${started.body.flowId}`)).body.phase, { timeout: 8_000, interval: 200 }).toBe("connected");
   const status = await api("GET", "/api/highlevel");
-  expect(status.body).toMatchObject({ state: "connected", kind: "oauth", location: { id: FAKE_LOCATION_ID, name: "Precision Profiles" }, connectedAt: expect.any(Number) });
+  expect(status.body).toMatchObject({ state: "connected", kind: "oauth", location: { id: FAKE_LOCATION_ID, name: "Example Profiles" }, connectedAt: expect.any(Number) });
   expect(JSON.stringify(status.body)).not.toMatch(/hl_access|hl_refresh/u);
   const tools = await api("GET", "/api/connectors/tools");
   expect(tools.status).toBe(200);
@@ -149,7 +149,7 @@ it("gives a bot its scoped tools, records writes without contact data, refreshes
   expect(revoked.body.result.isError).toBe(true);
   expect(revoked.body.result.content[0].text).toBe(HIGHLEVEL_SIGNED_OUT_TEXT);
   expect(relay.refreshes).toBe(2);
-  expect(await api("GET", "/api/highlevel")).toMatchObject({ body: { state: "needs-sign-in", kind: "oauth", location: { name: "Precision Profiles" }, problem: expect.stringMatching(/rejected the saved sign-in/u) } });
+  expect(await api("GET", "/api/highlevel")).toMatchObject({ body: { state: "needs-sign-in", kind: "oauth", location: { name: "Example Profiles" }, problem: expect.stringMatching(/rejected the saved sign-in/u) } });
   const again = await call(token, "HIGHLEVEL_GET_CONTACT", { contactId: "contact_1" });
   expect(again.body.result.content[0].text).toBe(HIGHLEVEL_SIGNED_OUT_TEXT);
   expect(relay.refreshes).toBe(2);
@@ -159,7 +159,7 @@ it("gives a bot its scoped tools, records writes without contact data, refreshes
   expect((await call(token, "HIGHLEVEL_GET_CONTACT", { contactId: "contact_1" })).body.result.content[0].text).toBe(HIGHLEVEL_NOT_CONNECTED_TEXT);
   expect(await api("POST", "/api/highlevel/token", { token: "pit-e2e-rejected-1", locationId: FAKE_LOCATION_ID })).toMatchObject({ status: 401, body: { error: expect.stringMatching(/did not accept this token/u) } });
   hl.tokens.add("pit-e2e-token-12345");
-  expect(await api("POST", "/api/highlevel/token", { token: "pit-e2e-token-12345", locationId: FAKE_LOCATION_ID })).toMatchObject({ status: 200, body: { state: "connected", kind: "token", location: { id: FAKE_LOCATION_ID, name: "Precision Profiles" } } });
+  expect(await api("POST", "/api/highlevel/token", { token: "pit-e2e-token-12345", locationId: FAKE_LOCATION_ID })).toMatchObject({ status: 200, body: { state: "connected", kind: "token", location: { id: FAKE_LOCATION_ID, name: "Example Profiles" } } });
   const viaToken = await call(token, "HIGHLEVEL_GET_CONTACT", { contactId: "contact_1" });
   expect(viaToken.body.result.isError).toBeUndefined();
   expect(hl.calls.at(-1)?.headers.authorization).toBe("Bearer pit-e2e-token-12345");

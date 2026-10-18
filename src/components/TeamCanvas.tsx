@@ -8,6 +8,7 @@ import { teamMapStatus, type TeamMapSection } from "@/lib/team-map";
 import { COMPUTER_DRAG_TYPE, fitTeams, layoutTeams, orderBots, parseBotOrders, parsePositions, reorderBot, zoomAt, type Point, type View } from "@/lib/team-canvas";
 import { BotAvatar } from "./Avatar";
 import { InstanceProviderMark, ProviderMark } from "./ProviderIcons";
+import { openBotSettings } from "./bot-panel/panel-link";
 
 type Gesture = {
   id: number;
@@ -36,7 +37,7 @@ function BotCard({ bot, selected, moving, connected, onComputer, onArrange }: {
   return <article className={cn("relative h-[126px] w-[236px] shrink-0 rounded-xl border bg-card shadow-sm transition-colors",
     selected ? "border-accent/60 ring-1 ring-accent/15" : connected ? "border-accent/40" : "border-hairline/50 hover:border-ink-secondary/40", moving && "opacity-35")}>
     <button data-bot-id={bot.id} aria-label={t("canvas.editBot", { name: bot.name })}
-      onClick={() => dispatch({ type: "toggleSettings", botId: bot.id, section: "identity", open: true })}
+      onClick={() => openBotSettings(dispatch, "identity", { botId: bot.id })}
       title={onArrange ? t("canvas.reorderHint") : undefined}
       onKeyDown={(event) => {
         if (!onArrange || !event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
@@ -61,7 +62,7 @@ function BotCard({ bot, selected, moving, connected, onComputer, onArrange }: {
       {selected && onComputer && <button className={cn(iconButton, "size-8")} aria-label={t("canvas.botComputer", { name: bot.name })} title={t("computer.tab.computer")}
         onClick={() => onComputer(bot)}><Monitor size={13} /></button>}
       <button aria-label={t("canvas.changeModel", { name: bot.name })} title={`${t("canvas.defaultModel")}: ${model}`}
-        onClick={() => dispatch({ type: "toggleSettings", botId: bot.id, section: "model", open: true })}
+        onClick={() => openBotSettings(dispatch, "model", { botId: bot.id })}
         className="ml-auto flex h-8 min-w-0 max-w-[130px] items-center gap-1.5 rounded-md px-2 text-[10px] text-ink-secondary hover:bg-control hover:text-ink focus-visible:outline-2 focus-visible:outline-accent">
         <span className="flex size-3.5 shrink-0 items-center justify-center">{instance
           ? <InstanceProviderMark instance={instance} size={13} />

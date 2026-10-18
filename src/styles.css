@@ -180,19 +180,23 @@
 /* Tokens that no utility generates — declared outside `@theme` so Tailwind
    can't tree-shake them away, and so a skin can redefine them freely. */
 :root {
-  --chat-bubble-max: 42rem;
-  --chat-bubble-pct: 78%;
+  --chat-bubble-max: 35rem;
+  --chat-bubble-pct: 80%;
   --chat-card-pct: 88%;
+  /* .chat-column: fills a narrow pane, then stops at this width and centers, so wider windows only grow the gutters. */
+  --chat-column-max: 60rem;
 }
 :root[data-chat-width="wide"] {
   --chat-bubble-max: 64rem;
   --chat-bubble-pct: 92%;
   --chat-card-pct: 94%;
+  --chat-column-max: 80rem;
 }
 :root[data-chat-width="full"] {
   --chat-bubble-max: 100%;
   --chat-bubble-pct: 96%;
   --chat-card-pct: 96%;
+  --chat-column-max: 100%;
 }
 
 :root {
@@ -1134,6 +1138,7 @@ body {
    keyboard focus scrolls them clear, and the scrollbar runs only between the
    bars (a bar over it would swallow the drag). */
 .glass-scroller {
+  isolation: isolate;
   scroll-padding-top: var(--glass-top, 0px);
   scroll-padding-bottom: calc(var(--glass-bottom, 0px) + var(--glass-bottom-reach, 0px));
 }
@@ -1144,6 +1149,17 @@ body {
 .glass-scroller-content {
   padding-top: var(--glass-top, 0px);
   padding-bottom: calc(var(--glass-bottom, 0px) + var(--glass-bottom-reach, 0px));
+}
+/* The transcript and its composer share one centered column with a fixed cap. The transcript sits
+   inside the scroller's px-5; the dock spans the pane and holds the composer's own px-5, so it adds
+   that padding to the same cap and the composer's edges meet the transcript's. */
+.chat-column {
+  margin-inline: auto;
+  max-width: var(--chat-column-max);
+}
+.chat-column-dock {
+  margin-inline: auto;
+  max-width: calc(var(--chat-column-max) + 2.5rem);
 }
 @media (prefers-reduced-transparency: reduce) {
   .glass-bar::before {

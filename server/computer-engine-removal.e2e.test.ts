@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { runControlOmb } from "../scripts/control-omb.ts";
+import { SNAPSHOT_REUSE_MS } from "./harness/registry.ts";
 import { freePortBlock } from "./testing/ports.ts";
 import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
 
@@ -305,9 +306,11 @@ describe("removing the Computer engine", () => {
     expect((await server.bot(starter.id)).modelSelection.instanceId).toBe("computer");
 
     // Claude arrives (an install, a sign-in or a key); the next look at the
-    // engines moves the bot without a restart.
+    // engines moves the bot without a restart. Installed outside the app, it is
+    // seen once the last status read is older than the reuse window.
     mkdirSync(dirname(cli), { recursive: true });
     writeFileSync(cli, `#!/usr/bin/env node\nawait import(${JSON.stringify(pathToFileURL(FAKE_CLI).href)});\n`, { mode: 0o755 });
+    await new Promise((resolve) => setTimeout(resolve, SNAPSHOT_REUSE_MS));
     const { instances } = await server.api("GET", "/api/instances");
     const model = instances.find((instance: any) => instance.instanceId === "later").models.default;
     await expect.poll(async () => (await server.bot(starter.id)).modelSelection, { timeout: 15_000 })

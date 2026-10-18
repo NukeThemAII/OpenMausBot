@@ -29,6 +29,7 @@ import { SidebarPopoverMenu } from "./SidebarPopoverMenu";
 import { CATEGORY_SECTION_SIZE, catalogSections, inCategory, rankCategories } from "@/lib/app-catalog";
 import { McpServersPanel } from "./McpServersPanel";
 import { HighLevelCard } from "./HighLevelCard";
+import { openBotSettings } from "./bot-panel/panel-link";
 
 export interface ToolkitCard {
   slug: string;
@@ -1026,10 +1027,7 @@ export function PluginsPanel() {
                 {index > 0 && ", "}
                 <button
                   type="button"
-                  onClick={() => {
-                    close();
-                    dispatch({ type: "toggleSettings", open: true, botId: candidate.id, section: "access" });
-                  }}
+                  onClick={() => { close(); openBotSettings(dispatch, "access", { botId: candidate.id, page: "apps" }); }}
                   className="font-medium text-ink underline underline-offset-2 hover:text-accent-text"
                 >
                   {candidate.name}

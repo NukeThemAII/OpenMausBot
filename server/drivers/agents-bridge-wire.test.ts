@@ -333,7 +333,7 @@ describe("agents proxy with the tool bridge on, from the packaged bundle", () =>
     const env = { ...PROFILES["non-chief"]!, ...BRIDGE_ON };
     const fromSource = await proxyAnswers(PROXY_SOURCE, env, BRIDGE_REQUESTS);
     const [found, shapeless, outside] = await proxyAnswers(bundled, env, BRIDGE_REQUESTS);
-    expect((JSON.parse(found!.result!.content![0]!.text) as { matches: Tool[] }).matches[0]!.name).toBe("propose_routine");
+    expect((JSON.parse(found!.result!.content![0]!.text) as { matches: Tool[] }).matches[0]!.name).toBe("create_trigger");
     expect(shapeless!.result!.isError).toBe(true);
     expect(shapeless!.result!.content![0]!.text).toContain('use_tool needs { "name": ');
     // a bot that is not a Chief: create_bot is not one of its tools

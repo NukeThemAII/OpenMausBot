@@ -4,10 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
+import { hostTimeout } from "./testing/host-timeout.ts";
 import {
   assertSafeCliArgv,
   describeSpawnFailure,
   estimatedWindowsCommandLineChars,
+  execCli,
   WINDOWS_SAFE_COMMAND_LINE_CHARS,
 } from "./procs.ts";
 
@@ -71,4 +73,16 @@ describe("spawn ENOENT", () => {
     expect(error.code).toBe("ENOENT");
     expect(describeSpawnFailure(error, process.execPath, missing).setup).toBe(false);
   });
+});
+
+describe("execCli timeout", () => {
+  it.skipIf(process.platform === "win32")("calls back when the CLI traps SIGTERM and outlives its timeout", async () => {
+    const started = Date.now();
+    const err = await new Promise<Error | null>((resolve) => {
+      execCli(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], { timeout: hostTimeout(2_000) }, (error) => resolve(error));
+    });
+    // Without the escalation a child that trapped SIGTERM would hold this callback past the test's own timeout.
+    expect(err).toMatchObject({ killed: true });
+    expect(Date.now() - started).toBeLessThan(hostTimeout(15_000));
+  }, hostTimeout(20_000));
 });

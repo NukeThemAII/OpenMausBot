@@ -12,6 +12,7 @@ import type { ReplyStyle } from "./reply-style.ts";
 import type { CredentialTargetId } from "./credential-request.ts";
 import type { TeamSetupRequest } from "./team-setup.ts";
 import type { RoutineRequestCardData } from "./routine-request.ts";
+import type { WebhookRequestCardData } from "./webhook-request.ts";
 import type { ProfileRequestCardData } from "./profile-request.ts";
 import type { PlaceRow } from "./place-view.ts";
 import type { ModelRequestCardData } from "./model-request.ts";
@@ -50,9 +51,15 @@ export type CloudBackend = "box" | "vps";
 /** A place a bot can act. `cloud` covers both cloud backends. */
 export type Surface = "cloud" | "vm" | "local" | "browser";
 
-export type MausColor =
-  | "green" | "blue" | "red" | "orange" | "purple" | "cyan" | "pink"
-  | "yellow" | "teal" | "coral";
+export const MAUS_COLOR_NAMES = [
+  "green", "blue", "red", "orange", "purple", "cyan", "pink",
+  "yellow", "teal", "coral",
+] as const;
+export type MausColor = (typeof MAUS_COLOR_NAMES)[number];
+
+export function isMausColor(value: unknown): value is MausColor {
+  return typeof value === "string" && (MAUS_COLOR_NAMES as readonly string[]).includes(value);
+}
 
 /** The face a bot rests on, as one of the engine's state names. */
 export type MausExpression = string;
@@ -531,7 +538,8 @@ export const movesThreadToTop = (message: Pick<WireMessage, "role" | "kind" | "p
 export interface OptionCardData {
   /** calls: one per outbound call the card covers, in subtitle order. */
   outboundRequest?: { tool: string; app: string | null; calls?: Array<{ app: string | null; label: string }> };
-  teamMemoryRequest?: { section: string; entryId: string; kind: string };
+  /** `revision`: the entry as it applied without a person, so Undo can tell it changed since. */
+  teamMemoryRequest?: { section: string; entryId: string; kind: string; revision?: string };
   title: string;
   subtitle: string;
   options: string[];
@@ -572,6 +580,8 @@ export interface OptionCardData {
   undone?: boolean;
   /** A durable chat-created routine proposal. */
   routineRequest?: RoutineRequestCardData;
+  /** A webhook trigger a bot made or changed from chat. */
+  webhookRequest?: WebhookRequestCardData;
   /** A durable profile-change proposal (propose_profile). */
   profileRequest?: ProfileRequestCardData;
   /** A durable default-model proposal (propose_model). */

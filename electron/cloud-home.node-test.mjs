@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import { createCloudAccountClient } from "./cloud-account.mjs";
-import { CLOUD_HOME_NAME, cloudHomeConnectUrl, cloudPlanDisk, isCloudHomeEntry, parseCloudCredit, parseCloudOffer, parseCloudPurchase, parseCloudSummary, parseCloudTrial, parsePairingGrant, parsePublicOffer, rememberedCloudHome, savedCloudHomeOrigin, withCloudHome, withoutTrial } from "./cloud-home.mjs";
+import { CLOUD_HOME_NAME, cloudHomeConnectUrl, cloudPlanDisk, cloudUnreachableText, isCloudHomeEntry, parseCloudCredit, parseCloudOffer, parseCloudPurchase, parseCloudSummary, parseCloudTrial, parsePairingGrant, parsePublicOffer, rememberedCloudHome, savedCloudHomeOrigin, withCloudHome, withoutTrial } from "./cloud-home.mjs";
 import environments from "./environments.cjs";
 
 const NOW = 1_800_000_000_000;
@@ -225,6 +225,24 @@ test("main lists the machine from verified states only, and connects without a d
   client = { homeTarget: () => null, pairHome: async () => { minted++; }, state: () => ({ status: "connected" }) };
   await assert.rejects(context.connectCloudHome(), /not ready/);
   assert.equal(minted, 2);
+});
+
+test("why a ready Cloud can't be reached is read when the Admin sends it, and says so plainly; a malformed reason is dropped, never the machine", () => {
+  const host = { cause: "host", since: NOW - 6 * 60_000 }, quiet = { cause: "no_answer", since: NOW - 16 * 60_000 };
+  assert.deepEqual(parseCloudSummary({ state: "ready", origin, pairingAvailable: true, unreachable: host }), { status: "ready", origin, unreachable: host });
+  assert.deepEqual(parseCloudSummary({ state: "ready", origin, unreachable: quiet }), { status: "ready", origin, unreachable: quiet });
+  for (const unreachable of [{ cause: "reboot", since: NOW }, { cause: "host" }, { cause: "host", since: "now" }, { cause: "toString", since: NOW }, "host", null, []])
+    assert.deepEqual(parseCloudSummary({ state: "ready", origin, unreachable }), { status: "ready", origin }, JSON.stringify(unreachable));
+  assert.deepEqual(parseCloudSummary({ state: "stopped", unreachable: host }), { status: "stopped" });
+  const connected = machine => ({ status: "connected", machine });
+  assert.equal(cloudUnreachableText(connected({ status: "ready", origin, unreachable: host })),
+    "The server My Cloud runs on is being restarted by our hosting provider. My Cloud and its files are safe, and it comes back on its own, usually within about 20 minutes.");
+  assert.equal(cloudUnreachableText(connected({ status: "ready", origin, unreachable: quiet }), origin), "My Cloud hasn't answered for a few minutes. Nothing was lost, and we've been told.");
+  assert.equal(cloudUnreachableText(connected({ status: "ready", origin, unreachable: host }), "https://elsewhere.example.test"), null);
+  assert.equal(cloudUnreachableText(connected({ status: "ready", origin })), null);
+  assert.equal(cloudUnreachableText({ status: "unavailable", machine: { status: "ready", origin, unreachable: host } }), null);
+  assert.equal(cloudUnreachableText(null), null);
+  assert.ok(!/Fly/.test(cloudUnreachableText(connected({ status: "ready", origin, unreachable: host }))));
 });
 
 test("setup progress, a failed setup's next try and the disk are read when the Admin sends them, and never cost the machine", () => {

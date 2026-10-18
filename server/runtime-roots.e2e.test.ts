@@ -327,21 +327,17 @@ it("T3 parks the root on connector cards and runs it again once when both connec
 }, hostTimeout(90_000));
 
 it("T4 parks the root on a team-setup card, runs it again with the decision, and a Stop cancels the park", () => scenario(async (f) => {
-  // On Ask, so the setup waits on its review card.
-  expect((await f.api("PATCH", `/api/bots/${f.clive.id}`, { chiefOfStaff: true, approvalMode: "ask" })).status).toBe(200);
-  const catalog = (await f.api("GET", "/api/instances")).body.instances as any[];
-  const claude = catalog.find((item) => item.instanceId === "claude");
-  const plan = (name: string) => ({ reason: `Set up ${name}`, newTeams: ["Research"], operations: [{ action: "create", key: name, fields: {
-    name, title: "Research specialist", soul: "Own research work.", section: "Research", modelSelection: { instanceId: claude.instanceId, model: claude.models.default },
-  } }] });
+  // A specialist the Chief suggests unasked is its question to the person, so it waits on its card at every level.
+  expect((await f.api("PATCH", `/api/bots/${f.clive.id}`, { chiefOfStaff: true })).status).toBe(200);
+  const suggest = (name: string) => ({ name, role: "Research specialist", instructions: "Own research work.", suggestion: true });
   f.script(f.clive.id,
-    { key: "C1", match: [DECISION, '"denied"'], reply: "T4-DONE: understood, no new specialist." },
+    { key: "C1", match: [DECISION, '"applied"'], reply: "T4-DONE: Mira is on the team." },
     { key: "C0", match: ["T4-JOB"], readyFile: f.ready("c0"), gateFile: f.gate("c0"), reply: "T4-ASKED: review the setup." },
     { key: "C2", match: ["T4-AGAIN"], readyFile: f.ready("c2"), gateFile: f.gate("c2"), reply: "T4-ASKED-AGAIN: review the second setup." });
   const job = f.clive.activeTaskId;
   await f.say(f.clive.id, job, "T4-JOB: set up a research specialist for me.");
   await expect.poll(() => existsSync(f.ready("c0")), { timeout: 30_000 }).toBe(true);
-  const proposed = await f.internal("/api/internal/team-setup-requests", { plan: plan("Mira") }, f.token());
+  const proposed = await f.internal("/api/internal/create-bot", suggest("Mira"), f.token());
   expect(proposed.status, JSON.stringify(proposed.body)).toBe(201);
   f.open("c0");
   await f.final(job, "T4-ASKED");
@@ -350,7 +346,7 @@ it("T4 parks the root on a team-setup card, runs it again with the decision, and
   expect(f.roots()[0].cards).toEqual([card.id]);
   expect(await f.task(f.clive.id, job)).toMatchObject({ busy: false, activity: "idle" });
   expect(f.roots()[0].question).toContain("team setup decision");
-  const decided = await f.api("POST", `/api/threads/${job}/respond`, { requestId: proposed.body.requestId, behavior: "deny" });
+  const decided = await f.api("POST", `/api/threads/${job}/respond`, { requestId: proposed.body.requestId, behavior: "allow" });
   expect(decided.status, JSON.stringify(decided.body)).toBe(200);
   await f.final(job, "T4-DONE");
   await expect.poll(() => f.roots()[0]?.status, { timeout: 15_000 }).toBe("completed");
@@ -358,12 +354,12 @@ it("T4 parks the root on a team-setup card, runs it again with the decision, and
   expect(f.turns(f.clive.id).map((record: any) => record.planKey)).toEqual(["C0", "C1"]);
   const answered = f.body(f.turn("C1")).trimStart();
   expect(answered.startsWith(`${DECISION} ${proposed.body.requestId}: `), answered.slice(0, 200)).toBe(true);
-  expect(answered).toContain('"state":"denied"');
-  expect((await f.messages(job)).find((message: any) => message.id === card.id).card.teamSetupRequest).toMatchObject({ resumed: true, result: { state: "denied" } });
+  expect(answered).toContain('"state":"applied"');
+  expect((await f.messages(job)).find((message: any) => message.id === card.id).card.teamSetupRequest).toMatchObject({ resumed: true, result: { state: "applied" } });
 
   await f.say(f.clive.id, job, "T4-AGAIN: propose another specialist.");
   await expect.poll(() => existsSync(f.ready("c2")), { timeout: 30_000 }).toBe(true);
-  const second = await f.internal("/api/internal/team-setup-requests", { plan: plan("Quill") }, f.token());
+  const second = await f.internal("/api/internal/create-bot", suggest("Quill"), f.token());
   expect(second.status, JSON.stringify(second.body)).toBe(201);
   f.open("c2");
   await f.final(job, "T4-ASKED-AGAIN");

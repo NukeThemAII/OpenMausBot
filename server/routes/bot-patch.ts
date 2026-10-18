@@ -4,7 +4,7 @@ import { approvalModeFor, isApprovalMode, type ApprovalMode } from "../../shared
 import { normalizeConnectorScopes } from "../../shared/connector-scopes.ts";
 import { normalizeOutboundPolicy } from "../../shared/outbound.ts";
 import { parseToolScope, toolScopeWidens } from "../../shared/tool-scope.ts";
-import type { WireBot, WireGroup } from "../../shared/wire.ts";
+import { isMausColor, MAUS_COLOR_NAMES, type WireBot, type WireGroup } from "../../shared/wire.ts";
 import { validateBotCwd } from "../bot-cwd.ts";
 import { parseBotProfilePatch } from "../bot-profile.ts";
 import { parseVisibility } from "../bot-visibility.ts";
@@ -88,9 +88,26 @@ export function createBotPatchRoutes(deps: BotPatchRouteDeps): RouteHandler {
       if (!body || typeof body !== "object" || Array.isArray(body)) {
         return json(res, 400, { error: "body must be a JSON object" });
       }
-      if (auth.kind === "session" && !auth.scopes.includes("admin")) {
+      const pairedDevice = req.headers["x-openmausbot-companion"] === "1";
+      if ((auth.kind === "session" && !auth.scopes.includes("admin")) || pairedDevice) {
         const field = clientBotPatchViolation(body);
-        if (field) return json(res, 403, { error: `forbidden: this session may change how a bot looks, not "${field}" (needs the admin scope)` });
+        if (field) {
+          return json(res, 403, {
+            error: pairedDevice
+              ? `forbidden: a paired device may change how a bot looks, not "${field}"; change it on the host computer`
+              : `forbidden: this session may change how a bot looks, not "${field}" (needs the admin scope)`,
+          });
+        }
+      }
+      if (body.color !== undefined && !isMausColor(body.color)) {
+        return json(res, 400, { error: `color must be ${MAUS_COLOR_NAMES.slice(0, -1).join(", ")}, or ${MAUS_COLOR_NAMES.at(-1)}` });
+      }
+      if (body.mascotExpression !== undefined && body.mascotExpression !== null &&
+        (typeof body.mascotExpression !== "string" || body.mascotExpression.length > 80)) {
+        return json(res, 400, { error: "mascotExpression must be null or a state name of at most 80 characters" });
+      }
+      if (body.pinned !== undefined && typeof body.pinned !== "boolean") {
+        return json(res, 400, { error: "pinned must be true or false" });
       }
       const existingBot = store.bot(m[1]);
       const rawSelection = (body as Record<string, unknown>).modelSelection;

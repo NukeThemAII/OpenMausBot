@@ -40,6 +40,8 @@ export function excludedWorkspaceAuthPath(path: string): boolean {
   if (/^(?:logins\.json\.enc|logins-key)(?:$|\.\d+\.[0-9a-f-]+\.tmp$)/.test(path)) return true;
   // The HighLevel connection and its key stay with the installation that connected: its refresh token rotates, so a copy signs one side out.
   if (/^(?:highlevel\.json\.enc|highlevel-key)(?:$|\.\d+\.[0-9a-f-]+\.tmp$)/.test(path)) return true;
+  // A Cloud home's connected-apps installation: its connected accounts belong to it, so a copy would share them.
+  if (/^connected-apps-installation\.json(?:$|\.\d+\.[0-9a-f-]+\.tmp$)/.test(path)) return true;
   return /^(?:(?:providers|caddy|chrome-profile|\.agent-browser)(?:\/|$)|workspace-credentials\.json$|external-runtimes\.json$|browser-engine-key$)/.test(path) ||
     /^(?:config\.json|webhooks\.json|workspace-credentials\.json|external-runtimes\.json|browser-engine-key|sessions\.json|tunnel-account\.json)\.\d+(?:\.[0-9a-f-]+)?\.tmp$/.test(path) ||
     /^(?:vm-home|vm-homes\/[^/]+)\/\.browser-profiles(?:\/|$)/.test(path);

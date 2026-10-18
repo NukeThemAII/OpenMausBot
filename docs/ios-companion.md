@@ -221,6 +221,11 @@ the guardian first makes forwarding unavailable, confirms the connector is
 dead, and only then releases the gateway. Another process that later binds a
 local port cannot inherit the public route.
 
+The hop from this computer to Cloudflare runs on the home upload,
+uncompressed, so the sidecar gzips JSON replies of 1 KB or more on that
+private socket when the phone accepts gzip. The event stream, file downloads
+and the LAN port are sent as they always were.
+
 ## Pairing and device security
 
 1. On the Mac, open **Settings → Remote access** and choose **Pair a phone**. The app

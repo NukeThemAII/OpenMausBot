@@ -539,12 +539,10 @@ posixOnly("per-bot visibility on a shared workspace", () => {
         body: JSON.stringify({ name: "Layoff Modeler", role: "Models RIF scenarios", instructions: "SECRET-INSTR model the reduction",
           modelSelection: { instanceId: "grok", model: engine.models.default } }),
       });
-      const card = await created.json() as { requestId: string; state: string };
-      expect(created.status, JSON.stringify(card)).toBe(201);
-      expect(card.state).toBe("pending");
-      const applied = await api("POST", `/api/threads/${boardThread}/respond`, { requestId: card.requestId, behavior: "allow" }, BOSS);
-      expect(applied.status, JSON.stringify(applied.body)).toBe(200);
-      const made = applied.body.result.bots[0] as { id: string };
+      // Applies at Ask too: OpenMausBot adds no card of its own.
+      const made = await created.json() as { id: string; state: string };
+      expect(created.status, JSON.stringify(made)).toBe(201);
+      expect(made.state).toBe("applied");
       const admin = (await api("GET", "/api/bots?messages=0", undefined, BOSS)).body.bots.find((b: any) => b.id === made.id);
       expect(admin.visibility).toBe("admins");
       await new Promise((r) => setTimeout(r, 500));

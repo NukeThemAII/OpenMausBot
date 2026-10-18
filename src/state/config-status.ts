@@ -64,12 +64,15 @@ export interface ConfigStatus {
   /** The decision model: switches and whether a key is on file. The key
    * itself never comes back. `enabled` is the switch as it takes effect
    * (off while no key is saved). `included`: Cloud Pro's decisions, no key
-   * saved. */
+   * saved. OpenRouter only: `keySource` says which key is in use (its own, or
+   * the one under Settings → API keys); `sharedKey`: that one is on file. */
   decider?: {
     provider: "jev" | "openrouter";
     /** The OpenRouter model in use; present only while OpenRouter is the provider. */
     model?: string;
     configured: boolean;
+    keySource?: "own" | "shared";
+    sharedKey?: boolean;
     included?: boolean;
     enabled: boolean;
     jobs: { roomRouting: boolean };

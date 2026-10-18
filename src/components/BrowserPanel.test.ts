@@ -12,7 +12,7 @@ const fixture = vi.hoisted(() => ({
   // Initial values by useState call order, for state no other fixture covers.
   states: {} as Record<number, unknown>,
   queues: [] as Array<{ enqueue: ReturnType<typeof vi.fn>; clear: ReturnType<typeof vi.fn>; drain: ReturnType<typeof vi.fn>;
-    settle: ReturnType<typeof vi.fn>; size: ReturnType<typeof vi.fn>; stopped: ReturnType<typeof vi.fn> }>,
+    settle: ReturnType<typeof vi.fn>; size: ReturnType<typeof vi.fn>; stopped: ReturnType<typeof vi.fn>; halt: (cause: unknown) => void }>,
   computerControl: {} as Record<string, unknown>,
 }));
 vi.mock("react", async (importOriginal) => {
@@ -29,9 +29,9 @@ vi.mock("react", async (importOriginal) => {
 });
 vi.mock("@/state/store", () => ({ api: vi.fn().mockResolvedValue({}), useStore: () => ({ state: { config: { browserProfiles: [] }, computerControl: fixture.computerControl } }) }));
 vi.mock("./BrowserProfilesManager", () => ({ BrowserProfilesManager: () => null }));
-vi.mock("@/lib/browser-input-queue", () => ({ createBrowserInputQueue: () => {
+vi.mock("@/lib/browser-input-queue", () => ({ createBrowserInputQueue: (_send: unknown, halt: (cause: unknown) => void) => {
   const queue = { enqueue: vi.fn(), clear: vi.fn(), drain: vi.fn().mockResolvedValue(undefined),
-    settle: vi.fn().mockResolvedValue(undefined), size: vi.fn(() => 0), stopped: vi.fn(() => false) };
+    settle: vi.fn().mockResolvedValue(undefined), size: vi.fn(() => 0), stopped: vi.fn(() => false), halt };
   fixture.queues.push(queue); return queue;
 } }));
 import { LiveBrowser } from "./BrowserPanel";
@@ -396,6 +396,148 @@ describe("live browser connection lifecycle", () => {
     expect(api).not.toHaveBeenCalled();
     expect(fixture.setters[7]).not.toHaveBeenCalled();
     secondCleanup?.();
+  });
+});
+
+describe("a live view whose stream dropped", () => {
+  const press = { type: "input_mouse", eventType: "mousePressed", x: 4, y: 5, button: "left", clickCount: 1, modifiers: 0 };
+  const interrupted = "Connection interrupted. Reconnecting the browser view…";
+  let page: EventTarget & { confirm: () => boolean };
+  let shown: EventTarget & { visibilityState: string };
+  beforeEach(() => {
+    page = Object.assign(new EventTarget(), { confirm: vi.fn(() => true) });
+    shown = Object.assign(new EventTarget(), { visibilityState: "visible" });
+    vi.stubGlobal("window", page);
+    vi.stubGlobal("document", shown);
+  });
+  const reconnects = () => fixture.setters[0]!.mock.calls.length;
+  const waking = () => fixture.effects[6]!();
+
+  it("asks to carry on with the view it had until a new one is ready", () => {
+    vi.useFakeTimers();
+    render();
+    const connect = fixture.effects[2]!;
+    const first = connect();
+    expect(FixtureEventSource.instances[0]!.url).toBe("/api/bots/pepper/browser/live");
+    FixtureEventSource.instances[0]!.emit("ready", { viewerId: "old-viewer" });
+    FixtureEventSource.instances[0]!.disconnect();
+    vi.advanceTimersByTime(1_000); first?.();
+    const second = connect();
+    expect(FixtureEventSource.instances[1]!.url).toBe("/api/bots/pepper/browser/live?resume=old-viewer");
+    FixtureEventSource.instances[1]!.disconnect();
+    vi.advanceTimersByTime(2_000); second?.();
+    const third = connect();
+    expect(FixtureEventSource.instances[2]!.url).toBe("/api/bots/pepper/browser/live?resume=old-viewer");
+    FixtureEventSource.instances[2]!.emit("ready", { viewerId: "new-viewer" });
+    third?.();
+    connect();
+    expect(FixtureEventSource.instances[3]!.url).toBe("/api/bots/pepper/browser/live");
+  });
+
+  it("reconnects at once when the window is focused again after its retries ran out", () => {
+    vi.useFakeTimers();
+    render();
+    const connect = fixture.effects[2]!;
+    const stop = waking();
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const cleanup = connect();
+      FixtureEventSource.instances.at(-1)!.disconnect();
+      vi.advanceTimersByTime(30_000);
+      cleanup?.();
+    }
+    connect();
+    FixtureEventSource.instances.at(-1)!.disconnect();
+    vi.advanceTimersByTime(60_000);
+    expect(reconnects()).toBe(5);
+    shown.visibilityState = "hidden"; shown.dispatchEvent(new Event("visibilitychange"));
+    expect(reconnects()).toBe(5);
+    shown.visibilityState = "visible"; page.dispatchEvent(new Event("focus"));
+    expect(reconnects()).toBe(6);
+    stop?.();
+  });
+
+  it("does not retry a refusal for good on focus", () => {
+    vi.useFakeTimers();
+    render();
+    fixture.effects[2]!();
+    const stop = waking();
+    FixtureEventSource.instances[0]!.emit("error", { message: "Browser access is disabled" });
+    page.dispatchEvent(new Event("focus"));
+    shown.dispatchEvent(new Event("visibilitychange"));
+    expect(reconnects()).toBe(0);
+    stop?.();
+  });
+
+  it("treats a stream that went silent as dropped", () => {
+    vi.useFakeTimers();
+    render();
+    fixture.effects[2]!();
+    const stop = waking();
+    const source = FixtureEventSource.instances[0]!;
+    source.emit("ready", { viewerId: "quiet-viewer" });
+    vi.advanceTimersByTime(20_000);
+    source.emit("heartbeat", {});
+    vi.advanceTimersByTime(24_000);
+    expect(source.close).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(6_000);
+    expect(source.close).toHaveBeenCalledOnce();
+    expect(fixture.setters[7]).toHaveBeenLastCalledWith(interrupted);
+    vi.advanceTimersByTime(1_000);
+    expect(reconnects()).toBe(1);
+    stop?.();
+  });
+
+  it("reconnects at once when the window comes back to a silent stream", () => {
+    vi.useFakeTimers();
+    render();
+    fixture.effects[2]!();
+    const stop = waking();
+    const source = FixtureEventSource.instances[0]!;
+    source.emit("ready", { viewerId: "quiet-viewer" });
+    vi.advanceTimersByTime(26_000);
+    expect(source.close).not.toHaveBeenCalled();
+    page.dispatchEvent(new Event("focus"));
+    expect(source.close).toHaveBeenCalledOnce();
+    expect(reconnects()).toBe(1);
+    stop?.();
+  });
+
+  it("reconnects when the server no longer has the view its input went to", () => {
+    vi.useFakeTimers();
+    render();
+    const cleanup = fixture.effects[2]!();
+    const source = FixtureEventSource.instances[0]!;
+    source.emit("ready", { viewerId: "gone-viewer" });
+    fixture.queues[0]!.halt(Object.assign(new Error("This browser view is no longer available. Reopen the browser panel."), { status: 404 }));
+    expect(source.close).toHaveBeenCalledOnce();
+    expect(fixture.setters[7]).toHaveBeenLastCalledWith(interrupted);
+    vi.advanceTimersByTime(1_000);
+    expect(reconnects()).toBe(1);
+    cleanup?.();
+    fixture.effects[2]!();
+    expect(FixtureEventSource.instances[1]!.url).toBe("/api/bots/pepper/browser/live?resume=gone-viewer");
+  });
+
+  it("keeps its hold after reconnecting: input and Hand back go to the new view", async () => {
+    vi.useFakeTimers();
+    fixture.frame = { seq: 1, data: "fixture", viewerId: "new-viewer", generation: 1 };
+    fixture.states = { 4: true };
+    fixture.control = { held: true, controlling: true, owned: true };
+    const nodes = renderElements();
+    const cleanup = fixture.effects[2]!();
+    const source = FixtureEventSource.instances[0]!;
+    source.emit("ready", { viewerId: "new-viewer" });
+    source.emit("control", { held: true, owned: true, controlling: true });
+    const input = nodes.find((node) => node.type === BrowserViewport)!.props.input!;
+    input(press); input({ ...press, eventType: "mouseReleased" });
+    await settleAll();
+    expect(fixture.queues[0]!.enqueue).toHaveBeenCalledWith(press);
+    nodes.find((node) => node.type === "button" && Children.toArray(node.props.children).includes("Hand back"))!.props.onClick!({});
+    vi.advanceTimersByTime(0); await settleAll();
+    expect(vi.mocked(api).mock.calls.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
+      { type: "take", viewerId: "new-viewer" }, { type: "release", viewerId: "new-viewer" },
+    ]);
+    cleanup?.();
   });
 });
 

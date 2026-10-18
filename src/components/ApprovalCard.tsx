@@ -12,6 +12,8 @@ import { cronScheduleLabel } from "../../shared/cron-label";
 import { PROFILE_REQUEST_FIELDS, type ProfileRequestField } from "../../shared/profile-request";
 import type { RoutineRequestSchedule } from "../../shared/routine-request";
 import type { SkillShareRecord } from "../../shared/skill-request";
+import { cardAutomation } from "@/lib/automations";
+import { TriggerCard } from "./TriggerCard";
 
 interface ToolLabels {
   [tool: string]: LocaleKey;
@@ -31,13 +33,14 @@ const SKILL_SETTLED_LABEL = {
   update: "approval.status.skillUpdated",
 } as const;
 
-const ROUTINE_APPLIED_LINE = {
-  create: "approval.applied.routine.create",
-  update: "approval.applied.routine.update",
-  pause: "approval.applied.routine.pause",
-  resume: "approval.applied.routine.resume",
-  run_now: "approval.applied.routine.runNow",
-  delete: "approval.applied.routine.delete",
+/** Schedules and webhooks alike are "automations" to a person. */
+const AUTOMATION_APPLIED_LINE = {
+  create: "approval.applied.automation.create",
+  update: "approval.applied.automation.update",
+  pause: "approval.applied.automation.pause",
+  resume: "approval.applied.automation.resume",
+  run_now: "approval.applied.automation.runNow",
+  delete: "approval.applied.automation.delete",
 } as const;
 
 const SKILL_APPLIED_LINE = {
@@ -55,8 +58,11 @@ const PROFILE_FIELD_LABEL: Record<ProfileRequestField, LocaleKey> = {
   speakReplies: "approval.applied.field.speakReplies",
 };
 
+/** A routine card no one answered is from before Triggers v2 applied changes on their own: nothing can confirm it now. */
+const staleRoutineCard = (card: OptionCardData) => Boolean(card.routineRequest && !card.answered);
+
 export function approvalCardOutcome(card: OptionCardData): string | undefined {
-  if (card.expired === true) return t("approval.status.expired");
+  if (card.expired === true || staleRoutineCard(card)) return t("approval.status.expired");
   if (!card.answered) return undefined;
   if (card.undone === true) return t("approval.status.undone");
   const isProposal = Boolean(card.routineRequest || card.skillRequest || card.profileRequest || card.modelRequest || card.teamSetupRequest);
@@ -135,7 +141,12 @@ export function appliedChange(card: OptionCardData, name: string): { line: strin
         : operation.action === "pause" || operation.action === "resume" ? undo?.appliedUpdatedAt !== undefined
           : operation.action === "delete" ? Boolean(undo?.before)
             : false;
-    return { line: t(ROUTINE_APPLIED_LINE[operation.action], { name, title }), canUndo };
+    return { line: t(AUTOMATION_APPLIED_LINE[operation.action], { name, title }), canUndo };
+  }
+  const webhook = card.webhookRequest;
+  if (webhook) {
+    const target = webhook.operation.forBot ? ` · ${t("approval.applied.forBot", { target: `@${webhook.operation.forBot.name}` })}` : "";
+    return { line: t(AUTOMATION_APPLIED_LINE[webhook.operation.action], { name, title: `${webhook.undo?.name ?? ""}${target}` }), canUndo: webhook.operation.action !== "run_now" };
   }
   const skill = card.skillRequest;
   if (skill) {
@@ -160,6 +171,17 @@ export function appliedChange(card: OptionCardData, name: string): { line: strin
       ? t("approval.applied.modelOwn", { name, title })
       : t("approval.applied.modelOther", { name, target: `@${model.targetName}`, title });
     return { line, canUndo: true };
+  }
+  const setup = card.teamSetupRequest;
+  if (setup?.deletion) return { line: t("approval.applied.botDeleted", { name, target: `@${setup.deletion.name}` }), canUndo: false };
+  if (setup?.result) {
+    const names = (action: "created" | "updated") => setup.result!.bots.filter((bot) => bot.action === action).map((bot) => `@${bot.name}`).join(", ");
+    const title = [names("created") && t("approval.applied.teamAdded", { names: names("created") }),
+      names("updated") && t("approval.applied.teamUpdated", { names: names("updated") })].filter(Boolean).join("; ");
+    return { line: t("approval.applied.teamSetup", { name, title }), canUndo: Boolean(setup.undo) };
+  }
+  if (card.teamMemoryRequest) {
+    return { line: t("approval.applied.teamMemory", { name, title: card.subtitle.split(" — ")[0] ?? "" }), canUndo: Boolean(card.teamMemoryRequest.revision) };
   }
   return undefined;
 }
@@ -378,12 +400,13 @@ export function ApprovalCard({
 }) {
   const card = message.card;
   if (!card) return null;
+  if (cardAutomation(card)) return <TriggerCard card={card} threadId={threadId} />;
   const applied = card.autoApplied === true && card.answered === "allow" && !card.held
     ? appliedChange(card, bot?.name ?? t("approval.someone"))
     : undefined;
   if (applied) return <AppliedChangeLine card={card} name={bot?.name ?? t("approval.someone")} threadId={threadId} summary={applied} />;
   const settled = card.answered;
-  const expired = card.expired === true;
+  const expired = card.expired === true || staleRoutineCard(card);
   const byVoice = card.answeredBy?.via === "call" ? <span className="text-ink-tertiary">· {t("approval.status.byVoice")}</span> : null;
   const isRoutineRequest = Boolean(card.routineRequest);
   const isSkillRequest = Boolean(card.skillRequest);

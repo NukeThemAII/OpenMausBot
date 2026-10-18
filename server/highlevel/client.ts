@@ -97,11 +97,22 @@ function scopeFor(path: string, method: string): string {
   const read = method === "GET";
   if (path.startsWith("/contacts")) return read ? "contacts.readonly" : "contacts.write";
   if (path.startsWith("/opportunities")) return read ? "opportunities.readonly" : "opportunities.write";
+  if (/^\/conversations\/[^/]+\/messages/u.test(path)) return "conversations/message.readonly";
   if (path.startsWith("/conversations")) return "conversations.readonly";
+  if (path.startsWith("/calendars/events")) return "calendars/events.readonly";
   if (path.startsWith("/calendars")) return "calendars.readonly";
+  if (/^\/locations\/[^/]+\/customFields/u.test(path)) return "locations/customFields.readonly";
   if (path.startsWith("/locations")) return "locations.readonly";
   return "the required";
 }
+
+/** What HighLevel's Private Integrations page calls each scope, so a person can find the box to tick. */
+const PERMISSION_NAMES: Record<string, string> = {
+  "contacts.readonly": "View Contacts", "contacts.write": "Edit Contacts",
+  "opportunities.readonly": "View Opportunities", "opportunities.write": "Edit Opportunities",
+  "conversations.readonly": "View Conversations", "conversations/message.readonly": "View Conversation Messages", "calendars.readonly": "View Calendars", "calendars/events.readonly": "View Calendar Events",
+  "locations.readonly": "View Locations", "locations/customFields.readonly": "View Custom Fields",
+};
 
 function thing(path: string): string {
   if (/^\/contacts\/[^/]+\/notes/u.test(path)) return "note";
@@ -116,16 +127,51 @@ function thing(path: string): string {
 }
 
 /** HighLevel's error bodies carry `message` as a string or a list of validation strings. */
-export function apiMessage(body: unknown): string | undefined {
+function rawApiMessage(body: unknown): string | undefined {
   if (!isRecord(body)) return undefined;
   const message = body.message ?? body.error;
-  if (typeof message === "string") return message.slice(0, 300);
-  if (Array.isArray(message)) return message.filter((item) => typeof item === "string").join("; ").slice(0, 300) || undefined;
+  if (typeof message === "string") return message || undefined;
+  if (Array.isArray(message)) return message.filter((item) => typeof item === "string").join("; ") || undefined;
   return undefined;
+}
+
+const SECRET_SHAPES = [/\bBearer\s+[\w.~+/=-]{8,}/giu, /\bpit-[\w-]{4,}/gu, /\beyJ[\w-]{6,}(?:\.[\w-]*)*/gu] as const;
+
+/** Removes the given secrets and anything shaped like a token (Bearer values, pit- tokens, JWTs). */
+export function redactSecrets(text: string, secrets: readonly string[] = []): string {
+  let out = text;
+  for (const secret of secrets) if (secret.length >= 8) out = out.split(secret).join("[redacted]");
+  for (const shape of SECRET_SHAPES) out = out.replace(shape, "[redacted]");
+  return out;
+}
+
+/** HighLevel's own explanation, safe to show a person or a bot: secrets redacted, one line, cut short. */
+export function apiMessage(body: unknown, options: { secrets?: readonly string[]; max?: number } = {}): string | undefined {
+  const raw = rawApiMessage(body);
+  if (!raw) return undefined;
+  const max = options.max ?? 300;
+  const text = redactSecrets(raw, options.secrets).replace(/[\p{Cc}\s]+/gu, " ").trim();
+  if (!text) return undefined;
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+/** HighLevel answers 401 both for a dead token ("Invalid JWT") and for a live one that lacks a scope
+ * ("The token is not authorized for this scope."). Only the second says "scope"; it is a missing permission, not a sign-out. */
+const SCOPE_REFUSAL = /not authori[sz]ed for (?:this|the) scope|insufficient[_ ]scope/iu;
+
+export function isScopeRefusal(body: unknown): boolean {
+  const raw = rawApiMessage(body);
+  return raw !== undefined && SCOPE_REFUSAL.test(raw);
 }
 
 export function plainError(status: number, method: string, path: string, body: unknown): HighLevelError {
   const detail = apiMessage(body);
+  if (status === 401 && isScopeRefusal(body)) {
+    const scope = scopeFor(path, method);
+    const name = PERMISSION_NAMES[scope];
+    const permission = name ? `${name} permission (${scope})` : `${scope} permission`;
+    return new HighLevelError(`HighLevel refused this (401): the connection lacks the ${permission}.${detail ? ` HighLevel said: ${detail}` : ""}`, { status });
+  }
   if (status === 401) return new HighLevelError(HIGHLEVEL_SIGNED_OUT_TEXT, { status, signedOut: true });
   if (status === 403) return new HighLevelError(`HighLevel refused this (403): the connection lacks the ${scopeFor(path, method)} permission.${detail ? ` HighLevel said: ${detail}` : ""}`, { status });
   if (status === 404) return new HighLevelError(`HighLevel has no ${thing(path)} with that id (404).`, { status });
@@ -165,7 +211,8 @@ export class HighLevelClient {
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly budget = new Map<string, number[]>();
   private refreshing: Promise<HighLevelConnection> | null = null;
-  private customFieldCache: { locationId: string; at: number; fields: CustomFieldDefinition[] } | null = null;
+  /** `refused` holds a missing-permission answer so contact reads do not re-ask HighLevel on every call. */
+  private customFieldCache: { locationId: string; at: number; fields: CustomFieldDefinition[]; refused?: HighLevelError } | null = null;
 
   constructor(options: HighLevelClientOptions) {
     this.store = options.store;
@@ -268,6 +315,8 @@ export class HighLevelClient {
       const response = await this.dispatch(connection, method, path, options);
       if (response.ok) return this.body(response);
       const body = await this.body(response);
+      // A live token that lacks one scope: name the permission; refreshing would not add it and the token still works.
+      if (response.status === 401 && isScopeRefusal(body)) throw plainError(response.status, method, path, body);
       if (response.status === 401 && !refreshed) {
         refreshed = true;
         if (connection.kind === "token") {
@@ -303,8 +352,20 @@ export class HighLevelClient {
   async customFieldDefinitions(): Promise<CustomFieldDefinition[]> {
     const locationId = await this.locationId();
     const cached = this.customFieldCache;
-    if (cached && cached.locationId === locationId && this.now() - cached.at < CUSTOM_FIELDS_TTL_MS) return cached.fields;
-    const raw = await this.request("GET", `/locations/${encodeURIComponent(locationId)}/customFields`);
+    if (cached && cached.locationId === locationId && this.now() - cached.at < CUSTOM_FIELDS_TTL_MS) {
+      if (cached.refused) throw cached.refused;
+      return cached.fields;
+    }
+    let raw: unknown;
+    try {
+      raw = await this.request("GET", `/locations/${encodeURIComponent(locationId)}/customFields`);
+    } catch (error) {
+      // Optional for reads (fields then show by id): a token without View Custom Fields keeps working and stays signed in.
+      if (error instanceof HighLevelError && !error.signedOut && (error.status === 401 || error.status === 403)) {
+        this.customFieldCache = { locationId, at: this.now(), fields: [], refused: error };
+      }
+      throw error;
+    }
     const fields = list(isRecord(raw) ? raw.customFields : []).flatMap((field) => {
       const id = str(field.id);
       const name = str(field.name);
@@ -577,6 +638,31 @@ export class HighLevelClient {
   }
 }
 
+/** Why the token check failed, in words a person can act on. HighLevel's own short reason is kept; the token never is. */
+export function tokenCheckError(status: number, body: unknown, token: string, path: string): HighLevelError {
+  const detail = apiMessage(body, { secrets: [token], max: 160 });
+  const said = detail ? ` HighLevel said: ${detail}` : "";
+  if (status === 401 && isScopeRefusal(body)) {
+    return new HighLevelError(
+      "This token is missing the View Locations permission (401), which OpenMausBot needs to check it. In HighLevel, open Settings → Private Integrations, " +
+      `edit this integration, turn on View Locations and save, then connect again: the token stays the same.${said}`, { status });
+  }
+  if (status === 401) {
+    return new HighLevelError(
+      "HighLevel did not accept this token (401). Check that it was copied whole and has not been rotated or deleted, " +
+      `and that its Private Integration has the View Locations permission.${said}`, { status });
+  }
+  if (status === 403) {
+    return new HighLevelError(
+      "This token does not belong to that location (403): it was created in another sub-account or at the agency level. " +
+      `Create the Private Integration inside the sub-account whose location ID you entered.${said}`, { status });
+  }
+  if (status === 404) {
+    return new HighLevelError("HighLevel has no location with that ID (404). Copy the location ID from Settings → Business Profile in the sub-account where you created the token.", { status });
+  }
+  return plainError(status, "GET", path, detail ? { message: detail } : {});
+}
+
 /** A Private Integration token is checked against the location it was issued for before it is saved. */
 export async function lookupLocation(
   input: { token: string; locationId: string; apiUrl?: string; fetch?: typeof fetch },
@@ -596,8 +682,7 @@ export async function lookupLocation(
   const text = await response.text();
   let body: unknown = {};
   try { body = text ? JSON.parse(text) : {}; } catch {}
-  if (response.status === 401 || response.status === 403) throw new HighLevelError("HighLevel did not accept this token for that location. Check the token and the location id.", { status: response.status });
-  if (!response.ok) throw plainError(response.status, "GET", path, body);
+  if (!response.ok) throw tokenCheckError(response.status, body, input.token, path);
   const location = isRecord(body) && isRecord(body.location) ? body.location : {};
   return compact({ id: str(location.id) ?? input.locationId, name: str(location.name) ?? input.locationId, companyId: str(location.companyId), timezone: str(location.timezone) });
 }

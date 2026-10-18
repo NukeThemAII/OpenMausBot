@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useAdvancedMode } from "@/lib/interface-mode";
 import { Loader2, Menu } from "lucide-react";
 import { CLOUD_LINK_SETTINGS, openBot, StoreProvider, useStore } from "@/state/store";
 import { useShowThreads } from "@/lib/thread-preferences";
@@ -18,7 +17,7 @@ import { SIDEBAR_AND_PANEL_FIT, SIDEBAR_INLINE, TWO_SIDE_PANELS_FIT, useMediaQue
 import { PluginsPanel, preloadConnectedApps } from "@/components/PluginsPanel";
 import {
   ActivityPanel, BotSettingsDialog, ComputerPanel, FilesView, InspectorPanel, KeyboardShortcutsModal, LocalVmWorkspace, NewBotDialog,
-  preloadScreens, RemoteAgentSettingsPanel, RemoteDesktopPanel, RoutinesPage, SettingsModal, TeamMapPage, TriggersPanel,
+  preloadScreens, RemoteAgentSettingsPanel, RemoteDesktopPanel, SettingsModal, TeamMapPage, TriggersPage,
 } from "@/components/lazy-screens";
 import { WorkspaceBackupRecovery } from "@/components/WorkspaceBackupSettings";
 import { NotificationRail, NotificationsPanel } from "@/components/NotificationsPanel";
@@ -26,7 +25,9 @@ import { useNotificationFeed } from "@/lib/notification-preferences";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { AppNotices } from "@/components/AppNotices";
 import { CloudAddDialog } from "@/components/CloudAddDialog";
+import { finishCloudProHandoff, takeCloudProHandoff } from "@/components/CloudProPopup";
 import { CloudHowTo } from "@/components/CloudHowTo";
+import { CloudHomeNote } from "@/components/CloudMove";
 import { DesktopCapabilitiesProvider, useCaptionChrome, useDesktopCapabilities, WindowDragStrip } from "@/components/DesktopCapabilities";
 import { WindowCaptionButtons } from "@/components/WindowCaptionButtons";
 import { NoEngines } from "@/components/NoEngines";
@@ -60,6 +61,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
   const twoSidePanelsFit = useMediaQuery(TWO_SIDE_PANELS_FIT, true);
   const sidebarAndPanelFit = useMediaQuery(SIDEBAR_AND_PANEL_FIT, true);
   const sidebarInline = useMediaQuery(SIDEBAR_INLINE, false);
+  const [handedOver, setHandedOver] = useState(false);
   useEffect(() => {
     if (!window.ogb?.environments) return;
     const open = (computerId?: string | null, panel?: "copy") => {
@@ -75,9 +77,11 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
     const cloud = ["cloud", "cloud-settings", "cloud-add", "cloud-add-howto"].includes(requestedSettings ?? "");
     if (requestedSettings === "workspaces" || (requestedSettings === "organization" && window.ogb.organization && !remoteClient) ||
       (cloud && window.ogb.cloudAccount && !remoteClient)) {
+      const handoff = takeCloudProHandoff(url);
       url.searchParams.delete("desktop-settings");
       window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
-      if (requestedSettings === "organization") dispatch({ type: "toggleAppSettings", open: true, section: "organization" });
+      if (handoff && window.ogb.cloudAccount) { setHandedOver(true); finishCloudProHandoff(handoff, window.ogb.cloudAccount, dispatch); }
+      else if (requestedSettings === "organization") dispatch({ type: "toggleAppSettings", open: true, section: "organization" });
       else if (requestedSettings === "cloud") dispatch(CLOUD_LINK_SETTINGS);
       else if (requestedSettings === "cloud-settings") dispatch({ type: "toggleAppSettings", open: true, section: "cloudAccount" });
       else if (requestedSettings === "cloud-add" || requestedSettings === "cloud-add-howto") dispatch({ type: "openCloudAdd", source: requestedSettings === "cloud-add" ? "app_menu" : "app_howto" });
@@ -109,11 +113,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
   const notificationFeed = useNotificationFeed() && !remoteClient;
   const sidePanelOpen = (Boolean(bot) && (state.settingsOpen || state.computerOpen || state.inspectorOpen || state.activityOpen)) || (notificationFeed && state.notificationsOpen);
   const collapseSidebar = sidePanelOpen && !sidebarAndPanelFit;
-  const calendarFocus = state.activeView === "routines";
-  const advanced = useAdvancedMode();
-  useEffect(() => {
-    if (!advanced && state.inspectorOpen) dispatch({ type: "toggleInspector", open: false });
-  }, [advanced, state.inspectorOpen, dispatch]);
+  const calendarFocus = state.activeView === "routines" && state.routinesFocus.view === "calendar";
 
   const noEngines =
     state.connected &&
@@ -227,8 +227,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
     state.inspectorOpen ||
     state.activityOpen ||
     state.appSettingsOpen ||
-    state.pluginsOpen ||
-    state.triggersOpen;
+    state.pluginsOpen;
 
   useEffect(() => {
     return window.ogb?.onOpenAppSettings?.(section => dispatch((section === "cloud-add" || section === "cloud-add-howto") && window.ogb?.cloudAccount && !remoteClient
@@ -265,7 +264,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
   return (
     <div className="flex h-full flex-col">
       <UpdateBanner sidebarIndicator={!calendarFocus && (sidebarInline || drawerOpen)} />
-      <AppNotices quiet={paletteOpen || drawerOpen || Boolean(localVmWorkspaceBotId)} viewer={viewer} />
+      <AppNotices quiet={paletteOpen || drawerOpen || Boolean(localVmWorkspaceBotId) || handedOver} viewer={viewer} />
       <div className="relative flex min-h-0 flex-1">
       {!calendarFocus && <button
         type="button"
@@ -297,7 +296,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
       ) : state.activeView === "files" ? (
         <FilesView />
       ) : state.activeView === "routines" ? (
-        <RoutinesPage onBack={closeCalendar} onOpenRoom={openCalendarRoom} />
+        <TriggersPage onBack={closeCalendar} onOpenRoom={openCalendarRoom} />
       ) : !remoteClient && localVmWorkspaceBotId ? (
         <LocalVmWorkspace
           primaryBotId={localVmWorkspaceBotId}
@@ -359,7 +358,6 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
       <CloudSetup viewer={viewer} welcomeShown={welcomeOnScreen} />
       <WelcomeKeeper viewer={viewer} />
       {state.pluginsOpen && <PluginsPanel />}
-      {state.triggersOpen && <TriggersPanel />}
       {state.newBotOpen && <NewBotDialog />}
       {state.shortcutsOpen && (
         <KeyboardShortcutsModal
@@ -377,6 +375,7 @@ function Shell({ viewer }: { viewer: WelcomeViewer | null }) {
         className="pointer-events-none absolute left-3 top-3 size-[30px] md:hidden"
       />}
       </div>
+      <CloudHomeNote />
       {/* Last child on purpose: Blink resolves -webkit-app-region in DOM order, so no-drag buttons must follow every drag region. */}
       <WindowCaptionButtons
         visible={capabilities.windowChrome === "win-caption" && Boolean(window.ogb?.windowControls)}

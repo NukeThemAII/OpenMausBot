@@ -593,3 +593,14 @@ describe("admin scope only (an OMB Cloud home is personal: server/cloud-owner.ts
     expect(next.ok).toBe(true);
   });
 });
+
+describe("telling the server a session opened", () => {
+  it("names every session opened by pairing or sign-in, with its scopes", () => {
+    const opened: string[][] = [];
+    registry.onSessionIssued((session) => opened.push(session.scopes));
+    const { code } = registry.openPairing({ label: "Phone", scopes: ["client"] });
+    expect(registry.exchange({ code, label: "Phone", source: "10.0.0.9" }).ok).toBe(true);
+    registry.issue({ label: "Laptop", scopes: ["admin", "client"] });
+    expect(opened).toEqual([["client"], ["admin", "client"]]);
+  });
+});

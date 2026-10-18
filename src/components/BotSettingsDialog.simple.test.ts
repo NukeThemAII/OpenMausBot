@@ -3,7 +3,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Routine } from "@/lib/routines";
-import type { Bot, Message } from "@/state/store";
+import type { BotOverview } from "@/lib/bot-overview-types";
+import type { Bot, BotSettingsSection, Message } from "@/state/store";
+import { AVATAR_FOCUS_CENTER, AVATAR_ZOOM_MIN } from "../../shared/bot-avatar";
 import type { ManagedSkill } from "./bot-settings/SkillsSection";
 import type { BotApps } from "./bot-settings/useBotApps";
 
@@ -14,6 +16,7 @@ const fixture = vi.hoisted(() => {
   vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
   return {
     advanced: false,
+    setAdvanced: (() => {}) as (enabled: boolean) => void,
     ownerOrAdmin: false as boolean | null,
     values: [] as unknown[],
     index: 0,
@@ -44,8 +47,13 @@ vi.mock("react", async (original) => ({
   },
   useEffect: () => {},
 }));
-vi.mock("@/lib/interface-mode", () => ({ useAdvancedMode: () => fixture.advanced, setAdvancedMode: () => {} }));
+vi.mock("@/lib/interface-mode", () => ({
+  useAdvancedMode: () => fixture.advanced,
+  setAdvancedMode: (enabled: boolean) => fixture.setAdvanced(enabled),
+}));
 vi.mock("@/lib/use-owner-or-admin", () => ({ useOwnerOrAdmin: () => fixture.ownerOrAdmin }));
+// The server renderer cannot portal; the dialog's props are what these tests read.
+vi.mock("./ConfirmDialog", () => ({ ConfirmDialog: () => null }));
 vi.mock("./bot-settings/useSlackManagement", () => ({ useSlackManagementUrl: () => null }));
 vi.mock("./bot-settings/useBotSettingsDerived", () => ({ useBotSettingsDerived: () => fixture.derived }));
 vi.mock("./DesktopCapabilities", async (importOriginal) => ({
@@ -82,27 +90,46 @@ vi.mock("@/state/store", async (importOriginal) => {
 });
 
 const { BotSettingsDialog } = await import("./BotSettingsDialog");
-const { SimpleBotPanel, botLibraryItems } = await import("./bot-settings/SimpleBotPanel");
+const { BotPanel } = await import("./bot-panel/PanelShell");
+const { PanelHero } = await import("./bot-panel/PanelHero");
+const { AvatarEditorCard } = await import("./bot-panel/AvatarEditorCard");
+const { DetailsTab } = await import("./bot-panel/DetailsTab");
+const { LibraryTab } = await import("./bot-panel/LibraryTab");
+const { ComputerTab } = await import("./bot-panel/ComputerTab");
+const { SettingsTab } = await import("./bot-panel/SettingsTab");
+const { PageBody, SetupPage } = await import("./bot-panel/pages");
+const { AppsCard, BrowserLogins } = await import("./bot-panel/apps-and-logins");
+const { botLibraryItems, memoryEntries } = await import("./bot-panel/library-items");
+const { PAGES, sectionTarget } = await import("./bot-panel/page-registry");
+const { openBotSettings } = await import("./bot-panel/panel-link");
+const { PageHeader } = await import("./bot-panel/rows");
+const { ChatMoreMenu } = await import("./ChatMoreMenu");
 const { SoulField } = await import("./SoulField");
 const { LocalComputerAutoWarning } = await import("./LocalComputerAutoWarning");
 const { ModelPicker } = await import("./ModelPicker");
 const { ThreadModelsLine } = await import("./ThreadModelsLine");
 const { ModelSection } = await import("./bot-settings/ModelSection");
 const { MemorySection } = await import("./bot-settings/MemorySection");
+const { AccessSection } = await import("./bot-settings/AccessSection");
+const { PermissionsSection } = await import("./bot-settings/PermissionsSection");
 const { RoutinesSection } = await import("./bot-settings/RoutinesSection");
-const { VaultTab } = await import("./bot-settings/VaultTab");
+const { OverviewSection } = await import("./bot-settings/OverviewSection");
+const { RoutineEditor } = await import("./RoutinesPage");
 const { PhoneAppDialog } = await import("./PhoneAppDialog");
-const { BotProfileAvatarCard } = await import("./BotProfileAvatarCard");
+const { ConfirmDialog } = await import("./ConfirmDialog");
+const { AvatarImageGenerator } = await import("./AvatarImageGenerator");
+const { AvatarFraming } = await import("./avatar-editing");
 const { Switch } = await import("./SettingsPrimitives");
 
 afterAll(() => vi.unstubAllGlobals());
 
 type Node = ReactElement<Record<string, unknown> & { children?: ReactNode }>;
+type Rendered = { html: string; nodes: Node[] };
 function nodes(value: ReactNode): Node[] {
   return Children.toArray(value).flatMap((child) => {
     if (!isValidElement(child)) return [];
     const node = child as Node;
-    return [node, ...nodes(node.props.children)];
+    return [node, ...nodes(node.props.children), ...nodes(node.props.action as ReactNode)];
   });
 }
 
@@ -115,7 +142,7 @@ function makeBot(extra: Partial<Bot> = {}): Bot {
   };
 }
 
-function capture(component: () => ReactNode) {
+function capture(component: () => ReactNode): Rendered {
   fixture.values.length = Math.min(fixture.values.length, fixture.own);
   let tree: ReactNode = null;
   function Capture() {
@@ -128,21 +155,48 @@ function capture(component: () => ReactNode) {
   return { html, nodes: nodes(tree) };
 }
 
+const fresh = () => {
+  fixture.values = [];
+  fixture.own = 0;
+};
 const patch = vi.fn();
-const panelProps = { onClose: vi.fn(), onAllSettings: vi.fn(), onAddSkill: vi.fn() };
-const panel = (bot: Bot) => capture(() => SimpleBotPanel({ bot, derived: fixture.derived as never, ...panelProps }));
+const onOpen = vi.fn();
+const onGo = vi.fn();
+const onClose = vi.fn();
+const derived = () => fixture.derived as never;
+const panel = (bot: Bot, linkedSection: BotSettingsSection | null = null, slackUrl: string | null = null) =>
+  capture(() => BotPanel({ bot, derived: derived(), linkedSection, slackUrl, onClose }));
 const dialog = (bot: Bot) => capture(() => BotSettingsDialog({ bot }));
-const find = (rendered: { nodes: Node[] }, attr: string, value: unknown = true) =>
-  rendered.nodes.find((node) => node.props[attr] === value)!;
+const details = (bot: Bot, overview: BotOverview | null = null) => capture(() => DetailsTab({ bot, derived: derived(), overview, onOpen }));
+const library = (bot: Bot) => capture(() => LibraryTab({ bot, onOpen }));
+const computer = (bot: Bot) => capture(() => ComputerTab({ bot, derived: derived(), onOpen }));
+const settings = (bot: Bot, query = "", slackUrl: string | null = null) =>
+  capture(() => SettingsTab({ bot, derived: derived(), slackUrl, query, onQuery: vi.fn(), onOpen, onGo }));
+const find = (rendered: { nodes: Node[] }, attr: string, value: unknown = true) => {
+  const found = rendered.nodes.find((node) => node.props[attr] === value);
+  if (!found) throw new Error(`no node with ${attr}=${String(value)}`);
+  return found;
+};
+const segment = (rendered: { nodes: Node[] }, attr: string) => {
+  const found = rendered.nodes.find((node) => node.props.attr === attr);
+  if (!found) throw new Error(`no segmented control ${attr}`);
+  return found.props as { value: unknown; onChange: (value: string) => void; options: Array<{ value: string; label: unknown; disabled?: boolean }> };
+};
+const has = (rendered: { nodes: Node[] }, attr: string, value: unknown = true) => rendered.nodes.some((node) => node.props[attr] === value);
+const ofType = (rendered: { nodes: Node[] }, type: unknown) => rendered.nodes.find((node) => node.type === type);
 const click = (node: Node) => (node.props.onClick as () => void)();
-const isSimple = (rendered: { nodes: Node[] }) => rendered.nodes.some((node) => node.type === SimpleBotPanel);
-const rowOpen = (rendered: { nodes: Node[] }, id: string) =>
-  (Children.toArray(find(rendered, "data-bot-settings-section", id).props.children)[0] as Node).props["aria-expanded"] === true;
-
-const effortElsewhere = (rendered: { nodes: Node[] }) =>
-  String(find(rendered, "data-simple-default-model").props.className).includes("[&_[data-simple-effort]]:hidden");
+const change = (node: Node, value: string) => (node.props.onChange as (event: unknown) => void)({ target: { value } });
+const key = (node: Node, name: string) => {
+  const event = { key: name, defaultPrevented: false, target: null, preventDefault: vi.fn(), stopPropagation: vi.fn() };
+  (node.props.onKeyDown as (event: unknown) => void)(event);
+  return event;
+};
+const shown = (rendered: Rendered) => ({
+  tab: rendered.nodes.find((node) => node.props["data-panel-tab"] !== undefined && node.props["aria-selected"] === true)?.props["data-panel-tab"],
+  page: rendered.nodes.find((node) => node.type === PageBody)?.props.page
+    ?? (rendered.nodes.some((node) => node.props["data-panel-page-view"] === "memory" && node.props.hidden === false) ? "memory" : undefined),
+});
 const skill = (name: string, enabled: boolean): ManagedSkill => ({ name, description: `${name} helper`, enabled, source: "github:x/y", warnings: [] });
-const openTab = (bot: Bot, tab: string) => click(find(panel(bot), "data-simple-tab", tab));
 const routine = (extra: Partial<Routine> = {}): Routine => ({
   id: "r1", name: "Morning brief", prompt: "Brief me", target: "bot", botId: "scout", runOn: "maus", enabled: true,
   schedule: { type: "daily", time: "09:00", weekdays: [1, 2, 3, 4, 5] }, durationMinutes: 15,
@@ -151,275 +205,642 @@ const routine = (extra: Partial<Routine> = {}): Routine => ({
 const app = (slug: string, scope: "read" | "write" | null) => ({
   slug, label: slug[0]!.toUpperCase() + slug.slice(1), blurb: `${slug} things`, card: { logo: null, domain: null, label: slug }, scope,
 });
+const overviewWith = (setup: BotOverview["setup"]): BotOverview => ({
+  who: { name: "Scout", title: "", blurb: "", soulLead: "" }, does: [], reaches: [], wont: [], recent: [], setup,
+});
 
 beforeEach(() => {
   fixture.advanced = false;
+  fixture.setAdvanced = vi.fn();
   fixture.ownerOrAdmin = false;
-  fixture.values = [];
+  fresh();
   fixture.index = 0;
-  fixture.own = 0;
   fixture.dispatch = vi.fn();
   fixture.storeState = { settingsOpen: true, botSettingsSection: "overview", botSettingsExpandAccordion: false };
   fixture.skills = { skills: [], loading: false, working: "", error: "", reviewing: null, toggle: vi.fn(() => Promise.resolve()) };
   patch.mockReset();
+  onOpen.mockReset();
+  onGo.mockReset();
+  onClose.mockReset();
   fixture.derived = {
     patch, approvalMode: "ask", engine: { driverKind: "claudeAgent" }, trustedModesAvailable: false, activeState: "idle",
-    botRoutines: [],
+    botRoutines: [], canCoordinate: true, sectionName: "General", mascotMotion: null,
     canUseConnectedApps: true, connectedAppsConfigured: true, connectedAppsEnabled: true, browserEnabled: true,
   };
   fixture.apps = { phase: "ready", apps: [], connectedSlugs: [] };
   fixture.places = {
     cloud: [true, true, "Cloud computer"], vm: [true, true, "Private desktop"], local: [true, true, "Your screen"], browser: [true, true, "Web pages only"],
   };
-  panelProps.onAddSkill.mockReset();
 });
 
-describe("the bot settings panel in Simple mode", () => {
-  it("shows the avatar header, six tabs, and one row per fact on Details", () => {
-    const { html } = panel(makeBot());
-    const tabs = [...html.matchAll(/data-simple-tab="(\w+)"[^>]*>([^<]+)<\/button>/g)].map((match) => [match[1], match[2]]);
-    expect(tabs).toEqual([
-      ["details", "Details"], ["memory", "Memory"], ["library", "Library"], ["skills", "Skills"], ["routines", "Routines"], ["vault", "Vault"],
-    ]);
-    expect(html).toContain("Name and job");
-    expect(html).toContain("Scout · Researcher");
-    expect(html).toContain("Instructions");
-    expect(html).toContain("Be brief.");
-    expect(html).not.toContain("<textarea");
-    expect(html).toContain("Before Scout acts");
-    expect(html).toContain("Ask me first");
-    expect(html).toContain("Decide for me");
-    expect(html).toContain("Full access");
-    expect(html).toContain("Where Scout works");
-    expect(html).toContain("All settings");
-    expect(html).not.toContain("SOUL.md");
-    const rows = [...html.matchAll(/data-simple-row="(\w+)"/g)].map((match) => match[1]);
-    expect(rows).toEqual(["look", "identity", "soul", "approval", "computer", "uses", "phone", "email"]);
+describe("the bot panel in Simple mode", () => {
+  it("has the chat menu and a close button on top, the hero, and four tabs with Details first", () => {
+    const bot = makeBot();
+    const rendered = panel(bot);
+    expect(ofType(rendered, ChatMoreMenu)!.props.bot).toBe(bot);
+    click(find(rendered, "aria-label", "Close settings"));
+    expect(onClose).toHaveBeenCalled();
+    const hero = ofType(rendered, PanelHero)!;
+    expect(hero.props.bot).toBe(bot);
+    expect(hero.props.patch).toBe(patch);
+    const tabs = [...rendered.html.matchAll(/data-panel-tab="(\w+)"[^>]*>([^<]+)<\/button>/g)].map((match) => [match[1], match[2]]);
+    expect(tabs).toEqual([["details", "Details"], ["library", "Library"], ["computer", "Computer"], ["settings", "Settings"]]);
+    expect(shown(rendered)).toEqual({ tab: "details", page: undefined });
+    expect(ofType(rendered, DetailsTab)!.props.bot).toBe(bot);
+    expect(rendered.html).toContain('id="bot-settings-title"');
   });
 
-  it("changes the mascot's look in place: color, body, expression or a picture, from its row", () => {
+  it("switches tabs", () => {
     const bot = makeBot();
-    const closed = panel(bot);
-    expect(closed.html).toContain("Color, shape, expression or your own picture.");
-    expect(closed.nodes.some((node) => node.type === BotProfileAvatarCard)).toBe(false);
+    for (const [tab, type] of [["library", LibraryTab], ["computer", ComputerTab], ["settings", SettingsTab], ["details", DetailsTab]] as const) {
+      click(find(panel(bot), "data-panel-tab", tab));
+      const rendered = panel(bot);
+      expect(shown(rendered).tab).toBe(tab);
+      expect(ofType(rendered, type)).toBeDefined();
+    }
+  });
 
-    click(find(closed, "data-simple-edit", "look"));
+  it("drills into a page and back, naming where Back goes", () => {
+    const bot = makeBot();
+    (ofType(panel(bot), DetailsTab)!.props.onOpen as (page: string) => void)("instructions");
+    const page = panel(bot);
+    expect(shown(page)).toEqual({ tab: undefined, page: "instructions" });
+    expect(has(page, "role", "tablist")).toBe(false);
+    expect(ofType(page, PageHeader)!.props).toMatchObject({ back: "Details", title: "Instructions" });
+    expect(page.html).toContain('id="bot-settings-title"');
+
+    (ofType(page, PageBody)!.props.onOpen as (page: string) => void)("history");
+    const deeper = panel(bot);
+    expect(shown(deeper).page).toBe("history");
+    expect(ofType(deeper, PageHeader)!.props).toMatchObject({ back: "Instructions", title: "History" });
+
+    (ofType(deeper, PageHeader)!.props.onBack as () => void)();
+    expect(shown(panel(bot)).page).toBe("instructions");
+    (ofType(panel(bot), PageHeader)!.props.onBack as () => void)();
+    expect(shown(panel(bot))).toEqual({ tab: "details", page: undefined });
+  });
+
+  it("goes back on Escape from a page, and leaves Escape to the dialog on a tab", () => {
+    const bot = makeBot();
+    (ofType(panel(bot), DetailsTab)!.props.onOpen as (page: string) => void)("model");
+    const event = key(panel(bot).nodes[0]!, "Escape");
+    expect(event.stopPropagation).toHaveBeenCalled();
+    expect(shown(panel(bot)).page).toBeUndefined();
+    const onTab = key(panel(bot).nodes[0]!, "Escape");
+    expect(onTab.stopPropagation).not.toHaveBeenCalled();
+  });
+
+  it("keeps Memory mounted once opened, so a draft survives Back", () => {
+    const bot = makeBot();
+    expect(ofType(panel(bot), MemorySection)).toBeUndefined();
+    (ofType(panel(bot), DetailsTab)!.props.onOpen as (page: string) => void)("memory");
     const open = panel(bot);
-    const card = open.nodes.find((node) => node.type === BotProfileAvatarCard)!;
-    expect(card.props.bot).toBe(bot);
-    expect(card.props.activeState).toBe("idle");
-    expect(card.props.onPatch).toBe(patch);
-    expect(open.html).toContain("Use blue mascot color");
-    expect(open.html).toContain("Use the Blob body");
-
-    click(find(open, "data-simple-edit", "identity"));
-    expect(panel(bot).nodes.some((node) => node.type === BotProfileAvatarCard)).toBe(false);
-    click(find(panel(bot), "data-simple-edit", "look"));
-    click(find(panel(bot), "data-simple-done", "look"));
-    expect(panel(bot).nodes.some((node) => node.type === BotProfileAvatarCard)).toBe(false);
-  });
-
-  it("opens the look editor from the mascot itself, whichever tab is showing", () => {
-    const bot = makeBot();
-    openTab(bot, "vault");
-    const onVault = panel(bot);
-    expect(find(onVault, "data-simple-avatar").props["aria-label"]).toBe("Change how Scout looks");
-    click(find(onVault, "data-simple-avatar"));
+    expect(shown(open).page).toBe("memory");
+    const memory = ofType(open, MemorySection)!;
+    expect(memory.props.active).toBe(true);
+    (memory.props.onToggle as (enabled: boolean) => void)(false);
+    expect(patch).toHaveBeenLastCalledWith({ memoryEnabled: false });
+    (ofType(open, PageHeader)!.props.onBack as () => void)();
     const back = panel(bot);
-    expect(find(back, "data-simple-tab", "details").props["aria-selected"]).toBe(true);
-    expect(back.nodes.some((node) => node.type === BotProfileAvatarCard)).toBe(true);
+    expect(ofType(back, MemorySection)!.props.active).toBe(false);
+    expect(find(back, "data-panel-page-view", "memory").props.hidden).toBe(true);
   });
 
-  it("opens Name and job into its two fields, and Instructions into its box, one at a time", () => {
+  it("opens the avatar editor from the avatar and closes it with Escape", () => {
     const bot = makeBot();
-    click(find(panel(bot), "data-simple-edit", "identity"));
-    const identity = panel(bot);
-    expect(identity.html).toContain(">Name</label>");
-    expect(identity.html).toContain(">Job</label>");
-    expect(identity.html).toContain("value=\"Scout\"");
-    expect(identity.html).toContain("value=\"Researcher\"");
-    expect(identity.nodes.some((node) => node.type === SoulField)).toBe(false);
-
-    click(find(identity, "data-simple-edit", "soul"));
-    const soul = panel(bot);
-    expect(soul.html).toContain(">Instructions</label>");
-    expect(soul.html).toContain("<textarea");
-    expect(soul.nodes.some((node) => node.props.id === "simple-bot-name-scout")).toBe(false);
-
-    click(find(soul, "data-simple-done", "soul"));
-    expect(panel(bot).html).not.toContain("<textarea");
+    expect(ofType(panel(bot), AvatarEditorCard)).toBeUndefined();
+    (ofType(panel(bot), PanelHero)!.props.onToggleEditor as () => void)();
+    const open = panel(bot);
+    const editor = ofType(open, AvatarEditorCard)!;
+    expect(editor.props.onPatch).toBe(patch);
+    expect(editor.props.bot).toBe(bot);
+    key(open.nodes[0]!, "Escape");
+    expect(ofType(panel(bot), AvatarEditorCard)).toBeUndefined();
   });
 
-  it("opens the row a link names: the instructions for Read all, the two fields for Edit profile", () => {
-    fixture.storeState = { settingsOpen: true, botSettingsSection: "soul", botSettingsExpandAccordion: true };
-    const soul = panel(makeBot());
-    expect(soul.nodes.some((node) => node.type === SoulField)).toBe(true);
-    expect(soul.nodes.some((node) => node.props["data-simple-done"] === "soul")).toBe(true);
-
-    fixture.values = [];
-    fixture.own = 0;
-    fixture.storeState = { settingsOpen: true, botSettingsSection: "identity", botSettingsExpandAccordion: true };
-    expect(panel(makeBot()).nodes.some((node) => node.props.id === "simple-bot-name-scout")).toBe(true);
-
-    fixture.values = [];
-    fixture.own = 0;
-    fixture.storeState = { settingsOpen: true, botSettingsSection: "soul", botSettingsExpandAccordion: true, botSettingsExpandRemembered: true };
-    expect(panel(makeBot()).nodes.some((node) => node.type === SoulField)).toBe(false);
+  it.each([
+    ["overview", "settings", "overview"], ["identity", "details", undefined], ["slack", "settings", "slack"],
+    ["soul", "details", "instructions"], ["skills", "library", "skills"], ["memory", "library", "memory"],
+    ["routines", "details", "routines"], ["access", "computer", undefined], ["model", "details", "model"],
+    ["permissions", "details", "approvals"], ["voice", "settings", "voice"], ["visibility", "settings", "visibility"],
+    ["history", "settings", "history"], ["usage", "settings", undefined],
+  ] as const)("lands a deep link to %s on %s › %s", (section, tab, page) => {
+    expect([sectionTarget(section).tab, sectionTarget(section).page]).toEqual([tab, page]);
+    const rendered = panel(makeBot(), section);
+    if (page) expect(shown(rendered).page).toBe(page);
+    else expect(shown(rendered)).toEqual({ tab, page: undefined });
+    if (page) expect(PAGES[page].home).toBe(tab);
   });
 
-  it("says so when there are no instructions, and opens the box by itself while the file on disk has drifted", () => {
-    expect(panel(makeBot({ soul: "" })).html).toContain("No instructions yet.");
-    const drifted = panel(makeBot({ soulDrift: true }));
-    expect(drifted.nodes.some((node) => node.type === SoulField)).toBe(true);
-    expect(drifted.nodes.some((node) => node.props["data-simple-done"] === "soul")).toBe(false);
+  it("scrolls Usage into view on the Settings tab", () => {
+    expect(sectionTarget("usage").anchor).toBe("activity");
   });
 
-  it("sets the bot's default model between Instructions and Before acts, in the inline picker", () => {
+  // App tool grants (PluginsPanel), MCP access, a place's tool selection, the working folder.
+  it.each(["apps", "mcp", "tools", "folder"] as const)("opens Access on the %s page when a link names it", (page) => {
+    try {
+      openBotSettings(fixture.dispatch, "access", { page });
+      expect(shown(panel(makeBot(), "access"))).toEqual({ tab: undefined, page });
+    } finally {
+      // A link without a page lands where the section does: later tests see no trace of this one.
+      openBotSettings(vi.fn(), "access");
+    }
+    fresh();
+    expect(shown(panel(makeBot(), "access"))).toEqual({ tab: "computer", page: undefined });
+  });
+});
+
+describe("the hero", () => {
+  const hero = (bot: Bot, editorOpen = false) =>
+    capture(() => PanelHero({ bot, activeState: "idle", patch, editorOpen, onToggleEditor: vi.fn() }));
+
+  it("labels the avatar Edit avatar and shows whether the editor is open", () => {
+    const rendered = hero(makeBot(), true);
+    expect(find(rendered, "data-panel-avatar").props["aria-label"]).toBe("Edit avatar");
+    expect(find(rendered, "data-panel-avatar").props["aria-expanded"]).toBe(true);
+    expect(rendered.html).toContain("Edit avatar");
+  });
+
+  it("renames inline: Enter saves the trimmed name, a blank name saves nothing", () => {
     const bot = makeBot();
-    const rendered = panel(bot);
-    const picker = rendered.nodes.find((node) => node.type === ModelPicker)!;
-    expect(picker).toBeDefined();
-    expect(picker.props.contained).toBe(true);
-    expect(picker.props.bot).toBe(bot);
-    expect(picker.props.threadId).toBeUndefined();
-    const { html } = rendered;
-    const at = (text: string) => html.indexOf(text);
-    expect(at("Instructions")).toBeGreaterThan(-1);
-    expect(at("Instructions")).toBeLessThan(at("Default model"));
-    expect(at("Default model")).toBeLessThan(at("Before Scout acts"));
-  });
-
-  it("saves name, job and instructions through the same bot patch", () => {
-    const bot = makeBot();
-    click(find(panel(bot), "data-simple-edit", "identity"));
-    const rendered = panel(bot);
-    (find(rendered, "id", "simple-bot-name-scout").props.onChange as (e: unknown) => void)({ target: { value: "Nova" } });
+    click(find(hero(bot), "data-panel-rename"));
+    const editing = hero(bot);
+    const input = find(editing, "data-panel-rename-input");
+    expect(input.props.value).toBe("Scout");
+    change(input, "  Nova ");
+    key(find(hero(bot), "data-panel-rename-input"), "Enter");
     expect(patch).toHaveBeenLastCalledWith({ name: "Nova" });
-    (find(rendered, "id", "simple-bot-job-scout").props.onChange as (e: unknown) => void)({ target: { value: "Writer" } });
-    expect(patch).toHaveBeenLastCalledWith({ title: "Writer" });
-    click(find(rendered, "data-simple-edit", "soul"));
-    const soul = panel(bot).nodes.find((node) => node.type === SoulField)!;
-    expect(soul.props.onPatch).toBe(patch);
+    expect(has(hero(bot), "data-panel-rename-input")).toBe(false);
+
+    patch.mockReset();
+    click(find(hero(bot), "data-panel-rename"));
+    change(find(hero(bot), "data-panel-rename-input"), "   ");
+    (find(hero(bot), "data-panel-rename-input").props.onBlur as () => void)();
+    expect(patch).not.toHaveBeenCalled();
   });
 
-  it("maps the two choices onto Ask and Approve for me", () => {
-    const rendered = panel(makeBot());
-    expect(find(rendered, "data-approval-choice", "ask").props["aria-pressed"]).toBe(true);
-    expect(find(rendered, "data-approval-choice", "auto").props["aria-pressed"]).toBe(false);
-    click(find(rendered, "data-approval-choice", "auto"));
-    expect(patch).toHaveBeenLastCalledWith({ approvalMode: "auto" });
+  it("saves a rename on blur and puts the old name back on Escape", () => {
+    const bot = makeBot();
+    click(find(hero(bot), "data-panel-rename"));
+    change(find(hero(bot), "data-panel-rename-input"), "Atlas");
+    (find(hero(bot), "data-panel-rename-input").props.onBlur as () => void)();
+    expect(patch).toHaveBeenLastCalledWith({ name: "Atlas" });
 
-    fixture.derived.approvalMode = "auto";
-    const onAuto = panel(makeBot());
-    click(find(onAuto, "data-approval-choice", "ask"));
-    expect(patch).toHaveBeenLastCalledWith({ approvalMode: "ask" });
+    patch.mockReset();
+    click(find(hero(bot), "data-panel-rename"));
+    change(find(hero(bot), "data-panel-rename-input"), "Atlas");
+    const input = find(hero(bot), "data-panel-rename-input");
+    const event = key(input, "Escape");
+    expect(event.stopPropagation).toHaveBeenCalled();
+    (input.props.onBlur as () => void)();
+    expect(patch).not.toHaveBeenCalled();
+    expect(has(hero(bot), "data-panel-rename")).toBe(true);
+  });
+
+  it("offers Add a label without a title, and edits the title inline", () => {
+    expect(hero(makeBot({ title: "" })).html).toContain("Add a label");
+    const bot = makeBot();
+    expect(find(hero(bot), "data-panel-label").props.children).toBe("Researcher");
+    click(find(hero(bot), "data-panel-label"));
+    const input = find(hero(bot), "data-panel-label-input");
+    expect(input.props.value).toBe("Researcher");
+    change(input, "Writer");
+    (find(hero(bot), "data-panel-label-input").props.onBlur as () => void)();
+    expect(patch).toHaveBeenLastCalledWith({ title: "Writer" });
+
+    click(find(hero(bot), "data-panel-label"));
+    change(find(hero(bot), "data-panel-label-input"), "");
+    key(find(hero(bot), "data-panel-label-input"), "Enter");
+    expect(patch).toHaveBeenLastCalledWith({ title: "" });
+  });
+});
+
+describe("the avatar editor", () => {
+  const editor = (bot: Bot) => capture(() => AvatarEditorCard({ bot, activeState: "idle", onPatch: patch, onClose }));
+
+  it("picks one of the ten bodies, ten colors and a face for the mascot", () => {
+    const bot = makeBot();
+    const rendered = editor(bot);
+    expect(rendered.html.match(/aria-label="Use the \w+ body"/g)).toHaveLength(10);
+    expect(rendered.html.match(/aria-label="Use \w+ mascot color"/g)).toHaveLength(10);
+    expect(find(rendered, "aria-label", "Use the Cursor body").props["aria-pressed"]).toBe(true);
+    click(find(rendered, "aria-label", "Use the Blob body"));
+    expect(patch).toHaveBeenLastCalledWith({ mascotBody: "blob" });
+    click(find(rendered, "aria-label", "Use blue mascot color"));
+    expect(patch).toHaveBeenLastCalledWith({ color: "blue" });
+    expect(find(rendered, "data-avatar-face", "idle").props["aria-pressed"]).toBe(true);
+    click(find(rendered, "data-avatar-face", "proud"));
+    expect(patch).toHaveBeenLastCalledWith({ mascotExpression: "proud" });
+    expect(rendered.html).toContain(">Proud<");
+  });
+
+  it("switches back to the mascot when a body is picked over a picture", () => {
+    const bot = makeBot({ avatarUrl: "/api/attachments/cat.webp", avatarCrop: "circle" });
+    click(find(editor(bot), "data-avatar-tab", "bot"));
+    click(find(editor(bot), "aria-label", "Use the Star body"));
+    expect(patch).toHaveBeenLastCalledWith({ mascotBody: "star", avatarCrop: "mascot" });
+  });
+
+  it("resets the mascot as the Advanced card does", () => {
+    click(find(editor(makeBot()), "data-avatar-reset"));
+    expect(patch).toHaveBeenLastCalledWith({ avatarCrop: "mascot", color: "green", mascotExpression: null, mascotBody: "cursor" });
+  });
+
+  it("generates with the shared generator, and uploads with shape and framing", () => {
+    const bot = makeBot();
+    click(find(editor(bot), "data-avatar-tab", "generate"));
+    const generate = editor(bot);
+    expect(ofType(generate, AvatarImageGenerator)!.props.botLabel).toBe("Researcher");
+
+    click(find(generate, "data-avatar-tab", "upload"));
+    const upload = editor(bot);
+    expect(upload.html).toContain("Drop a picture here, or choose one");
+    expect(upload.html).toContain("PNG, JPEG, GIF, or WebP · up to 10 MB");
+    expect(segment(upload, "data-avatar-crop").options.map((option) => [option.value, option.disabled])).toEqual([
+      ["circle", true], ["rounded", true], ["square", true],
+    ]);
+    expect(ofType(upload, AvatarFraming)).toBeUndefined();
+
+    fresh();
+    const pictured = makeBot({ avatarUrl: "/api/attachments/cat.webp", avatarCrop: "circle" });
+    const withImage = editor(pictured);
+    expect(find(withImage, "data-avatar-tab", "upload").props["aria-selected"]).toBe(true);
+    expect(ofType(withImage, AvatarFraming)!.props.bot).toBe(pictured);
+    expect(segment(withImage, "data-avatar-crop").value).toBe("circle");
+    segment(withImage, "data-avatar-crop").onChange("square");
+    expect(patch).toHaveBeenLastCalledWith({ avatarCrop: "square" });
+    click(find(withImage, "aria-label", "Remove custom avatar image"));
+    expect(patch).toHaveBeenLastCalledWith({ avatarUrl: null, avatarCrop: "mascot", avatarZoom: AVATAR_ZOOM_MIN, avatarFocusX: AVATAR_FOCUS_CENTER, avatarFocusY: AVATAR_FOCUS_CENTER });
+  });
+
+  it("closes on Escape without letting the dialog close settings", () => {
+    const event = key(editor(makeBot()).nodes[0]!, "Escape");
+    expect(onClose).toHaveBeenCalled();
+    expect(event.stopPropagation).toHaveBeenCalled();
+  });
+});
+
+describe("the Details tab", () => {
+  it("shows Finish setting up only while setup ideas remain", () => {
+    expect(has(details(makeBot()), "data-panel-page", "setup")).toBe(false);
+    expect(has(details(makeBot(), overviewWith([{ id: "soul", label: "Write instructions", done: true }])), "data-panel-page", "setup")).toBe(false);
+    const rendered = details(makeBot(), overviewWith([
+      { id: "soul", label: "Write instructions", done: false, section: "soul" },
+      { id: "apps", label: "Connect an app", done: false, section: "access" },
+    ]));
+    expect(rendered.html).toContain("2 ideas to make Scout more useful");
+    click(find(rendered, "data-panel-page", "setup"));
+    expect(onOpen).toHaveBeenLastCalledWith("setup");
+  });
+
+  it("picks the model in the contained picker for the open thread, with Thinking on its own row", () => {
+    fixture.derived.engine = { driverKind: "claudeAgent", capabilities: { effortLevels: ["low", "medium", "high", "max"] } };
+    const bot = makeBot({ modelSelection: { instanceId: "claude", model: "claude-opus-5-5", effort: "medium" } });
+    const rendered = details(bot);
+    const picker = ofType(rendered, ModelPicker)!;
+    // As the Advanced header's picker: the thread's view of the bot and its thread, so a Cloud guest's pick stays in
+    // their own conversation while an owner's also sets the bot's default.
+    expect(picker.props).toMatchObject({ bot, contained: true, threadId: "thread-scout" });
+    expect(picker.key).toMatch(/thread-scout$/);
+    const onOwnModel = makeBot({ tasks: [{ threadId: "thread-scout", title: "Side", createdAt: 1, modelSelection: { instanceId: "claude", model: "claude-haiku-4-5" } }] });
+    expect((ofType(details(onOwnModel), ModelPicker)!.props.bot as Bot).modelSelection.model).toBe("claude-haiku-4-5");
+    expect(String(find(rendered, "data-simple-default-model").props.className)).toContain("[&_[data-simple-effort]]:hidden");
+    expect(rendered.html).toContain("More thinking is slower and more careful.");
+    const thinking = segment(rendered, "data-thinking-choice");
+    expect(thinking.options.map((option) => [option.value, option.label])).toEqual([["low", "Quick"], ["medium", "Balanced"], ["high", "Deep"], ["max", "Max"]]);
+    expect(thinking.value).toBe("medium");
+    thinking.onChange("high");
+    expect(fixture.dispatch).toHaveBeenLastCalledWith({
+      type: "setModel", botId: "scout", selection: { instanceId: "claude", model: "claude-opus-5-5", effort: "high" },
+    });
+    (fixture.dispatch as ReturnType<typeof vi.fn>).mockClear();
+    thinking.onChange("medium");
+    expect(fixture.dispatch).not.toHaveBeenCalled();
+    click(find(rendered, "data-panel-link", "model"));
+    expect(onOpen).toHaveBeenLastCalledWith("model");
+  });
+
+  it("has no Thinking row where the engine has no steps or keeps its own variants", () => {
+    expect(details(makeBot()).html).not.toContain("data-thinking-choice");
+    fixture.derived.engine = { driverKind: "acp", capabilities: { effortLevels: ["low", "high"], modelVariants: true } };
+    const variants = details(makeBot());
+    expect(variants.html).not.toContain("data-thinking-choice");
+    expect(String(find(variants, "data-simple-default-model").props.className)).not.toContain("hidden");
+  });
+
+  it("holds Thinking while a turn runs", () => {
+    fixture.derived.engine = { driverKind: "claudeAgent", capabilities: { effortLevels: ["low", "high"] } };
+    const busy = details(makeBot({ busy: true }));
+    expect(busy.html).toMatch(/data-thinking-choice="high" aria-pressed="false" disabled=""/);
+  });
+
+  it("edits instructions in place, and opens the box by itself while the file has drifted", () => {
+    const bot = makeBot();
+    const closed = details(bot);
+    expect(closed.html).toContain("Be brief.");
+    expect(ofType(closed, SoulField)).toBeUndefined();
+    click(find(closed, "data-panel-edit", "soul"));
+    const open = details(bot);
+    expect(ofType(open, SoulField)!.props.onPatch).toBe(patch);
+    click(find(open, "data-panel-done", "soul"));
+    expect(ofType(details(bot), SoulField)).toBeUndefined();
+
+    expect(details(makeBot({ soul: "" })).html).toContain("No instructions yet.");
+    const drifted = details(makeBot({ soulDrift: true }));
+    expect(ofType(drifted, SoulField)).toBeDefined();
+    expect(has(drifted, "data-panel-done", "soul")).toBe(false);
+  });
+
+  it("sets the reply style, and leads to SOUL.md and earlier versions", () => {
+    const rendered = details(makeBot());
+    expect(segment(rendered, "data-reply-style-choice").value).toBe("default");
+    segment(rendered, "data-reply-style-choice").onChange("conversational");
+    expect(patch).toHaveBeenLastCalledWith({ replyStyle: "conversational" });
+    click(find(rendered, "data-panel-link", "instructions"));
+    expect(onOpen).toHaveBeenLastCalledWith("instructions");
+  });
+
+  it("maps the three choices onto Ask, Approve for me and Full access", () => {
+    const rendered = details(makeBot());
+    const acts = segment(rendered, "data-approval-choice");
+    expect(acts.options.map((option) => [option.value, option.label])).toEqual([["ask", "Ask me first"], ["auto", "Decide for me"], ["full", "Full access"]]);
+    expect(acts.value).toBe("ask");
+    acts.onChange("ask");
+    expect(patch).not.toHaveBeenCalled();
+    acts.onChange("auto");
+    expect(patch).toHaveBeenLastCalledWith({ approvalMode: "auto" });
+    acts.onChange("full");
+    expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "updateBot", botId: "scout", patch: { approvalMode: "full", applyToAllThreads: true } });
+    click(find(rendered, "data-panel-link", "approvals"));
+    expect(onOpen).toHaveBeenLastCalledWith("approvals");
+
+    fixture.derived.approvalMode = "full";
+    expect(details(makeBot()).html).toContain("Acts without checking");
+    fixture.derived.approvalMode = "edits";
+    const custom = details(makeBot());
+    expect(segment(custom, "data-approval-choice").value).toBe("edits");
+    expect(custom.html).not.toMatch(/data-approval-choice="\w+" aria-pressed="true"/);
+    expect(custom.html).toContain("A custom setting is in use.");
   });
 
   it("shows legacy Antigravity Auto as Ask without changing the saved mode", () => {
-    fixture.derived.engine = { ...fixture.derived.engine!, driverKind: "antigravityAgent" };
+    fixture.derived.engine = { driverKind: "antigravityAgent" };
     fixture.derived.approvalMode = "auto";
-    const rendered = panel(makeBot({ approvalMode: "auto" }));
-    expect(find(rendered, "data-approval-choice", "ask").props["aria-pressed"]).toBe(true);
-    expect(find(rendered, "data-approval-choice", "auto").props["aria-pressed"]).toBe(false);
-    expect(find(rendered, "data-approval-choice", "auto").props.disabled).toBe(true);
+    const rendered = details(makeBot({ approvalMode: "auto" }));
+    expect(segment(rendered, "data-approval-choice").value).toBe("ask");
+    expect(rendered.html).toMatch(/data-approval-choice="auto" aria-pressed="false" disabled=""/);
     expect(patch).not.toHaveBeenCalled();
   });
 
-  it("warns before Decide for me on this computer, as Permissions does", () => {
+  it("warns before Decide for me on this computer", () => {
     const bot = makeBot({ computer: "local" });
-    click(find(panel(bot), "data-approval-choice", "auto"));
+    segment(details(bot), "data-approval-choice").onChange("auto");
     expect(patch).not.toHaveBeenCalled();
-    const warning = panel(bot).nodes.find((node) => node.type === LocalComputerAutoWarning)!;
+    const warning = ofType(details(bot), LocalComputerAutoWarning)!;
     expect(warning.props.open).toBe(true);
     (warning.props.onConfirm as () => void)();
-    expect(fixture.dispatch).toHaveBeenLastCalledWith({
-      type: "updateBot", botId: "scout", patch: { approvalMode: "auto", acknowledgeLocalAuto: true },
-    });
+    expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "updateBot", botId: "scout", patch: { approvalMode: "auto", acknowledgeLocalAuto: true } });
   });
 
-  it("shows Full access, the default level, as its own choice and applies it to every thread", () => {
-    fixture.derived.approvalMode = "full";
-    const rendered = panel(makeBot());
-    expect(find(rendered, "data-approval-choice", "full").props["aria-pressed"]).toBe(true);
-    expect(find(rendered, "data-approval-choice", "ask").props["aria-pressed"]).toBe(false);
-    expect(rendered.html).toContain("Acts without checking");
-    expect(rendered.html).not.toContain("A custom setting is in use.");
-    fixture.derived.approvalMode = "ask";
-    click(find(panel(makeBot()), "data-approval-choice", "full"));
-    expect(fixture.dispatch).toHaveBeenLastCalledWith({
-      type: "updateBot", botId: "scout", patch: { approvalMode: "full", applyToAllThreads: true },
-    });
-    expect(patch).not.toHaveBeenCalled();
-  });
-
-  it("selects no choice and says so when another level is in use", () => {
-    fixture.derived.approvalMode = "edits";
-    const rendered = panel(makeBot());
-    for (const mode of ["ask", "auto", "full"]) expect(find(rendered, "data-approval-choice", mode).props["aria-pressed"]).toBe(false);
-    expect(rendered.html).toContain("A custom setting is in use.");
-    expect(patch).not.toHaveBeenCalled();
-  });
-
-  it("lists skills with the Skills section's on/off switch", () => {
-    const off = skill("summarise", false);
-    fixture.skills.skills = [skill("triage", true), off];
+  it("lists routines with a switch each, and creates, logs and opens schedules", () => {
+    const morning = routine();
+    const paused = routine({ id: "r2", name: "Weekly digest", enabled: false, nextRunAt: null });
+    const done = routine({ id: "r3", name: "One-off", enabled: false, nextRunAt: null, schedule: { type: "once", at: 1 } });
+    fixture.derived.botRoutines = [paused, done, morning];
     const bot = makeBot();
-    expect(panel(bot).html).not.toContain("summarise helper");
-    openTab(bot, "skills");
-    const rendered = panel(bot);
-    expect(rendered.html).toContain("triage");
-    expect(rendered.html).toContain("summarise helper");
-    click(find(rendered, "aria-label", "Use summarise"));
-    expect(fixture.skills.toggle).toHaveBeenCalledWith(off);
-    click(find(rendered, "data-simple-add-skill"));
-    expect(panelProps.onAddSkill).toHaveBeenCalled();
+    const rendered = details(bot);
+    expect(rendered.nodes.filter((node) => node.props["data-simple-routine"] !== undefined).map((node) => node.props["data-simple-routine"]))
+      .toEqual(["r1", "r3", "r2"]);
+    expect(rendered.html).toContain("Every weekday at");
+    expect(find(rendered, "aria-label", "Run Morning brief on its schedule").props.checked).toBe(true);
+    expect(has(rendered, "aria-label", "Run One-off on its schedule")).toBe(false);
+    click(find(rendered, "aria-label", "Run Morning brief on its schedule"));
+    expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "updateRoutine", routineId: "r1", patch: { enabled: false } });
+
+    click(find(rendered, "data-panel-action", "routine-logs"));
+    expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "showRoutines", section: "logs", botId: "scout" });
+    click(find(rendered, "data-panel-link", "schedules"));
+    expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "showRoutines", section: "schedule", view: "list", botId: "scout" });
+    click(find(rendered, "data-panel-action", "routines"));
+    expect(onOpen).toHaveBeenLastCalledWith("routines");
+
+    click(find(rendered, "data-panel-action", "new-routine"));
+    const editor = ofType(details(bot), RoutineEditor)!;
+    expect(editor.props).toMatchObject({ lockedBotId: "scout", routine: undefined });
   });
 
-  it("disables every skill switch until a pending toggle settles", async () => {
-    const first = skill("triage", true);
-    const second = skill("summarise", false);
-    fixture.skills.skills = [first, second];
-    let finish!: () => void;
-    const pending = new Promise<void>((resolve) => { finish = resolve; });
-    fixture.skills.toggle = vi.fn(async (selected) => {
-      fixture.skills.working = selected.name;
-      await pending;
-      fixture.skills.working = "";
-    });
-
-    openTab(makeBot(), "skills");
-    click(find(panel(makeBot()), "aria-label", "Use triage"));
-    const busy = panel(makeBot());
-    expect(find(busy, "aria-label", "Use triage").props.disabled).toBe(true);
-    expect(find(busy, "aria-label", "Use summarise").props.disabled).toBe(true);
-
-    finish();
-    await pending;
-    const settled = panel(makeBot());
-    expect(find(settled, "aria-label", "Use triage").props.disabled).toBe(false);
-    expect(find(settled, "aria-label", "Use summarise").props.disabled).toBe(false);
+  it("says how to add a routine when there is none", () => {
+    expect(details(makeBot()).html).toContain("Nothing scheduled yet. Ask Scout in chat, or create a schedule.");
   });
 
-  it("has a quiet line when there are no skills", () => {
-    openTab(makeBot(), "skills");
-    expect(panel(makeBot()).html).toContain("No skills yet.");
+  it("shows the line and its button under the model only while a thread runs on its own model", () => {
+    const opus = { instanceId: "claude", model: "claude-opus-5-5" };
+    const tasks = [
+      { threadId: "thread-scout", title: "Follows", createdAt: 1, modelSelection: opus, followsBotModel: true },
+      { threadId: "own", title: "Own", createdAt: 1, modelSelection: { instanceId: "codex", model: "gpt-5.6" }, followsBotModel: false },
+    ];
+    const { html } = details(makeBot({ tasks }));
+    expect(html).toContain("1 thread uses its own model.");
+    expect(html).toContain("Switch it too");
+    expect(ofType(details(makeBot({ tasks })), ThreadModelsLine)).toBeDefined();
+  });
+});
+
+describe("the Apps card", () => {
+  const card = (bot: Bot, onOpenAccess = vi.fn()) =>
+    capture(() => AppsCard({ bot, derived: derived(), apps: fixture.apps, onOpenAccess }));
+
+  it("gives each connected app a switch for this bot, and writes the same record as Access", () => {
+    fixture.apps = { phase: "ready", connectedSlugs: ["github", "gmail", "slack"], apps: [app("github", "write"), app("gmail", "write"), app("slack", "write")] };
+    const rendered = card(makeBot());
+    expect(rendered.html).toContain("github things");
+    click(find(rendered, "aria-label", "Scout can use Github"));
+    expect(patch).toHaveBeenLastCalledWith({ connectorScopes: { apps: { gmail: "write", slack: "write" } } });
+
+    fixture.apps = { phase: "ready", connectedSlugs: ["github", "gmail", "slack"], apps: [app("github", null), app("gmail", "read"), app("slack", "write")] };
+    const scoped = card(makeBot({ connectorScopes: { apps: { gmail: "read", slack: "write" } } }));
+    expect(find(scoped, "aria-label", "Scout can use Github").props.checked).toBe(false);
+    expect(scoped.html).toContain("Read only");
+    click(find(scoped, "aria-label", "Scout can use Github"));
+    expect(patch).toHaveBeenLastCalledWith({ connectorScopes: { apps: { gmail: "read", slack: "write", github: "write" } } });
   });
 
-  it("shows the Library empty state, and what the bot made when there is some", () => {
-    const empty = makeBot();
-    click(find(panel(empty), "data-simple-tab", "library"));
-    expect(panel(empty).html).toContain("Pages, files, and apps Scout makes show up here.");
+  it("turns all apps off or on with the bot's own switch, and holds the app switches while it is off", () => {
+    fixture.apps = { phase: "ready", connectedSlugs: ["gmail"], apps: [app("gmail", "write")] };
+    const rendered = card(makeBot());
+    const master = rendered.nodes.find((node) => node.props["data-panel-row"] === "apps")!;
+    expect(master.props.title).toBe("Let Scout use apps");
+    (master.props.onChange as () => void)();
+    expect(patch).toHaveBeenLastCalledWith({ composio: false });
 
+    fixture.derived.connectedAppsEnabled = false;
+    fixture.apps = { phase: "ready", connectedSlugs: ["gmail"], apps: [app("gmail", null)] };
+    expect(find(card(makeBot({ composio: false })), "aria-label", "Scout can use Gmail").props.disabled).toBe(true);
+    fixture.derived.canUseConnectedApps = false;
+    const cannot = card(makeBot({ composio: false }));
+    expect(cannot.nodes.find((node) => node.props["data-panel-row"] === "apps")!.props.disabled).toBe(true);
+    expect(cannot.html).toContain("The model Scout runs on can&#x27;t use apps.");
+  });
+
+  it("says what it knows about the list: checking, unreadable, or empty", () => {
+    fixture.apps = { phase: "loading", apps: [], connectedSlugs: [] };
+    expect(card(makeBot()).html).toContain("Checking…");
+    fixture.apps = { phase: "unknown", apps: [], connectedSlugs: [] };
+    expect(card(makeBot()).html).toContain("Couldn&#x27;t check your apps just now.");
+    fixture.apps = { phase: "ready", apps: [], connectedSlugs: [] };
+    expect(card(makeBot()).html).toContain("No apps connected yet.");
+  });
+
+  it("opens App access and tools, and the app catalog from Add app", () => {
+    const onOpenAccess = vi.fn();
+    const rendered = card(makeBot(), onOpenAccess);
+    click(find(rendered, "data-panel-link", "apps"));
+    expect(onOpenAccess).toHaveBeenCalled();
+    click(find(rendered, "data-panel-link", "add-app"));
+    expect((fixture.dispatch as ReturnType<typeof vi.fn>).mock.calls).toEqual([
+      [{ type: "toggleSettings", open: false }],
+      [{ type: "togglePlugins", open: true, surface: "apps" }],
+    ]);
+  });
+});
+
+describe("the browser logins", () => {
+  const logins = (bot: Bot, onOpenBrowser = vi.fn(), browserEnabled = true) =>
+    capture(() => BrowserLogins({ bot, browserEnabled, onOpenBrowser }));
+
+  it("lists the sites the bot's own browser is signed in to, and explains the browsers it cannot list", async () => {
+    const { SignedInSites } = await import("./SignedInSites");
+    expect(logins(makeBot()).nodes.some((node) => node.type === SignedInSites)).toBe(false);
+    fixture.ownerOrAdmin = true;
+    const own = logins(makeBot());
+    expect(ofType(own, SignedInSites)!.props).toMatchObject({ bare: true, target: { bot: "scout" }, sharedBy: ["Scout"], disabled: false });
+    expect(own.html).toContain("Sign in once in Scout&#x27;s browser and it stays signed in.");
+
+    fixture.storeState = {
+      ...fixture.storeState,
+      config: { browserProfiles: [{ id: "team", name: "Team" }] },
+      bots: [makeBot({ browserProfile: "team" }), makeBot({ id: "nova", name: "Nova", browserProfile: "team" })],
+    };
+    expect(ofType(logins(makeBot({ browserProfile: "team" })), SignedInSites)!.props.sharedBy).toEqual(["Scout", "Nova"]);
+    const temporary = logins(makeBot({ browserProfile: "guest" }));
+    expect(ofType(temporary, SignedInSites)).toBeUndefined();
+    expect(temporary.html).toContain("Temporary sessions keep logins only while this server is running");
+    const off = logins(makeBot(), vi.fn(), false);
+    expect(ofType(off, SignedInSites)).toBeUndefined();
+    expect(off.html).toContain("Scout&#x27;s browser is off.");
+  });
+
+  it("opens the bot's browser from Add login", () => {
+    const onOpenBrowser = vi.fn();
+    click(find(logins(makeBot(), onOpenBrowser), "data-panel-action", "add-login"));
+    expect(onOpenBrowser).toHaveBeenCalled();
+  });
+});
+
+describe("the Computer tab", () => {
+  const places = (rendered: { nodes: Node[] }) => rendered.nodes.filter((node) => node.props["data-place-choice"] !== undefined);
+  const placeOf = (rendered: { nodes: Node[] }, value: string) => find(rendered, "data-place-choice", value);
+
+  it("offers Auto, this computer and a Cloud computer, with the rarer places under More places", () => {
+    const rendered = computer(makeBot());
+    expect(rendered.html).toContain("Where Scout works");
+    expect(rendered.html).toContain("More places");
+    expect(rendered.html).toMatch(/data-place-choice="auto" aria-pressed="true"[^>]*>Auto</);
+    expect(rendered.html).toMatch(/data-place-choice="cloud" aria-pressed="false"[^>]*>Cloud computer</);
+    expect(places(rendered).map((node) => [node.props["data-place-choice"], node.props.children])).toEqual([
+      ["vm", "Local VM"], ["browser", "Browser only"], ["off", "Off"],
+    ]);
+    expect(rendered.html).toContain("Picks the right place for each task");
+  });
+
+  it("saves each place through the bot patch, and sends nothing for the place already chosen", () => {
+    const rendered = computer(makeBot());
+    segment(rendered, "data-place-choice").onChange("cloud");
+    expect(patch).toHaveBeenLastCalledWith({ computer: "cloud" });
+    click(placeOf(rendered, "vm"));
+    expect(patch).toHaveBeenLastCalledWith({ computer: "vm" });
+    click(placeOf(rendered, "browser"));
+    expect(patch).toHaveBeenLastCalledWith({ computer: "browser", browser: true });
+    click(placeOf(rendered, "off"));
+    expect(patch).toHaveBeenLastCalledWith({ computer: "off" });
+    segment(computer(makeBot({ computer: "cloud" })), "data-place-choice").onChange("auto");
+    expect(patch).toHaveBeenLastCalledWith({ computer: null });
+    patch.mockReset();
+    click(placeOf(computer(makeBot({ computer: "off" })), "off"));
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("holds a place the bot cannot use with the reason on it, and leaves out one never offered", () => {
+    fixture.places.vm = [true, false, "Not ready"];
+    const blocked = computer(makeBot());
+    expect(placeOf(blocked, "vm").props).toMatchObject({ disabled: true, title: "Not ready." });
+    fixture.places.vm = [false, false, "Not offered"];
+    fixture.places.local = [false, false, "Not offered"];
+    const rendered = computer(makeBot());
+    expect(places(rendered).map((node) => node.props["data-place-choice"])).toEqual(["browser", "off"]);
+    expect(rendered.html).not.toContain('data-place-choice="local"');
+  });
+
+  it("warns before this computer for a bot that decides alone", () => {
+    fixture.derived.approvalMode = "auto";
+    const bot = makeBot();
+    segment(computer(bot), "data-place-choice").onChange("local");
+    expect(patch).not.toHaveBeenCalled();
+    const warning = ofType(computer(bot), LocalComputerAutoWarning)!;
+    expect(warning.props.open).toBe(true);
+    (warning.props.onConfirm as () => void)();
+    expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "updateBot", botId: "scout", patch: { computer: "local", acknowledgeLocalAuto: true } });
+  });
+
+  it("leads to the browser and folder pages, and opens the full view on a tab", () => {
+    const rendered = computer(makeBot());
+    click(find(rendered, "data-panel-page", "browser"));
+    expect(onOpen).toHaveBeenLastCalledWith("browser");
+    click(find(rendered, "data-panel-page", "logins"));
+    expect(onOpen).toHaveBeenLastCalledWith("browser");
+    click(find(rendered, "data-panel-page", "folder"));
+    expect(onOpen).toHaveBeenLastCalledWith("folder");
+    expect(has(rendered, "data-panel-page", "android")).toBe(false);
+
+    const setItem = vi.fn();
+    vi.stubGlobal("localStorage", { getItem: () => null, setItem });
+    click(find(rendered, "data-panel-row", "data"));
+    expect(setItem).toHaveBeenLastCalledWith("omb-computer-panel-view:scout", "data");
+    expect((fixture.dispatch as ReturnType<typeof vi.fn>).mock.calls.slice(-2)).toEqual([
+      [{ type: "toggleSettings", open: false }],
+      [{ type: "toggleComputer", open: true }],
+    ]);
+    click(find(rendered, "data-panel-action", "open-computer"));
+    expect(setItem).toHaveBeenLastCalledWith("omb-computer-panel-view:scout", "computer");
+    vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
+  });
+});
+
+describe("the Library tab", () => {
+  it("filters between memories, files, pages and skills", () => {
+    const bot = makeBot();
+    const all = library(bot);
+    for (const label of ["Memories", "Files", "Pages and apps", "Skills"]) expect(all.html).toContain(`>${label}`);
+    click(find(all, "data-library-filter", "skills"));
+    const skills = library(bot);
+    expect(find(skills, "data-library-filter", "skills").props["aria-pressed"]).toBe(true);
+    expect(skills.html).not.toContain('data-panel-card="memories"');
+    expect(skills.html).toContain("No skills yet.");
+  });
+
+  it("shows what the bot made, splitting pages from files, and jumps to the message", () => {
     const message = {
       id: "m1", role: "bot", kind: "text", at: Date.UTC(2026, 8, 30), text: "Done",
-      attachments: [{ path: "/tmp/chart.png", kind: "image" }, { path: "/tmp/report.pdf", kind: "file", name: "report.pdf" }],
+      attachments: [{ path: "/tmp/chart.png", kind: "image" }, { path: "/tmp/report.pdf", kind: "file", name: "report.pdf" }, { path: "/tmp/site.html", kind: "file", name: "site.html" }],
     } as Message;
     const made = makeBot({ messages: [message] });
-    expect(botLibraryItems(made).map((item) => item.name)).toEqual(["chart.png", "report.pdf"]);
-    const rendered = panel(made);
-    expect(rendered.html).toContain("report.pdf");
+    expect(botLibraryItems(made).map((item) => item.name)).toEqual(["chart.png", "report.pdf", "site.html"]);
+    const rendered = library(made);
+    expect(rendered.html).toContain("Files · 2");
+    expect(rendered.html).toContain("site.html");
     click(find(rendered, "data-library-item", "m1"));
     expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "focusMessage", threadId: "thread-scout", messageId: "m1" });
+    expect(library(makeBot()).html).toContain("Pages and apps Scout makes in chat show up here.");
   });
 
   it("keeps the latest artifact reply and date while preserving each reply's file order", () => {
@@ -442,333 +863,226 @@ describe("the bot settings panel in Simple mode", () => {
     ]);
   });
 
-  it("puts Thinking on its own row with the picker's plain steps, and hides the picker's own copy", () => {
-    fixture.derived.engine = { driverKind: "claudeAgent", capabilities: { effortLevels: ["low", "medium", "high", "max"] } };
-    const bot = makeBot({ modelSelection: { instanceId: "claude", model: "claude-opus-5-5", effort: "medium" } });
-    const rendered = panel(bot);
-    const steps = rendered.nodes.filter((node) => node.props["data-thinking-choice"] !== undefined);
-    expect(steps.map((node) => [node.props["data-thinking-choice"], node.props.children, node.props["aria-pressed"]])).toEqual([
-      ["low", "Quick", false], ["medium", "Balanced", true], ["high", "Deep", false], ["max", "Max", false],
+  it("reads memories as the bullet lines of MEMORY.md", () => {
+    expect(memoryEntries("# Notes\n- Omkar uses Resolve Studio\n* Likes short replies\nplain line\n  - nested one")).toEqual([
+      "Omkar uses Resolve Studio", "Likes short replies", "nested one",
     ]);
-    expect(effortElsewhere(rendered)).toBe(true);
-    const at = (text: string) => rendered.html.indexOf(text);
-    expect(at("Default model")).toBeLessThan(at("Thinking"));
-    expect(at("Thinking")).toBeLessThan(at("Before Scout acts"));
-
-    expect(rendered.html).toContain("More thinking is slower and more careful.");
-    expect(panel(makeBot()).html).toContain("Left to the model. Pick a step to set it.");
-
-    click(find(rendered, "data-thinking-choice", "high"));
-    expect(fixture.dispatch).toHaveBeenLastCalledWith({
-      type: "setModel", botId: "scout", selection: { instanceId: "claude", model: "claude-opus-5-5", effort: "high" },
-    });
-    (fixture.dispatch as ReturnType<typeof vi.fn>).mockClear();
-    click(find(rendered, "data-thinking-choice", "medium"));
-    expect(fixture.dispatch).not.toHaveBeenCalled();
+    expect(library(makeBot({ memoryEnabled: false })).html).toContain("Memory is off for Scout.");
   });
 
-  it("holds Thinking while a turn runs, and has no row where the engine has no steps or keeps its own variants", () => {
-    fixture.derived.engine = { driverKind: "claudeAgent", capabilities: { effortLevels: ["low", "high"] } };
-    const busy = panel(makeBot({ busy: true }));
-    expect(find(busy, "data-thinking-choice", "high").props.disabled).toBe(true);
-    click(find(busy, "data-thinking-choice", "high"));
-    expect(fixture.dispatch).not.toHaveBeenCalled();
-
-    fixture.derived.engine = { driverKind: "claudeAgent" };
-    const none = panel(makeBot());
-    expect(none.html).not.toContain("data-simple-row=\"thinking\"");
-    expect(effortElsewhere(none)).toBe(false);
-
-    fixture.derived.engine = { driverKind: "acp", capabilities: { effortLevels: ["low", "high"], modelVariants: true } };
-    const variants = panel(makeBot());
-    expect(variants.html).not.toContain("data-simple-row=\"thinking\"");
-    expect(effortElsewhere(variants)).toBe(false);
-  });
-
-  const places = (rendered: { nodes: Node[] }) => rendered.nodes.filter((node) => node.props["data-place-choice"] !== undefined);
-  const placeOf = (rendered: { nodes: Node[] }, value: string) => find(rendered, "data-place-choice", value);
-
-  it("offers three places on the row: Auto, this computer and a cloud computer", () => {
-    const rendered = panel(makeBot());
-    expect(rendered.html).toContain("Where Scout works");
-    expect(places(rendered).map((node) => [node.props["data-place-choice"], node.props["aria-pressed"]])).toEqual([
-      ["auto", true], ["local", false], ["cloud", false],
-    ]);
-    expect(rendered.html).toContain("Picks the right place for each task");
-    expect(placeOf(rendered, "cloud").props.children).toBe("Cloud computer");
-    expect(placeOf(rendered, "auto").props.children).toBe("Auto");
-
-    click(placeOf(rendered, "cloud"));
-    expect(patch).toHaveBeenLastCalledWith({ computer: "cloud" });
-    click(placeOf(rendered, "local"));
-    expect(patch).toHaveBeenLastCalledWith({ computer: "local" });
-    click(placeOf(panel(makeBot({ computer: "cloud" })), "auto"));
-    expect(patch).toHaveBeenLastCalledWith({ computer: null });
-  });
-
-  it("sends nothing for the place already chosen", () => {
-    click(placeOf(panel(makeBot()), "auto"));
-    click(placeOf(panel(makeBot({ computer: "local" })), "local"));
-    expect(patch).not.toHaveBeenCalled();
-  });
-
-  it("holds a place the bot cannot use with the reason on it, and leaves out one never offered here", () => {
-    fixture.places.local = [true, false, "Not ready"];
-    const blocked = panel(makeBot());
-    expect(placeOf(blocked, "local").props.disabled).toBe(true);
-    expect(placeOf(blocked, "local").props.title).toBe("Not ready.");
-    expect(placeOf(blocked, "cloud").props.title).toBeUndefined();
-
-    fixture.places.local = [false, false, "Not offered"];
-    expect(places(panel(makeBot())).map((node) => node.props["data-place-choice"])).toEqual(["auto", "cloud"]);
-  });
-
-  it("names a rarer place in effect on the row, with none of the three pressed", () => {
-    const rendered = panel(makeBot({ computer: "browser" }));
-    expect(places(rendered).every((node) => node.props["aria-pressed"] === false)).toBe(true);
-    expect(rendered.html).toContain("Browser: ");
-    expect(panel(makeBot({ computer: "cloud" })).html).not.toContain("Cloud computer: ");
-  });
-
-  it("warns before this computer for a bot that decides alone, as the Computer panel does", () => {
-    fixture.derived.approvalMode = "auto";
-    const bot = makeBot({ approvalMode: "auto" });
-    click(placeOf(panel(bot), "local"));
-    expect(patch).not.toHaveBeenCalled();
-    const warning = panel(bot).nodes.find((node) => node.type === LocalComputerAutoWarning)!;
-    expect(warning.props.open).toBe(true);
-    (warning.props.onConfirm as () => void)();
-    expect(fixture.dispatch).toHaveBeenLastCalledWith({
-      type: "updateBot", botId: "scout", patch: { computer: "local", acknowledgeLocalAuto: true },
-    });
-    expect(panel(bot).nodes.find((node) => node.type === LocalComputerAutoWarning)!.props.open).toBe(false);
-
-    fixture.derived.approvalMode = "ask";
-    click(placeOf(panel(makeBot()), "local"));
-    expect(patch).toHaveBeenLastCalledWith({ computer: "local" });
-  });
-
-  it("lists the apps the bot may use on the Uses row, and leads to Vault", () => {
-    const bot = makeBot();
-    expect(panel(bot).html).toContain("No apps yet.");
-    fixture.apps = { phase: "loading", apps: [], connectedSlugs: [] };
-    expect(panel(bot).html).toContain("Checking…");
-
-    fixture.apps = {
-      phase: "ready", connectedSlugs: ["a", "b", "c", "d", "e", "f"],
-      apps: [app("a", "write"), app("b", "read"), app("c", null), app("d", "write"), app("e", "write"), app("f", "write")],
-    };
-    const rendered = panel(bot);
-    expect([...rendered.html.matchAll(/data-simple-uses="(\w+)"/g)].map((match) => match[1])).toEqual(["a", "b", "d", "e"]);
-    expect(rendered.html).toContain("+1 more");
-
-    click(find(rendered, "data-simple-open-tab", "vault"));
-    const vault = panel(bot).nodes.find((node) => node.type === VaultTab)!;
-    expect(vault.props.apps).toBe(fixture.apps);
-    expect(vault.props.bot).toBe(bot);
-    const setItem = vi.fn();
-    vi.stubGlobal("localStorage", { getItem: () => null, setItem });
-    (vault.props.onOpenBrowser as () => void)();
-    expect(setItem).toHaveBeenCalledWith("omb-computer-panel-view:scout", "browser");
-    expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "toggleComputer", open: true });
-    vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
-  });
-
-  it("marks the bot's own number and inbox as on their way", () => {
-    const { html } = panel(makeBot());
-    expect(html).toContain("Texts and calls. No number yet.");
-    expect(html).toContain("Its own inbox. No inbox yet.");
-    expect(html.match(/>Soon</g)).toHaveLength(2);
-  });
-
-  it("lists the bot's routines on Details with an on/off switch each", () => {
-    const morning = routine();
-    const paused = routine({ id: "r2", name: "Weekly digest", enabled: false, nextRunAt: null });
-    const done = routine({ id: "r3", name: "One-off", enabled: false, nextRunAt: null, schedule: { type: "once", at: 1 } });
-    fixture.derived.botRoutines = [paused, done, morning];
-    const rendered = panel(makeBot());
-    expect(rendered.nodes.filter((node) => node.props["data-simple-routine"] !== undefined).map((node) => node.props["data-simple-routine"]))
-      .toEqual(["r1", "r3", "r2"]);
-    expect(rendered.html).toContain("Every weekday at");
-    expect(rendered.html).toContain("Paused");
-    expect(find(rendered, "aria-label", "Run Morning brief on its schedule").props.checked).toBe(true);
-    expect(find(rendered, "aria-label", "Run Weekly digest on its schedule").props.checked).toBe(false);
-    expect(rendered.nodes.some((node) => node.props["aria-label"] === "Run One-off on its schedule")).toBe(false);
-
-    click(find(rendered, "aria-label", "Run Morning brief on its schedule"));
-    expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "updateRoutine", routineId: "r1", patch: { enabled: false } });
-    click(find(rendered, "aria-label", "Run Weekly digest on its schedule"));
-    expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "updateRoutine", routineId: "r2", patch: { enabled: true } });
-  });
-
-  it("says how to add a routine when there is none, and opens the Routines tab on the full list", () => {
-    const bot = makeBot();
-    const rendered = panel(bot);
-    expect(rendered.html).toContain("Nothing scheduled yet. Ask Scout in chat, or create a schedule.");
-    expect(rendered.nodes.some((node) => node.type === RoutinesSection)).toBe(false);
-    click(find(rendered, "data-simple-open-tab", "routines"));
-    const section = panel(bot).nodes.find((node) => node.type === RoutinesSection)!;
-    expect(section.props.bot).toBe(bot);
-    expect(section.props.routines).toBe(fixture.derived.botRoutines);
-  });
-
-  it("opens Memory in its own tab and keeps it mounted afterwards, so a draft survives", () => {
-    const bot = makeBot();
-    expect(panel(bot).nodes.some((node) => node.type === MemorySection)).toBe(false);
-    openTab(bot, "memory");
-    const memory = panel(bot).nodes.find((node) => node.type === MemorySection)!;
-    expect(memory.props.active).toBe(true);
-    (memory.props.onToggle as (enabled: boolean) => void)(false);
-    expect(patch).toHaveBeenLastCalledWith({ memoryEnabled: false });
-
-    openTab(bot, "details");
-    const hidden = panel(bot);
-    expect(hidden.nodes.find((node) => node.type === MemorySection)!.props.active).toBe(false);
-    expect(hidden.nodes.find((node) => node.props.role === "tabpanel" && node.props.hidden === true)).toBeDefined();
-  });
-
-  it("says where the phone apps are, and offers Slack only where the organization has it", () => {
-    const bot = makeBot();
-    const rendered = panel(bot);
-    expect(rendered.html).toContain("Where to find Scout");
-    expect(rendered.nodes.some((node) => node.props["data-simple-find"] === "slack")).toBe(false);
-    expect(rendered.nodes.find((node) => node.type === PhoneAppDialog)!.props.open).toBe(false);
-    click(find(rendered, "data-simple-find", "android"));
-    expect(panel(bot).nodes.find((node) => node.type === PhoneAppDialog)!.props.open).toBe(true);
-
-    const withSlack = capture(() => SimpleBotPanel({ bot, derived: fixture.derived as never, slackUrl: "https://admin.example/slack", ...panelProps }));
-    expect(find(withSlack, "data-simple-find", "slack").props.href).toBe("https://admin.example/slack");
+  it("switches skills with the Skills section's toggle, holds them while one settles, and manages them", () => {
+    const off = skill("summarise", false);
+    fixture.skills.skills = [skill("triage", true), off];
+    const rendered = library(makeBot());
+    expect(rendered.html).toContain("Skills · 2");
+    const row = rendered.nodes.find((node) => node.props["data-panel-row"] === "skill:summarise")!;
+    expect(row.props).toMatchObject({ checked: false, label: "Use summarise", hint: "summarise helper", disabled: false });
+    (row.props.onChange as () => void)();
+    expect(fixture.skills.toggle).toHaveBeenCalledWith(off);
+    fixture.skills.working = "triage";
+    expect(library(makeBot()).nodes.find((node) => node.props["data-panel-row"] === "skill:summarise")!.props.disabled).toBe(true);
+    click(find(rendered, "data-panel-action", "skills"));
+    expect(onOpen).toHaveBeenLastCalledWith("skills");
+    click(find(rendered, "data-panel-link", "skills"));
+    expect(onOpen).toHaveBeenLastCalledWith("skills");
+    click(find(rendered, "data-panel-action", "memory"));
+    expect(onOpen).toHaveBeenLastCalledWith("memory");
   });
 });
 
-describe("the Vault tab", () => {
-  const vault = (bot: Bot, onOpenBrowser = vi.fn()) =>
-    capture(() => VaultTab({ bot, derived: fixture.derived as never, apps: fixture.apps, onOpenBrowser }));
+describe("the Settings tab", () => {
+  const row = (rendered: { nodes: Node[] }, id: string) => find(rendered, "data-panel-row", id);
 
-  it("gives each connected app a switch for this bot, and writes the same record as Access", () => {
-    fixture.apps = { phase: "ready", connectedSlugs: ["github", "gmail", "slack"], apps: [app("github", "write"), app("gmail", "write"), app("slack", "write")] };
-    const rendered = vault(makeBot());
-    expect(rendered.html).toContain("What Scout is allowed to use.");
-    expect(rendered.html).toContain("github things");
-    click(find(rendered, "aria-label", "Scout can use Github"));
-    expect(patch).toHaveBeenLastCalledWith({ connectorScopes: { apps: { gmail: "write", slack: "write" } } });
-
-    fixture.apps = { phase: "ready", connectedSlugs: ["github", "gmail", "slack"], apps: [app("github", null), app("gmail", "read"), app("slack", "write")] };
-    const scoped = vault(makeBot({ connectorScopes: { apps: { gmail: "read", slack: "write" } } }));
-    expect(find(scoped, "aria-label", "Scout can use Github").props.checked).toBe(false);
-    expect(scoped.html).toContain("Read only");
-    click(find(scoped, "aria-label", "Scout can use Github"));
-    expect(patch).toHaveBeenLastCalledWith({ connectorScopes: { apps: { gmail: "read", slack: "write", github: "write" } } });
+  it("groups Profile, Teamwork, Tools, Sharing, Activity, the bot's own card and Advanced mode", () => {
+    const { html } = settings(makeBot());
+    const at = (text: string) => html.indexOf(text);
+    const order = ["Profile", "Teamwork", "Tools", "Sharing", "Activity", ">Scout<", "Advanced mode"].map(at);
+    expect(order.every((index) => index > -1)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    for (const text of ["What Scout does", "Voice", "Notifications", "Team", "Chief of Staff", "Ask me before contacting other bots",
+      "MCP servers", "Tool selection", "Webhooks", "Always allowed", "Get it on your phone", "Phone and email", "Overview",
+      "What Scout sees", "History", "Usage for all bots", "Pin to top", "Duplicate", "Copy conversation ID",
+      "Mark all conversations as read", "Archive Scout", "Delete Scout"]) expect(html).toContain(text);
+    expect(html).not.toContain("Who can see it");
+    expect(html).not.toContain(">Slack<");
+    expect(html.match(/>Soon</g)).toHaveLength(1);
   });
 
-  it("turns all apps off or on with the bot's own switch, and holds the app switches while it is off", () => {
-    fixture.apps = { phase: "ready", connectedSlugs: ["gmail"], apps: [app("gmail", "write")] };
-    click(find(vault(makeBot()), "aria-label", "Let Scout use apps"));
-    expect(patch).toHaveBeenLastCalledWith({ composio: false });
-
-    fixture.derived.connectedAppsEnabled = false;
-    fixture.apps = { phase: "ready", connectedSlugs: ["gmail"], apps: [app("gmail", null)] };
-    const off = vault(makeBot({ composio: false }));
-    expect(find(off, "aria-label", "Scout can use Gmail").props.disabled).toBe(true);
-    click(find(off, "aria-label", "Let Scout use apps"));
-    expect(patch).toHaveBeenLastCalledWith({ composio: true });
-
-    fixture.derived.canUseConnectedApps = false;
-    const cannot = vault(makeBot({ composio: false }));
-    expect(find(cannot, "aria-label", "Let Scout use apps").props.disabled).toBe(true);
-    expect(cannot.html).toContain("The model Scout runs on can&#x27;t use apps.");
+  it("opens each page from its row", () => {
+    const rendered = settings(makeBot());
+    for (const page of ["blurb", "voice", "team", "mcp", "tools", "webhooks", "always", "overview", "prompt", "history"]) {
+      click(find(rendered, "data-panel-page", page));
+      expect(onOpen).toHaveBeenLastCalledWith(page);
+    }
+    expect(has(rendered, "data-panel-page", "chiefteams")).toBe(false);
+    expect(has(settings(makeBot({ chiefOfStaff: true })), "data-panel-page", "chiefteams")).toBe(true);
   });
 
-  it("says what it knows about the list: checking, unreadable, or empty", () => {
-    fixture.apps = { phase: "loading", apps: [], connectedSlugs: [] };
-    expect(vault(makeBot()).html).toContain("Checking…");
-    fixture.apps = { phase: "unknown", apps: [], connectedSlugs: [] };
-    expect(vault(makeBot()).html).toContain("Couldn&#x27;t check your apps just now.");
-    fixture.apps = { phase: "ready", apps: [], connectedSlugs: [] };
-    expect(vault(makeBot()).html).toContain("No apps connected yet.");
-  });
-
-  it("opens the app catalog from Add app, and the bot's browser from Add login", () => {
-    const onOpenBrowser = vi.fn();
-    const rendered = vault(makeBot(), onOpenBrowser);
-    click(find(rendered, "data-simple-add-app"));
-    expect((fixture.dispatch as ReturnType<typeof vi.fn>).mock.calls).toEqual([
-      [{ type: "toggleSettings", open: false }],
-      [{ type: "togglePlugins", open: true, surface: "apps" }],
-    ]);
-    click(find(rendered, "data-simple-add-login"));
-    expect(onOpenBrowser).toHaveBeenCalled();
-  });
-
-  it("lists the sites the bot's own browser is signed in to, and explains the browsers it cannot list", async () => {
-    const { SignedInSites } = await import("./SignedInSites");
-    expect(vault(makeBot()).nodes.some((node) => node.type === SignedInSites)).toBe(false);
+  it("shows Slack and Who can see it only where they apply", () => {
+    expect(has(settings(makeBot(), "", "https://admin.example/slack"), "data-panel-page", "slack")).toBe(true);
     fixture.ownerOrAdmin = true;
-    const own = vault(makeBot());
-    const sites = own.nodes.find((node) => node.type === SignedInSites)!;
-    expect(sites.props).toMatchObject({ bare: true, target: { bot: "scout" }, sharedBy: ["Scout"], disabled: false });
-    expect(own.html).toContain("Sign in once in Scout&#x27;s browser and it stays signed in.");
-
-    fixture.storeState = {
-      ...fixture.storeState,
-      config: { browserProfiles: [{ id: "team", name: "Team" }] },
-      bots: [makeBot({ browserProfile: "team" }), makeBot({ id: "nova", name: "Nova", browserProfile: "team" })],
-    };
-    const shared = vault(makeBot({ browserProfile: "team" }));
-    expect(shared.nodes.find((node) => node.type === SignedInSites)!.props.sharedBy).toEqual(["Scout", "Nova"]);
-
-    const temporary = vault(makeBot({ browserProfile: "guest" }));
-    expect(temporary.nodes.some((node) => node.type === SignedInSites)).toBe(false);
-    expect(temporary.html).toContain("Temporary sessions keep logins only while this server is running");
-
-    fixture.derived.browserEnabled = false;
-    const off = vault(makeBot());
-    expect(off.nodes.some((node) => node.type === SignedInSites)).toBe(false);
-    expect(off.html).toContain("Scout&#x27;s browser is off.");
+    const visibility = settings(makeBot());
+    expect(find(visibility, "data-panel-page", "visibility").props.value).toBe("Everyone");
   });
 
-  it("uses the shared switch for every row", () => {
-    fixture.apps = { phase: "ready", connectedSlugs: ["gmail"], apps: [app("gmail", "write")] };
-    expect(vault(makeBot()).nodes.filter((node) => node.type === Switch)).toHaveLength(2);
+  it("switches notifications, Chief of Staff, peer checks and Advanced mode", () => {
+    const rendered = settings(makeBot());
+    (row(rendered, "notify").props.onChange as () => void)();
+    expect(patch).toHaveBeenLastCalledWith({ notifications: false });
+    (row(rendered, "chief").props.onChange as () => void)();
+    expect(patch).toHaveBeenLastCalledWith({ chiefOfStaff: true });
+    (row(rendered, "peers").props.onChange as () => void)();
+    expect(patch).toHaveBeenLastCalledWith({ approvePeerComms: true });
+    (row(rendered, "advanced").props.onChange as () => void)();
+    expect(fixture.setAdvanced).toHaveBeenCalledWith(true);
+
+    fixture.derived.canCoordinate = false;
+    const cannot = settings(makeBot());
+    expect(row(cannot, "chief").props.disabled).toBe(true);
+    expect(row(cannot, "peers").props.disabled).toBe(true);
+  });
+
+  it("runs the sidebar's bot actions with the same confirmations", () => {
+    const rendered = settings(makeBot());
+    (row(rendered, "pin").props.onChange as () => void)();
+    expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "updateBot", botId: "scout", patch: { pinned: true } });
+    click(row(rendered, "duplicate"));
+    expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "duplicateBot", botId: "scout" });
+    expect(row(rendered, "read").props.disabled).toBe(true);
+    expect(row(rendered, "archive").props.disabled).toBe(true);
+    expect(row(rendered, "archive").props.hint).toBe("Keep at least one active bot");
+
+    click(row(rendered, "delete"));
+    const confirm = ofType(settings(makeBot()), ConfirmDialog)!;
+    expect(confirm.props).toMatchObject({ open: true, title: "Delete Scout?", confirmLabel: "Delete", tone: "danger" });
+    (confirm.props.onConfirm as () => void)();
+    expect((fixture.dispatch as ReturnType<typeof vi.fn>).mock.calls.slice(-2)).toEqual([
+      [{ type: "toggleSettings", open: false }],
+      [{ type: "deleteBot", botId: "scout" }],
+    ]);
+
+    fixture.storeState = { ...fixture.storeState, bots: [makeBot(), makeBot({ id: "nova", name: "Nova" })] };
+    const two = settings(makeBot({ unread: true }));
+    expect(row(two, "read").props.disabled).toBe(false);
+    click(row(two, "archive"));
+    expect(ofType(settings(makeBot()), ConfirmDialog)!.props).toMatchObject({ open: true, title: "Archive Scout?", tone: "neutral" });
+  });
+
+  it("opens the phone apps from Get it on your phone", () => {
+    const rendered = settings(makeBot());
+    expect(ofType(rendered, PhoneAppDialog)!.props.open).toBe(false);
+    click(row(rendered, "phoneapp"));
+    expect(ofType(settings(makeBot()), PhoneAppDialog)!.props.open).toBe(true);
+  });
+
+  it("searches pages, rows and other tabs, and says where each lives", () => {
+    const voice = settings(makeBot(), "elevenlabs");
+    expect(voice.html).toContain("1 result");
+    const hit = find(voice, "data-panel-page", "voice");
+    expect(hit.props).toMatchObject({ title: "Voice", hint: "Settings › Profile" });
+    click(hit);
+    expect(onOpen).toHaveBeenLastCalledWith("voice");
+
+    const model = settings(makeBot(), "fallback");
+    expect(find(model, "data-panel-page", "model").props.hint).toBe("Details › Model");
+
+    const pin = settings(makeBot(), "pin");
+    expect(has(pin, "data-panel-row", "pin")).toBe(true);
+    expect(has(pin, "data-panel-row", "notify")).toBe(false);
+
+    const thinking = settings(makeBot(), "thinking");
+    const jump = find(thinking, "data-panel-jump", "thinking");
+    expect(jump.props.hint).toBe("Details › Model");
+    click(jump);
+    expect(onGo).toHaveBeenLastCalledWith({ tab: "details", anchor: "model" });
+
+    expect(settings(makeBot(), "zzz").html).toContain("Nothing matches “zzz”.");
+    expect(has(settings(makeBot(), "slack"), "data-panel-page", "slack")).toBe(false);
+  });
+});
+
+describe("the drill-in pages", () => {
+  const overview = { overview: null, overviewError: false, prompt: null, promptError: false };
+  const history = {
+    rows: null, error: false, revision: null, rollingBack: false, rollbackTarget: null,
+    setRollbackTarget: vi.fn(), rollback: vi.fn(), requestRollback: vi.fn(),
+  };
+  const body = (page: Parameters<typeof PageBody>[0]["page"], bot = makeBot(), extra: Partial<Parameters<typeof PageBody>[0]> = {}) =>
+    capture(() => PageBody({ page, bot, derived: derived(), slackUrl: null, overview, history, onOpen, onGo, ...extra }) as ReactNode);
+
+  it("renders the full sections, or the part a page needs", () => {
+    expect(ofType(body("model"), ModelSection)!.props.bot).toMatchObject({ id: "scout" });
+    expect(ofType(body("approvals"), PermissionsSection)!.props.parts).toEqual(["approval", "outbound"]);
+    for (const [page, parts] of [["apps", ["apps"]], ["mcp", ["mcp"]], ["tools", ["tools"]], ["webhooks", ["webhooks"]], ["always", ["always"]]] as const) {
+      expect(ofType(body(page), AccessSection)!.props.parts).toEqual(parts);
+    }
+    expect(ofType(body("routines"), RoutinesSection)!.props.routines).toBe(fixture.derived.botRoutines);
+  });
+
+  it("follows the Overview's links to the matching page", () => {
+    const section = ofType(body("overview"), OverviewSection)!;
+    (section.props.onOpen as (section: string) => void)("soul");
+    expect(onOpen).toHaveBeenLastCalledWith("instructions");
+    (section.props.onOpen as (section: string) => void)("access");
+    expect(onGo).toHaveBeenLastCalledWith({ tab: "computer" });
+  });
+
+  it("lists the setup ideas that remain and starts setup with the bot", () => {
+    const context = { bot: makeBot(), derived: derived(), slackUrl: null, history, onOpen, onGo, overview: { ...overview, overview: overviewWith([
+      { id: "folder", label: "Choose a working folder", done: false, section: "access" },
+      { id: "identity", label: "Name it", done: true },
+    ]) } };
+    const rendered = capture(() => SetupPage(context));
+    expect(rendered.html).toContain("Choose a working folder");
+    expect(rendered.html).not.toContain("Name it");
+    click(find(rendered, "data-panel-setup", "folder"));
+    expect(onOpen).toHaveBeenLastCalledWith("folder");
+    click(find(rendered, "data-panel-action", "setup"));
+    expect((fixture.dispatch as ReturnType<typeof vi.fn>).mock.calls.slice(-2)).toEqual([
+      [{ type: "toggleSettings", open: false }],
+      [{ type: "send", botId: "scout", text: "/setup", threadId: "thread-scout" }],
+    ]);
+  });
+
+  it("moves the bot to a team, a new team, or back to General", () => {
+    fixture.storeState = { ...fixture.storeState, sections: ["Research"], bots: [makeBot()], groups: [] };
+    const team = capture(() => PageBody({ page: "team", bot: makeBot(), derived: derived(), slackUrl: null, overview, history, onOpen, onGo }) as ReactNode);
+    expect(team.html).toContain("General");
+    expect(team.html).toContain("Research");
+    expect(team.html).toContain('aria-pressed="true"');
   });
 });
 
 describe("the bot settings dialog", () => {
-  it("opens on the Simple panel and reaches every section through All settings", () => {
+  it("opens on the Simple panel without the accordion, and hands it the deep-linked section", () => {
     const bot = makeBot();
     const simple = dialog(bot);
-    expect(isSimple(simple)).toBe(true);
-    expect(simple.html).not.toContain("Search settings");
+    const shell = ofType(simple, BotPanel)!;
+    expect(shell.props.bot).toBe(bot);
+    expect(shell.props.linkedSection).toBeNull();
+    expect(simple.html).not.toContain("data-bot-settings-section");
 
-    const panelNode = simple.nodes.find((node) => node.type === SimpleBotPanel)!;
-    (panelNode.props.onAllSettings as () => void)();
-    const full = dialog(bot);
-    expect(isSimple(full)).toBe(false);
-    expect(full.html).toContain("Search settings");
-    for (const label of ["Overview", "Identity", "Soul", "Skills", "Memory", "Routines", "Access", "Model", "Permissions", "Voice &amp; alerts", "History", "Usage"]) {
-      expect(full.html).toContain(`>${label}</span>`);
-    }
-
-    click(find(full, "data-bot-settings-back"));
-    expect(isSimple(dialog(bot))).toBe(true);
-  });
-
-  it("opens the full Skills row from Add skill", () => {
-    const bot = makeBot();
-    const panelNode = dialog(bot).nodes.find((node) => node.type === SimpleBotPanel)!;
-    (panelNode.props.onAddSkill as () => void)();
-    expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "toggleSettings", open: true, section: "skills" });
-    expect(isSimple(dialog(bot))).toBe(false);
-  });
-
-  it("follows a deep link to a section the Simple panel does not cover", () => {
+    fresh();
     fixture.storeState = { settingsOpen: true, botSettingsSection: "model", botSettingsExpandAccordion: true };
-    expect(isSimple(dialog(makeBot()))).toBe(false);
+    expect(ofType(dialog(bot), BotPanel)!.props.linkedSection).toBe("model");
   });
 
-  it("keeps Edit profile on the Simple panel", () => {
-    fixture.storeState = { settingsOpen: true, botSettingsSection: "identity", botSettingsExpandAccordion: true };
-    expect(isSimple(dialog(makeBot()))).toBe(true);
+  it("a stored section never moves the Simple panel", () => {
+    fixture.storeState = {
+      settingsOpen: true, botSettingsSection: "model", botSettingsExpandAccordion: true,
+      botSettingsSectionStored: true, botSettingsExpandRemembered: true,
+    };
+    expect(ofType(dialog(makeBot()), BotPanel)!.props.linkedSection).toBeNull();
+  });
+
+  it("leaves Advanced mode on the full accordion", () => {
+    fixture.advanced = true;
+    const rendered = dialog(makeBot());
+    expect(ofType(rendered, BotPanel)).toBeUndefined();
+    expect(rendered.html).toContain("Search settings");
+    for (const label of ["Overview", "Identity", "Soul", "Skills", "Memory", "Routines", "Access", "Model", "Permissions", "Voice &amp; alerts", "History", "Usage"]) {
+      expect(rendered.html).toContain(`>${label}</span>`);
+    }
   });
 
   it("a stored section opens expanded in the full view", () => {
@@ -777,40 +1091,12 @@ describe("the bot settings dialog", () => {
       settingsOpen: true, botSettingsSection: "model", botSettingsExpandAccordion: true,
       botSettingsSectionStored: true, botSettingsExpandRemembered: true,
     };
-    const rendered = dialog(makeBot());
-    expect(isSimple(rendered)).toBe(false);
-    expect(rowOpen(rendered, "model")).toBe(true);
-  });
-
-  it("a stored section never forces the full view in simple mode", () => {
-    fixture.storeState = {
-      settingsOpen: true, botSettingsSection: "model", botSettingsExpandAccordion: true,
-      botSettingsSectionStored: true, botSettingsExpandRemembered: true,
-    };
-    expect(isSimple(dialog(makeBot()))).toBe(true);
-  });
-
-  it("a deep link wins over the stored section", () => {
-    fixture.storeState = {
-      settingsOpen: true, botSettingsSection: "skills", botSettingsExpandAccordion: true,
-      botSettingsSectionStored: true,
-    };
-    const rendered = dialog(makeBot());
-    expect(isSimple(rendered)).toBe(false);
-    expect(rowOpen(rendered, "skills")).toBe(true);
-  });
-
-  it("searching collapses a remembered-expanded row like a deep-linked one", () => {
-    fixture.advanced = true;
-    fixture.storeState = {
-      settingsOpen: true, botSettingsSection: "model", botSettingsExpandAccordion: true,
-      botSettingsSectionStored: true, botSettingsExpandRemembered: true,
-    };
+    const rowOpen = (rendered: Rendered, id: string) =>
+      (Children.toArray(find(rendered, "data-bot-settings-section", id).props.children)[0] as Node).props["aria-expanded"] === true;
     expect(rowOpen(dialog(makeBot()), "model")).toBe(true);
-    const search = dialog(makeBot()).nodes.find((node) => node.props["aria-label"] === "Search settings")!;
-    (search.props.onChange as (e: unknown) => void)({ target: { value: "model" } });
+    const search = find(dialog(makeBot()), "aria-label", "Search settings");
+    change(search, "model");
     expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "toggleSettings", open: true });
-    // the reducer answers that bare open with the rail collapsed
     fixture.storeState = { ...fixture.storeState, botSettingsExpandAccordion: false, botSettingsExpandRemembered: false };
     expect(rowOpen(dialog(makeBot()), "model")).toBe(false);
   });
@@ -821,53 +1107,36 @@ describe("the bot settings dialog", () => {
       settingsOpen: true, botSettingsSection: "model", botSettingsExpandAccordion: true,
       botSettingsSectionStored: true, botSettingsExpandRemembered: true,
     };
-    expect(rowOpen(dialog(makeBot()), "model")).toBe(true);
     const row = find(dialog(makeBot()), "data-bot-settings-section", "model");
     click(Children.toArray(row.props.children)[0] as Node);
     expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "toggleSettings", open: true });
-    // the reducer answers that click with the rail collapsed
-    fixture.storeState = { ...fixture.storeState, botSettingsExpandAccordion: false, botSettingsExpandRemembered: false };
-    expect(rowOpen(dialog(makeBot()), "model")).toBe(false);
   });
 
-  it("leaves Advanced mode on today's panel", () => {
+  it("shows Switch them too in the full Model section, and its button switches them", () => {
     fixture.advanced = true;
-    const rendered = dialog(makeBot());
-    expect(isSimple(rendered)).toBe(false);
-    expect(rendered.html).toContain("Search settings");
-    expect(rendered.nodes.some((node) => node.props["data-bot-settings-back"])).toBe(false);
+    fixture.storeState = { settingsOpen: true, botSettingsSection: "model", botSettingsExpandAccordion: true };
+    const opus = { instanceId: "claude", model: "claude-opus-5-5" };
+    const tasks = [
+      { threadId: "thread-scout", title: "Follows", createdAt: 1, modelSelection: opus, followsBotModel: true },
+      ...[0, 1, 2].map((index) => ({ threadId: `own-${index}`, title: `Own ${index}`, createdAt: 1, modelSelection: { instanceId: "codex", model: "gpt-5.6" }, followsBotModel: false })),
+    ];
+    const rendered = dialog(makeBot({ tasks }));
+    expect(rendered.html).toContain("3 threads use their own model.");
+    expect(rendered.html).toContain("Switch them too");
+    fresh();
+    const section = capture(() => ModelSection({ bot: makeBot({ tasks }) }));
+    const line = ofType(section, ThreadModelsLine)!;
+    click(capture(() => ThreadModelsLine(line.props as never)).nodes.find((node) => node.props["data-switch-them-too"] !== undefined)!);
+    expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "followBotModel", botId: "scout" });
   });
 });
 
-describe("Switch them too beside the bot's model", () => {
-  const opus = { instanceId: "claude", model: "claude-opus-5-5" };
-  const onOwn = (count: number): Partial<Bot> => ({ tasks: [
-    { threadId: "thread-scout", title: "Follows", createdAt: 1, modelSelection: opus, followsBotModel: true },
-    ...Array.from({ length: count }, (_, index) => ({
-      threadId: `own-${index}`, title: `Own ${index}`, createdAt: 1, modelSelection: { instanceId: "codex", model: "gpt-5.6" }, followsBotModel: false,
-    })),
-  ] });
-
-  it("shows the line and its button under the Simple panel's model only while a thread runs on its own model", () => {
-    expect(panel(makeBot(onOwn(0))).html).not.toContain("use their own model");
-    const { html } = panel(makeBot(onOwn(1)));
-    expect(html).toContain("1 thread uses its own model.");
-    expect(html).toContain("Switch it too");
-    expect(html.indexOf("Default model")).toBeLessThan(html.indexOf("1 thread uses its own model."));
-    expect(html.indexOf("1 thread uses its own model.")).toBeLessThan(html.indexOf("Before Scout acts"));
-  });
-
-  it("shows it in the full Model section too, and its button switches them", () => {
-    fixture.storeState = { settingsOpen: true, botSettingsSection: "model", botSettingsExpandAccordion: true };
-    expect(dialog(makeBot(onOwn(0))).html).not.toContain("data-thread-models");
-    const rendered = dialog(makeBot(onOwn(3)));
-    expect(rendered.html).toContain("3 threads use their own model.");
-    expect(rendered.html).toContain("Switch them too");
-    fixture.values = [];
-    fixture.own = 0;
-    const section = capture(() => ModelSection({ bot: makeBot(onOwn(3)) }));
-    const line = section.nodes.find((node) => node.type === ThreadModelsLine)!;
-    click(capture(() => ThreadModelsLine(line.props as never)).nodes.find((node) => node.props["data-switch-them-too"] !== undefined)!);
-    expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "followBotModel", botId: "scout" });
+describe("the panel's switches", () => {
+  it("are the shared switch, in the bot's own color when on", () => {
+    fixture.apps = { phase: "ready", connectedSlugs: ["gmail"], apps: [app("gmail", "write")] };
+    const html = capture(() => AppsCard({ bot: makeBot({ color: "blue" }), derived: derived(), apps: fixture.apps, onOpenAccess: vi.fn() })).html;
+    expect(html.match(/role="switch"/g)).toHaveLength(2);
+    expect(html).toContain("background-color:#377FE6");
+    expect(Switch).toBeDefined();
   });
 });

@@ -104,11 +104,10 @@ describe("remembering exact command approvals", () => {
     }));
   });
 
-  it("never offers remembered commands on a durable confirmation", () => {
-    const result = view({ routineRequest: { version: 1, requestId: "request-1", botId: bot.id, threadId: "thread-1", createdAt: 1,
+  it("never offers a routine card from before Triggers v2 for a decision at all", () => {
+    const routine = message({ routineRequest: { version: 1, requestId: "request-1", botId: bot.id, threadId: "thread-1", createdAt: 1,
       operation: { action: "run_now", routineId: "routine-1", expectedUpdatedAt: 1 } } });
-    expect(result.html).not.toContain("Always allow");
-    expect(result.html).toContain("Confirm");
+    expect(pendingApprovals([routine])).toEqual([]);
   });
 
   it("puts the decision on the same row and Cancel turn behind the chevron", () => {

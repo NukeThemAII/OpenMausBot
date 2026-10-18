@@ -1,3 +1,5 @@
+import { ONBOARDING_CLOUD_HINT, WELCOME_VERSION } from "../../electron/onboarding-record.mjs";
+
 export interface OnboardingStatus {
   completedAt: string;
   version: number;
@@ -6,7 +8,7 @@ export interface OnboardingStatus {
   firstTurnAt?: string;
 }
 
-export const WELCOME_VERSION = 1;
+export { ONBOARDING_CLOUD_HINT, WELCOME_VERSION };
 
 export const EMPTY_ONBOARDING: OnboardingStatus = {
   completedAt: "",
@@ -96,8 +98,6 @@ export function beatsFor(options: BeatOptions): BeatId[] {
   return beats;
 }
 
-/** The welcome's Cloud beat, recorded when it is shown, so a later Cloud pitch need not repeat it at once. */
-export const ONBOARDING_CLOUD_HINT = "onboarding-cloud-v1";
 export function onboardingCloudOffered(record: OnboardingStatus | undefined): boolean {
   return hintSeen(record, ONBOARDING_CLOUD_HINT);
 }

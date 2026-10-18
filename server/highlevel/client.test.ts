@@ -8,7 +8,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { HIGHLEVEL_TOOL_NAMES } from "../../shared/highlevel.ts";
 import { removeTempDir } from "../testing/cleanup.ts";
 import { FAKE_LOCATION_ID, startFakeHighLevel, startFakeRelay, type FakeHighLevel, type FakeRelay } from "../testing/fake-highlevel.ts";
-import { BUDGET_CALLS, FORBIDDEN_PATHS, HIGHLEVEL_CONVERSATIONS_VERSION, HIGHLEVEL_VERSION, HighLevelClient, HighLevelError, assertAllowedPath, lookupLocation, plainError } from "./client.ts";
+import { BUDGET_CALLS, FORBIDDEN_PATHS, HIGHLEVEL_CONVERSATIONS_VERSION, HIGHLEVEL_VERSION, HighLevelClient, HighLevelError, assertAllowedPath, isScopeRefusal, lookupLocation, plainError, redactSecrets } from "./client.ts";
 import { HIGHLEVEL_NOT_CONNECTED_TEXT, HIGHLEVEL_SIGNED_OUT_TEXT } from "./instructions.ts";
 import { createHighLevelRelay } from "./relay.ts";
 import { HIGHLEVEL_FILE, HIGHLEVEL_KEY_FILE, HighLevelStore } from "./store.ts";
@@ -25,7 +25,7 @@ beforeAll(async () => {
   relay = await startFakeRelay({ onAccessToken: (token) => hl.tokens.add(token) });
 });
 afterAll(async () => { await hl.close(); await relay.close(); });
-beforeEach(() => { hl.calls.length = 0; hl.overrides.length = 0; slept.length = 0; hl.tokens.clear(); relay.refreshes = 0; });
+beforeEach(() => { hl.calls.length = 0; hl.overrides.length = 0; hl.pathOverrides.clear(); slept.length = 0; hl.tokens.clear(); relay.refreshes = 0; });
 afterEach(async () => { for (const dir of dirs.splice(0)) await removeTempDir(dir); });
 
 function harness(connection: Partial<Parameters<HighLevelStore["put"]>[0]> & { kind?: "oauth" | "token" } = {}) {
@@ -35,7 +35,7 @@ function harness(connection: Partial<Parameters<HighLevelStore["put"]>[0]> & { k
   const accessToken = connection.accessToken ?? "hl_access_seed";
   hl.tokens.add(accessToken);
   relay.refreshTokens.add("hl_refresh_seed");
-  store.put({ kind: "oauth", accessToken, refreshToken: "hl_refresh_seed", expiresAt: clock + 3_600_000, locationId: FAKE_LOCATION_ID, locationName: "Precision Profiles", scopes: "contacts.write", ...connection });
+  store.put({ kind: "oauth", accessToken, refreshToken: "hl_refresh_seed", expiresAt: clock + 3_600_000, locationId: FAKE_LOCATION_ID, locationName: "Example Profiles", scopes: "contacts.write", ...connection });
   const upstream = createHighLevelRelay(relay.url);
   const client = new HighLevelClient({ store, refresh: (token) => upstream.refresh(token), apiUrl: hl.url, now: () => clock, sleep: async (ms) => { slept.push(ms); clock += ms; } });
   return { dir, store, client };
@@ -54,7 +54,7 @@ describe("HighLevelStore", () => {
       expect(statSync(join(dir, HIGHLEVEL_KEY_FILE)).mode & 0o777).toBe(0o600);
     }
     const again = new HighLevelStore({ dataDir: dir });
-    expect(again.get()).toMatchObject({ kind: "oauth", accessToken: "hl_access_seed", refreshToken: "hl_refresh_seed", locationId: FAKE_LOCATION_ID, locationName: "Precision Profiles", state: "signed-in" });
+    expect(again.get()).toMatchObject({ kind: "oauth", accessToken: "hl_access_seed", refreshToken: "hl_refresh_seed", locationId: FAKE_LOCATION_ID, locationName: "Example Profiles", state: "signed-in" });
     expect(again.secretValues()).toEqual(["hl_access_seed", "hl_refresh_seed"]);
     again.rotate({ accessToken: "hl_access_2", refreshToken: "hl_refresh_2", expiresAt: 5 });
     expect(new HighLevelStore({ dataDir: dir }).get()).toMatchObject({ accessToken: "hl_access_2", refreshToken: "hl_refresh_2", expiresAt: 5, state: "signed-in" });
@@ -161,7 +161,7 @@ describe("HighLevelClient requests", () => {
     expect(events.events[0]).toEqual({ id: "evt_1", title: "Intro call", calendarId: "cal_1", contactId: "contact_1", appointmentStatus: "confirmed", startTime: "2026-03-10T15:00:00.000Z", endTime: "2026-03-10T15:30:00.000Z", assignedUserId: "user_1", address: "Zoom", notes: "bring deck" });
     await expect(client.listEvents({ startTime: "yesterday", endTime: "2026-03-11T00:00:00Z" })).rejects.toThrow(/startTime must be an ISO 8601/u);
     const location = await client.getLocation();
-    expect(location).toMatchObject({ id: FAKE_LOCATION_ID, name: "Precision Profiles", timezone: "America/Chicago", city: "Austin" });
+    expect(location).toMatchObject({ id: FAKE_LOCATION_ID, name: "Example Profiles", timezone: "America/Chicago", city: "Austin" });
     expect(location.customFields).toEqual([
       { id: "cf_lead", name: "Lead Source", key: "contact.lead_source", dataType: "TEXT", model: "contact" },
       { id: "cf_budget", name: "Budget", key: "contact.budget", dataType: "NUMERICAL", model: "contact" },
@@ -307,12 +307,147 @@ describe("no messaging through the CRM", () => {
   });
 });
 
+// HighLevel's real answers: a dead token, a live token missing a scope, a token from another location.
+const INVALID_TOKEN = { statusCode: 401, message: "Invalid JWT" };
+const MISSING_SCOPE = { statusCode: 401, message: "The token is not authorized for this scope.", error: "Unauthorized" };
+const OTHER_LOCATION = { statusCode: 403, message: "The token does not have access to this location." };
+const CUSTOM_FIELDS = `GET /locations/${FAKE_LOCATION_ID}/customFields`;
+
+describe("a missing permission is not a sign-out", () => {
+  it("tells a scope refusal from a dead token by HighLevel's own words", () => {
+    expect(isScopeRefusal(MISSING_SCOPE)).toBe(true);
+    expect(isScopeRefusal({ message: "insufficient_scope" })).toBe(true);
+    expect(isScopeRefusal(INVALID_TOKEN)).toBe(false);
+    expect(isScopeRefusal({ statusCode: 401, message: "Invalid token: access token is invalid", error: "Unauthorized" })).toBe(false);
+    expect(isScopeRefusal({})).toBe(false);
+    expect(plainError(401, "GET", `/locations/${FAKE_LOCATION_ID}/customFields`, MISSING_SCOPE)).toMatchObject({
+      message: "HighLevel refused this (401): the connection lacks the View Custom Fields permission (locations/customFields.readonly). HighLevel said: The token is not authorized for this scope.",
+      signedOut: false, status: 401,
+    });
+    expect(plainError(401, "GET", "/contacts/c", INVALID_TOKEN)).toMatchObject({ message: HIGHLEVEL_SIGNED_OUT_TEXT, signedOut: true });
+  });
+
+  it("keeps a token connection signed in when only the custom-fields lookup inside a contact read is refused", async () => {
+    const { client, store } = harness({ kind: "token", accessToken: "pit-fixture-token-123", refreshToken: undefined, expiresAt: undefined });
+    hl.pathOverrides.set(CUSTOM_FIELDS, { status: 401, body: MISSING_SCOPE });
+    const contact = await client.getContact("contact_1");
+    expect(contact).toMatchObject({ id: "contact_1", email: "ada@fixture.test", customFields: { cf_lead: "Referral", cf_budget: 1200 } });
+    expect(store.get()).toMatchObject({ state: "signed-in" });
+    expect(store.get()?.problem).toBeUndefined();
+    // The refusal is remembered for the cache's lifetime: later reads do not ask again.
+    await client.getContact("contact_1");
+    expect((await client.searchContacts({ query: "ada" })).contacts[0]).toMatchObject({ id: "contact_1" });
+    expect(hl.calls.filter((call) => call.path.endsWith("/customFields"))).toHaveLength(1);
+    expect((await client.getLocation()).customFields).toEqual([]);
+    // A write that names a custom field says which permission is missing, not that the field does not exist.
+    await expect(client.updateContact("contact_1", { customFields: { "Lead Source": "Event" } })).rejects.toMatchObject({
+      message: expect.stringMatching(/^HighLevel refused this \(401\): the connection lacks the View Custom Fields permission/u), signedOut: false,
+    });
+    expect(store.get()?.state).toBe("signed-in");
+    // Through the tool layer: the bot gets a plain error, not the signed-out note.
+    const { result } = await runHighLevelTool(client, "HIGHLEVEL_GET_CONTACT", { contactId: "contact_1" });
+    expect(result.isError).toBeUndefined();
+  });
+
+  it("keeps an OAuth connection signed in on a scope refusal, without spending a refresh", async () => {
+    const { client, store } = harness();
+    hl.pathOverrides.set(CUSTOM_FIELDS, { status: 401, body: MISSING_SCOPE });
+    expect((await client.getContact("contact_1")).id).toBe("contact_1");
+    expect(relay.refreshes).toBe(0);
+    expect(store.get()?.state).toBe("signed-in");
+  });
+
+  it("answers a scope refusal on the call itself with the missing permission, still signed in", async () => {
+    const { client, store } = harness({ kind: "token", accessToken: "pit-fixture-token-123", refreshToken: undefined, expiresAt: undefined });
+    hl.pathOverrides.set("POST /contacts/contact_1/notes", { status: 401, body: MISSING_SCOPE });
+    const { result } = await runHighLevelTool(client, "HIGHLEVEL_ADD_NOTE", { contactId: "contact_1", body: "x" });
+    expect(result).toMatchObject({ isError: true, structuredContent: {
+      error: "HighLevel refused this (401): the connection lacks the Edit Contacts permission (contacts.write). HighLevel said: The token is not authorized for this scope.",
+      status: 401,
+    } });
+    expect(result.structuredContent?.signedOut).toBeUndefined();
+    expect(store.get()?.state).toBe("signed-in");
+  });
+
+  it("still signs a token out when HighLevel rejects the token itself, on the main call or the custom-fields lookup", async () => {
+    const dead = harness({ kind: "token", accessToken: "pit-fixture-dead-123", refreshToken: undefined, expiresAt: undefined });
+    hl.tokens.delete("pit-fixture-dead-123");
+    await expect(dead.client.getContact("contact_1")).rejects.toMatchObject({ message: HIGHLEVEL_SIGNED_OUT_TEXT, signedOut: true });
+    expect(dead.store.get()).toMatchObject({ state: "needs-sign-in", problem: "HighLevel rejected the Private Integration token." });
+
+    // Revoked between the two calls: the optional lookup's 401 is not a scope refusal, so it signs out.
+    const revoked = harness({ kind: "token", accessToken: "pit-fixture-revoked-1", refreshToken: undefined, expiresAt: undefined });
+    hl.pathOverrides.set(CUSTOM_FIELDS, { status: 401, body: INVALID_TOKEN });
+    await revoked.client.getContact("contact_1");
+    expect(revoked.store.get()?.state).toBe("needs-sign-in");
+    await expect(revoked.client.getContact("contact_1")).rejects.toMatchObject({ signedOut: true });
+  });
+
+  it("still refreshes an OAuth token on a dead-token 401", async () => {
+    const { client, store } = harness();
+    hl.overrides.push({ status: 401, body: INVALID_TOKEN });
+    expect((await client.getContact("contact_1")).id).toBe("contact_1");
+    expect(relay.refreshes).toBe(1);
+    expect(store.get()?.state).toBe("signed-in");
+  });
+});
+
 describe("lookupLocation", () => {
   it("validates a Private Integration token against its location and returns the name", async () => {
     hl.tokens.add("pit-valid-token-123");
-    expect(await lookupLocation({ token: "pit-valid-token-123", locationId: FAKE_LOCATION_ID, apiUrl: hl.url })).toEqual({ id: FAKE_LOCATION_ID, name: "Precision Profiles", companyId: "company_1", timezone: "America/Chicago" });
+    expect(await lookupLocation({ token: "pit-valid-token-123", locationId: FAKE_LOCATION_ID, apiUrl: hl.url })).toEqual({ id: FAKE_LOCATION_ID, name: "Example Profiles", companyId: "company_1", timezone: "America/Chicago" });
     expect(last().headers.version).toBe(HIGHLEVEL_VERSION);
-    await expect(lookupLocation({ token: "pit-valid-token-123", locationId: "other_location", apiUrl: hl.url })).rejects.toThrow("HighLevel did not accept this token for that location.");
-    await expect(lookupLocation({ token: "pit-bad", locationId: FAKE_LOCATION_ID, apiUrl: hl.url })).rejects.toThrow("HighLevel did not accept this token for that location.");
+    await expect(lookupLocation({ token: "pit-valid-token-123", locationId: "other_location", apiUrl: hl.url })).rejects.toMatchObject({ status: 403, message: expect.stringMatching(/^This token does not belong to that location \(403\)/u) });
+    await expect(lookupLocation({ token: "pit-bad", locationId: FAKE_LOCATION_ID, apiUrl: hl.url })).rejects.toMatchObject({ status: 401, message: expect.stringMatching(/^HighLevel did not accept this token \(401\)/u) });
+    hl.pathOverrides.set(`GET /locations/${FAKE_LOCATION_ID}`, { status: 401, body: MISSING_SCOPE });
+    await expect(lookupLocation({ token: "pit-valid-token-123", locationId: FAKE_LOCATION_ID, apiUrl: hl.url })).rejects.toMatchObject({ status: 401, message: expect.stringMatching(/^This token is missing the View Locations permission/u) });
+  });
+
+  const TOKEN = "pit-0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
+  const answering = (status: number, body?: unknown): typeof fetch => async () => new Response(body === undefined ? "" : JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  const check = async (status: number, body?: unknown) => {
+    const error = await lookupLocation({ token: TOKEN, locationId: FAKE_LOCATION_ID, apiUrl: "https://hl.fixture.test", fetch: answering(status, body) }).then(() => null, (cause: unknown) => cause);
+    expect(error).toBeInstanceOf(HighLevelError);
+    expect((error as HighLevelError).signedOut).toBe(false);
+    expect((error as HighLevelError).message).not.toContain(TOKEN);
+    return error as HighLevelError;
+  };
+
+  it("says which case a refusal is, in plain words, with HighLevel's own reason when it gave one", async () => {
+    expect(await check(401, MISSING_SCOPE)).toMatchObject({ status: 401, message:
+      "This token is missing the View Locations permission (401), which OpenMausBot needs to check it. In HighLevel, open Settings → Private Integrations, " +
+      "edit this integration, turn on View Locations and save, then connect again: the token stays the same. HighLevel said: The token is not authorized for this scope." });
+    expect(await check(401, INVALID_TOKEN)).toMatchObject({ status: 401, message:
+      "HighLevel did not accept this token (401). Check that it was copied whole and has not been rotated or deleted, " +
+      "and that its Private Integration has the View Locations permission. HighLevel said: Invalid JWT" });
+    expect((await check(401)).message).toBe(
+      "HighLevel did not accept this token (401). Check that it was copied whole and has not been rotated or deleted, " +
+      "and that its Private Integration has the View Locations permission.");
+    expect(await check(403, OTHER_LOCATION)).toMatchObject({ status: 403, message:
+      "This token does not belong to that location (403): it was created in another sub-account or at the agency level. " +
+      "Create the Private Integration inside the sub-account whose location ID you entered. HighLevel said: The token does not have access to this location." });
+    expect((await check(403, {})).message).toBe(
+      "This token does not belong to that location (403): it was created in another sub-account or at the agency level. " +
+      "Create the Private Integration inside the sub-account whose location ID you entered.");
+    expect(await check(404, { statusCode: 404, message: "Location not found" })).toMatchObject({ status: 404, message:
+      "HighLevel has no location with that ID (404). Copy the location ID from Settings → Business Profile in the sub-account where you created the token." });
+    expect((await check(422, { statusCode: 422, message: ["locationId must be a string"] })).message).toBe("HighLevel rejected this (422): locationId must be a string");
+  });
+
+  it("never repeats the token, or anything shaped like one, and keeps HighLevel's reason to one short line", async () => {
+    const echoed = await check(401, { message: `Invalid JWT ${TOKEN} (Bearer ${TOKEN}); also pit-abcdefgh1234 and eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln` });
+    expect(echoed.message).toMatch(/HighLevel said: Invalid JWT \[redacted\] \(Bearer \[redacted\]\); also \[redacted\] and \[redacted\]$/u);
+    expect(echoed.message).not.toMatch(/pit-|eyJ|0f1e2d3c/u);
+    const long = await check(403, { message: `line one\nline\ttwo ${"x".repeat(400)}` });
+    const said = long.message.split("HighLevel said: ")[1]!;
+    expect(said.startsWith("line one line two x")).toBe(true);
+    expect(said).toHaveLength(160);
+    expect(said.endsWith("…")).toBe(true);
+    // The exact secret goes even when it has no token shape (an OAuth access token need not look like one).
+    expect(redactSecrets("token opaque-secret-42 was refused", ["opaque-secret-42"])).toBe("token [redacted] was refused");
+    expect(redactSecrets("Bearer token is missing")).toBe("Bearer token is missing");
+    // A token split across the cut is redacted before cutting, so no fragment survives.
+    const cut = await check(401, { message: `${"y".repeat(150)} ${TOKEN}` });
+    expect(cut.message).not.toMatch(/pit-|0f1e/u);
   });
 });

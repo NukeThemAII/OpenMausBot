@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { ChevronRight } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { useMenuMotion } from "./MenuMotion";
-import { usePopoverDismiss } from "@/hooks/use-popover-dismiss";
+import { popoverClosesOnKey, usePopoverDismiss } from "@/hooks/use-popover-dismiss";
 
 export interface SidebarMenuItem {
   key: string;
@@ -153,6 +153,9 @@ function MenuRows({
   );
 }
 
+const closesOnEscape = (event: ReactKeyboardEvent) =>
+  popoverClosesOnKey({ key: event.key, defaultPrevented: event.defaultPrevented, isComposing: event.nativeEvent.isComposing });
+
 export function SidebarPopoverMenu({
   items,
   ariaLabel,
@@ -296,6 +299,12 @@ export function SidebarPopoverMenu({
       event.preventDefault();
       event.stopPropagation();
       closeSub(true);
+    } else if (!inSubmenu && closesOnEscape(event)) {
+      // The menu, not the panel or dialog around it, owns this Escape: an anchored sheet's keys bubble through the
+      // portal to the trigger's ancestors before the window ever sees them.
+      event.preventDefault();
+      event.stopPropagation();
+      close(true);
     } else if (event.key === "Tab" && anchored) {
       event.preventDefault();
       close(true);
@@ -402,6 +411,13 @@ export function SidebarPopoverMenu({
           }
         }}
         onKeyDown={(event) => {
+          if (open && closesOnEscape(event)) {
+            // A menu opened with the mouse leaves focus here; Escape closes it before anything around it.
+            event.preventDefault();
+            event.stopPropagation();
+            close(true);
+            return;
+          }
           if (!anchored || open || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
           event.preventDefault();
           focusFirst.current = true;

@@ -7,6 +7,7 @@ import { browserAvailable, builtInBrowserEnabled, type FeatureFlagConfig } from 
 import { writeComputerPanelView } from "@/lib/computer-panel-view";
 import { useAdvancedMode } from "@/lib/interface-mode";
 import { useOwnerOrAdmin } from "@/lib/use-owner-or-admin";
+import { openBotSettings } from "@/components/bot-panel/panel-link";
 import type { Action, Bot, ConfigStatus, InstanceInfo } from "@/state/store";
 import type { LocaleKey } from "@/locales";
 import {
@@ -116,9 +117,9 @@ export function openPlaceAction(
   const appSettings = (section: "engines" | "computer" | "connections" | "cloudAccount") =>
     dispatch({ type: "toggleAppSettings", open: true, section });
   switch (id) {
-    case "choose-model": dispatch({ type: "toggleSettings", open: true, section: "model", botId: target.botId }); return true;
-    case "open-tools": dispatch({ type: "toggleSettings", open: true, section: "access", botId: target.botId }); return true;
-    case "change-routine": dispatch({ type: "toggleSettings", open: true, section: "routines", botId: target.botId }); return true;
+    case "choose-model": openBotSettings(dispatch, "model", { botId: target.botId }); return true;
+    case "open-tools": openBotSettings(dispatch, "access", { botId: target.botId, page: "tools" }); return true;
+    case "change-routine": openBotSettings(dispatch, "routines", { botId: target.botId }); return true;
     case "sign-in": appSettings("engines"); return true;
     case "manage-computers": appSettings("computer"); return true;
     case "add-boat-key": appSettings("connections"); return true;

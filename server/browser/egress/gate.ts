@@ -15,6 +15,8 @@ export interface ResolvedAddress { address: string; family: number }
 export interface GateTarget { host: string; port: number }
 
 export interface GateOptions {
+  /** Why a destination is refused by its name alone, or null; a name refused here is never looked up. */
+  refuseName?(target: GateTarget): string | null;
   /** Why the connection is refused, or null to connect to exactly these addresses. */
   decide(target: GateTarget, addresses: readonly ResolvedAddress[]): Promise<string | null>;
   onRefusal?(target: GateTarget, reason: string): void;
@@ -134,15 +136,16 @@ export function openGate(options: GateOptions): Promise<EgressGate> {
       };
       client.on("data", holdEarly);
       void (async () => {
-        const addresses = await resolve(target.host);
-        const refusal = addresses.length ? await options.decide(target, addresses).catch(() => "error") : null;
+        const named = options.refuseName?.(target) ?? null;
+        const addresses = named === null ? await resolve(target.host) : [];
+        const refusal = named ?? (addresses.length ? await options.decide(target, addresses).catch(() => "error") : null);
         if (client.destroyed) return;
         client.off("data", holdEarly);
-        if (!addresses.length) return refuse(client, HOST_UNREACHABLE);
         if (refusal !== null) {
           options.onRefusal?.(target, refusal);
           return refuse(client, NOT_ALLOWED);
         }
+        if (!addresses.length) return refuse(client, HOST_UNREACHABLE);
         client.pause();
         // Every checked address, IPv6 and IPv4 alike, so a host is still reached where one family is broken; the
         // lookup hands back only checked addresses, so a name that now resolves elsewhere changes nothing.

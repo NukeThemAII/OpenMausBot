@@ -34,7 +34,7 @@ import { assertToolScopeSupported } from "../../shared/tool-scope-support.ts";
 import { newEventId, newId } from "../contracts.ts";
 import { askInputSummary, commandSummary, toolDetailPreview } from "../tool-summary.ts";
 import { classifyError, computeBackoff, interruptibleDelay, RETRY_MAX_ATTEMPTS, USAGE_LIMIT } from "./retry.ts";
-import { claudeLimitRefusal, claudeUsageLimit, claudeLimitMessage, type ClaudeLimit } from "./claude-limits.ts";
+import { claudeApiErrorMessage, claudeLimitRefusal, claudeUsageLimit, claudeLimitMessage, type ClaudeLimit } from "./claude-limits.ts";
 import { TEAM_TOOLS_FAILED, teamToolsFailed } from "./team-tools.ts";
 import { sessionIdlePolicy } from "./session-idle.ts";
 import { parseVersionTriple, versionAtLeast } from "./acp/core.ts";
@@ -107,13 +107,13 @@ export function claudeVersionTooOld(
   return /\bClaude Code v?\d+(?:\.\d+)+ does not support this model\b/i.test(text);
 }
 
-/** What an error `result` says failed: its `errors` (2.1.295: "No conversation found with session
- * ID: …"), else its text, else its kind. */
-export function claudeResultError(frame: { errors?: unknown; result?: unknown; subtype?: unknown; terminal_reason?: unknown }): string {
+/** What an error `result` says failed: its `errors` (2.1.295: "No conversation found with session ID: …"), else its
+ * text in plain words, else its kind; never its synthetic message's "stop_sequence", nor the subtype "success". */
+export function claudeResultError(frame: { errors?: unknown; result?: unknown; subtype?: unknown; terminal_reason?: unknown; api_error_status?: unknown }): string {
   const errors = Array.isArray(frame.errors) ? frame.errors.filter((error): error is string => typeof error === "string" && error.trim() !== "") : [];
   if (errors.length) return errors.join("; ");
-  if (typeof frame.result === "string" && frame.result.trim()) return frame.result.trim();
-  return `Claude ended the turn with an error (${String(frame.subtype ?? frame.terminal_reason ?? "unknown")}).`;
+  if (typeof frame.result === "string" && frame.result.trim()) return claudeApiErrorMessage(frame, frame.result);
+  return `Claude ended the turn with an error (${String((frame.subtype !== "success" && frame.subtype) || frame.terminal_reason || "unknown")}).`;
 }
 
 /** The CLI environment shared by auth probes and turns, so a probe never reports an API-key login
@@ -1480,7 +1480,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         t.limitReached = t.explained = true;
         t.limit = claudeLimitRefusal(frame.api_error_params?.rate_limit_info) ?? t.limit;
         const said = typeof words === "string" && USAGE_LIMIT.test(words) ? words : undefined;
-        emit({ ...base(threadId, currentTurnId()), type: "runtime.error", message: claudeLimitMessage(t.limit ?? null, said) });
+        emit({ ...base(threadId, currentTurnId()), type: "runtime.error", message: claudeLimitMessage(t.limit ?? null, said), ...(t.limit?.resetsAt ? { limitResetsAt: t.limit.resetsAt * 1000 } : {}) });
       };
       const noteCostState = (total: unknown, modelUsage: unknown, usage: Parameters<typeof restoredCostBase>[2]) => {
         const state = claudeCostSnapshot(total, modelUsage);
@@ -1583,16 +1583,16 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
               emit({ ...base(threadId, currentTurnId()), type: "runtime.error", message: text, setup: true, claudeUpdate: true });
               break;
             }
+            if ((o.is_api_error_message === true || typeof o.error === "string") && text.trim()) {
+              if (session.turn) session.turn.explained = true;
+              if (!session.turn?.stopRequested) emit({ ...base(threadId, currentTurnId()), type: "runtime.error", message: claudeApiErrorMessage(o, text) });
+              break;
+            }
             if (text.trim()) {
-              const apiError = o.is_api_error_message === true || typeof o.error === "string";
-              const synthetic = apiError ? { synthetic: true } : {};
-              if (apiError && session.turn) session.turn.explained = true;
               // fallback delta for CLIs/paths that never streamed the block
-              if (!session.turn?.sawStreamDelta) {
-                emit({ ...base(threadId, currentTurnId()), ...synthetic, type: "content.delta", streamKind: "assistant_text", delta: text });
-              }
+              if (!session.turn?.sawStreamDelta) emit({ ...base(threadId, currentTurnId()), type: "content.delta", streamKind: "assistant_text", delta: text });
               if (session.turn) session.turn.sawStreamDelta = false;
-              emit({ ...base(threadId, currentTurnId()), ...synthetic, type: "item.completed", itemType: "assistant_text", text });
+              emit({ ...base(threadId, currentTurnId()), type: "item.completed", itemType: "assistant_text", text });
             }
             for (const b of Array.isArray(msg.content) ? msg.content : []) {
               if (b.type === "tool_use") {
@@ -2059,7 +2059,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             }
           }
           if (code === 0) finish();
-          else finish(new Error(stderr.trim() || `Claude review exited ${code}`));
+          else finish(new Error(stderr.trim() || stdout.trim().slice(0, 500) || `Claude review exited ${code}`));
         });
         if (signal?.aborted) onAbort();
         else {

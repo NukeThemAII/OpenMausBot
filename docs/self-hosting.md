@@ -95,8 +95,11 @@ is present. Three ways to make the server reachable from elsewhere:
   that address. The first run downloads `cloudflared` (pinned version and
   digest) into the data dir. Only traffic through the tunnel reaches the
   server, and it still has to pair: the tunnel lands on a separate listener
-  the server treats as "through a proxy", never as the owner. `npx openmausbot
-  logout` releases the address. The account credentials live in
+  the server treats as "through a proxy", never as the owner. That listener
+  also gzips JSON replies of 1 KB or more when the client accepts gzip, since
+  the hop to Cloudflare runs on this machine's upload uncompressed; the
+  loopback port never compresses. `npx openmausbot logout` releases the
+  address. The account credentials live in
   `~/.openmausbot/tunnel-account.json` (mode 0600).
   Starting it from a fleet or a container, where nobody can type an emailed
   code? Set `OMB_INSTALLATION_CREDENTIAL` to the installation credential the

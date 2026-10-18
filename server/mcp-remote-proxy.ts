@@ -123,6 +123,17 @@ function remoteErrorText(detail: string): string {
   if (text.length > REMOTE_ERROR_CHARS) text = `${text.slice(0, REMOTE_ERROR_CHARS - 1)}…`;
   return text || "Remote MCP request failed";
 }
+/** What a refused HTTP request means, in words a person can act on. The status code itself carries no secret. */
+function remoteStatusText(status: number | undefined): string {
+  if (status === 403) {
+    return "This MCP server refused the request (HTTP 403). Its sign-in may be missing a permission (scope) it needs, "
+      + "or the service may not be turned on for that account or project.";
+  }
+  if (status === 404) return "This MCP server's address was not found (HTTP 404). Check its URL in Plugins → MCP servers.";
+  if (status === 429) return "This MCP server is limiting requests right now (HTTP 429). Try again in a moment.";
+  if (status !== undefined && status >= 500) return `This MCP server had a problem on its side (HTTP ${status}). Try again later.`;
+  return status === undefined ? "Remote MCP request failed" : `Remote MCP request failed (HTTP ${status})`;
+}
 const allowed = (name: string) => !directory?.scope || allowsTool(directory.scope, { kind: "mcp", server: directory.server, name });
 
 interface Catalog { tools: ToolDirectory; searched: boolean }
@@ -288,6 +299,8 @@ async function handle(message: Json): Promise<void> {
     if (failure instanceof Refusal) error(message.id, failure.code, failure.message);
     else if (failure instanceof McpRpcError) error(message.id, failure.code ?? -32603, remoteErrorText(failure.detail));
     else if (failure instanceof McpHttpError && failure.status === 401) error(message.id, -32603, CREDENTIALS_REFUSED);
+    else if (failure instanceof McpHttpError && failure.kind === "status" && !signal.aborted) error(message.id, -32603, remoteStatusText(failure.status));
+    else if (failure instanceof McpHttpError && failure.kind === "network" && failure.message === "request failed" && !signal.aborted) error(message.id, -32603, "Could not reach this MCP server. Check its URL and that it is online.");
     else error(message.id, signal.aborted ? -32800 : -32603, signal.aborted ? "MCP request cancelled" : "Remote MCP request failed");
   } finally { pending.delete(id); }
 }

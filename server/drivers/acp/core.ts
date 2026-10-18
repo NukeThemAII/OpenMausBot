@@ -61,10 +61,11 @@ import { acpSessionOperationKey, acpShellRequest, answersAlone, permissionLaunch
 import { openQuestionRequest, questionRequestFor, type AcpQuestionRequest } from "./question-requests.ts";
 import { commandSummary, toolDetailPreview } from "../../tool-summary.ts";
 import { extractMcpImages } from "../../mcp-tool-images.ts";
-import { redactSecretsInText } from "../../redact.ts";
+import { acpRpcError } from "./rpc-error.ts";
 import { recoveryPromptFor } from "../../resume-recovery.ts";
 import { sessionIdlePolicy } from "../session-idle.ts";
 import { classifyError } from "../retry.ts";
+import { engineFailureKind, engineFailureMessage } from "../engine-errors.ts";
 import { narrowsNativeTools, parseToolScope } from "../../../shared/tool-scope.ts";
 import { turnStdioMcpServers } from "../turn-mcp.ts";
 
@@ -76,29 +77,6 @@ const ACCOUNT_ERROR_CODES: ReadonlySet<ProviderErrorCode> = new Set<AccountError
 ]);
 const isAccountError = (code: ProviderErrorCode | undefined): code is AccountErrorCode =>
   code !== undefined && ACCOUNT_ERROR_CODES.has(code);
-
-/** ACP vendors put the actionable cause in error.data under a generic JSON-RPC message. Only known
- * text fields surface, redacted, never a response body or config dump. */
-function acpRpcError(value: any, method: string): Error {
-  const message = typeof value?.message === "string" ? value.message : "ACP request failed";
-  const data = value?.data;
-  const detail = typeof data === "string" ? data
-    : typeof data?.details === "string" ? data.details
-    : typeof data?.message === "string" ? data.message
-    : typeof data?.error?.message === "string" ? data.error.message
-    : "";
-  const context = [
-    method,
-    typeof data?.service === "string" ? `service: ${data.service}` : "",
-    typeof data?.errorName === "string" ? data.errorName : "",
-  ].filter(Boolean).join(", ");
-  const diagnostic = `${detail && detail !== message ? `${message}: ${detail}` : message} (${context})`;
-  const error = new Error(redactSecretsInText(diagnostic).slice(0, 1500));
-  return Object.assign(error, { code: value?.code, data,
-    // -32603 is JSON-RPC's internal error; invalid params, unsupported methods and auth refusals keep the session.
-    acpSessionFailure: value?.code === -32603,
-  });
-}
 
 export interface AcpConfig {
   cli: string;
@@ -549,6 +527,10 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         ? new DeviceAuthController(support.deviceSignIn, { cli: config.cli, environment: () => childEnv(), onAuthenticated: refreshModels })
         : null;
       const listeners = new Set<RuntimeEventListener>();
+      let disposing = false;
+      const requireRunning = () => {
+        if (disposing) throw new Error(`${support.displayName} is shutting down`);
+      };
       interface Turn {
         stop: () => void;
         interrupt: () => void;
@@ -1269,7 +1251,9 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
       };
 
       const sendTurn = async (turn: SendTurnInput) => {
+        requireRunning();
         if (startupModelRefresh) await startupModelRefresh;
+        requireRunning();
         const parsedScope = parseToolScope(turn.toolScope);
         if (!parsedScope.ok) throw new Error(parsedScope.error);
         turn = { ...turn, toolScope: parsedScope.scope };
@@ -1291,12 +1275,15 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         if (
           support.requireAuthenticationBeforeSpawn
           && !skipSubscriptionAuthForLocalInject(turn.model)
-          && !(await support.isAuthenticated(env, turnConfig, instanceId))
         ) {
-          emit({ ...base(threadId, turnId), type: "turn.started" });
-          emit({ ...base(threadId, turnId), type: "runtime.error", message: support.loginNote, setup: true });
-          emit({ ...base(threadId, turnId), type: "turn.completed", ok: false, stopReason: "auth_required", cost: null });
-          return { turnId };
+          const authenticated = await support.isAuthenticated(env, turnConfig, instanceId);
+          requireRunning();
+          if (!authenticated) {
+            emit({ ...base(threadId, turnId), type: "turn.started" });
+            emit({ ...base(threadId, turnId), type: "runtime.error", message: support.loginNote, setup: true });
+            emit({ ...base(threadId, turnId), type: "turn.completed", ok: false, stopReason: "auth_required", cost: null });
+            return { turnId };
+          }
         }
         const resolvedModel = support.resolveTurnModel?.(turn.model, env);
         const mcpServers = acpMcpServers(turn);
@@ -1314,6 +1301,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             ? await support.resolveCommand(env, turnConfig, instanceId)
             : { command: turnConfig.cli };
         } catch (error) {
+          requireRunning();
           emit({ ...base(threadId, turnId), type: "turn.started" });
           emit({
             ...base(threadId, turnId),
@@ -1325,6 +1313,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           return { turnId };
         }
 
+        requireRunning();
         const spawnArgs = support.spawnArgs(turnConfig, cliTurn);
         const spawnEnv = launch.env ?? env;
       // The child env is part of the spawn contract, hashed so secrets never sit in the key.
@@ -1809,7 +1798,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
               emit({
                 ...base(threadId, turnId),
                 type: "runtime.error",
-                message: errorMessage,
+                message: engineFailureMessage(support.displayName, errorMessage) ?? errorMessage,
               });
               settle(threadId, session, false, reason ?? "failed");
             }
@@ -1819,7 +1808,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             }
             if (!state.settled) {
               const message = e instanceof Error ? e.message : String(e);
-              const code = support.classifyError?.(e);
+              const code = support.classifyError?.(e) ?? (engineFailureKind(message) === "credits" ? "insufficient_funds" : undefined);
               const needsAuth = code === "invalid_credentials" || code === "inactive_subscription"
                 || code === "insufficient_funds" || message === support.loginNote;
               const accountError = isAccountError(code);
@@ -1844,16 +1833,15 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
                   return;
                 }
                 acknowledge();
-                if (!state.stopped) emit({ ...base(threadId, turnId), type: "runtime.error", message });
+                if (!state.stopped) emit({ ...base(threadId, turnId), type: "runtime.error", message: engineFailureMessage(support.displayName, message) ?? message });
                 emit({ ...base(threadId, turnId), type: "turn.completed", ok: state.stopped,
                   stopReason: state.stopped ? "cancelled" : "rpc_error", cost: null });
                 return;
               }
               emit({
-                ...base(threadId, turnId),
-                type: "runtime.error",
-                message: accountError ? support.describeAccountError?.(code, cliTurn.model) ?? message : message,
-                ...(needsAuth ? { setup: true } : {}),
+                ...base(threadId, turnId), type: "runtime.error",
+                message: (accountError ? support.describeAccountError?.(code, cliTurn.model) : undefined) ?? engineFailureMessage(support.displayName, message) ?? message,
+                ...(needsAuth ? { setup: true } : {}), ...((e as any)?.acpPromptStall === true ? { stalled: true } : {}),
               });
               // Never replay an accepted prompt (it may have run tools); evict before listeners start the next turn.
               if (!needsAuth && !accountError && ((e as any)?.acpPromptStall === true || (e as any)?.acpSessionFailure === true
@@ -2002,9 +1990,14 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           },
         },
         dispose: async () => {
+          disposing = true;
           await deviceSignIn?.dispose();
+          const disposingSessions = Array.from(sessions);
           for (const { stop } of active.values()) stop();
-          for (const threadId of Array.from(sessions.keys())) closeSession(threadId, "dispose");
+          for (const [threadId, session] of disposingSessions) {
+            closeSession(threadId, "dispose");
+            settle(threadId, session, true, "cancelled");
+          }
           for (const [threadId, children] of retiring) {
             for (const child of children) void retireChild(threadId, child);
           }

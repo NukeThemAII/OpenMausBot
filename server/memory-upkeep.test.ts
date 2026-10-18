@@ -616,7 +616,7 @@ describe("the upkeep loop", () => {
     const loop = upkeep();
     answers.push(JSON.stringify([{ text: "Likes jazz", kind: "preference" }]));
     loop.pause();
-    loop.noteTurn(BOT.id, "t1", { person: "I like jazz", bot: "Nice" });
+    loop.noteTurn(BOT.id, "t1", { person: "I like jazz", bot: "Nice, jazz is a great pick." });
     loop.flushThread("t1");
     await loop.idle();
     expect(prompts).toEqual([]);
@@ -627,7 +627,7 @@ describe("the upkeep loop", () => {
 
   it("keeps turns still waiting at shutdown as ids and captures them after the next start", async () => {
     const pending = join(DATA_DIR, "memory-capture-pending.json");
-    const jazz = { person: "I like jazz", bot: "Nice", turnId: "turn-1" };
+    const jazz = { person: "I like jazz", bot: "Nice, jazz is a great pick.", turnId: "turn-1" };
     transcript.set("turn-1", jazz);
     const first = upkeep();
     first.noteTurn(BOT.id, "t1", jazz);
@@ -686,7 +686,7 @@ describe("the upkeep loop", () => {
     const pending = join(DATA_DIR, "memory-capture-pending.json");
     const paused = upkeep();
     paused.pause();
-    paused.noteTurn(BOT.id, "t1", { person: "I like jazz", bot: "Nice", turnId: "turn-1" });
+    paused.noteTurn(BOT.id, "t1", { person: "I like jazz", bot: "Nice, jazz is a great pick.", turnId: "turn-1" });
     paused.flushThread("t1");
     paused.stop();
     expect(JSON.parse(readFileSync(pending, "utf8"))).toEqual({ batches: [{ botId: BOT.id, threadId: "t1", turnIds: ["turn-1"] }] });

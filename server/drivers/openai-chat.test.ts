@@ -744,13 +744,18 @@ describe("createOpenAIChatRuntime HTTP error text", () => {
     return { message: error?.message, calls };
   };
 
-  it("shows an out-of-credits account in the provider's own words, whole, and does not retry it", async () => {
+  it("names an out-of-credits account in plain words with the provider's own reason, and does not retry it", async () => {
     const { message, calls } = await failure(402, JSON.stringify({
       code: "The caller does not have permission to execute the specified operation",
       error: XAI_NO_CREDITS,
     }));
-    expect(message).toBe(`xAI HTTP 402: ${XAI_NO_CREDITS}`);
+    expect(message).toBe("Your xAI account is out of credits (xAI says: \"Your team 0000-fixture has either used all available credits or reached its monthly spending limit\"). Add credits with xAI, then run it again.");
     expect(calls).toBe(1);
+  });
+
+  it("keeps an OpenAI-compatible endpoint's 402 line raw: it names no provider, and the Cloud trial credit reads it", async () => {
+    const events = await runTurn(() => new Response(JSON.stringify({ error: { message: "Insufficient credits", code: "trial_credit_used_up" } }), { status: 402 }));
+    expect(events.find((event) => event.type === "runtime.error")).toMatchObject({ message: "upstream HTTP 402: Insufficient credits (trial_credit_used_up)" });
   });
 
   it("reads an OpenAI-style error envelope's message", async () => {

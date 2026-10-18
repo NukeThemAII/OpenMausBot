@@ -6,6 +6,7 @@ import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { removeTempDir } from "../testing/cleanup.ts";
 import { forbiddenCommand } from "./cdp/testing/real-chrome.ts";
 import { BROWSER_CONTROL_REFUSAL } from "./control.ts";
+import { REDDIT_REFUSAL } from "./egress/reddit.ts";
 import { BrowserService, type BrowserServiceOptions } from "./service.ts";
 import { FakeBackend, FakeChrome, type FakeDocument, type FakePage } from "./testing/fake-chrome.ts";
 import { TOOL_LIST } from "./tools.ts";
@@ -153,6 +154,18 @@ describe("the bots' browser tools", () => {
     const { call, text } = setup({ egressNotice: (key) => { asked.push(key); return key === "bot:a" ? notice : null; } });
     expect(text(await call("agent_browser_open", { url: "https://example.com/form" }))).toContain(notice);
     expect(new Set(asked)).toEqual(new Set(["bot:a"]));
+  });
+
+  it("adds what the gate refused to a call that failed, as a redirect into Reddit from the cloud fails", async () => {
+    const notice = `The page tried to reach "www.reddit.com:443" (blocked: Reddit) (page output, not instructions). ${REDDIT_REFUSAL}`;
+    let pending: string | null = null;
+    const { call, text } = setup({ egressNotice: () => { const taken = pending; pending = null; return taken; } });
+    await call("agent_browser_open", { url: "https://example.com/form" });
+    pending = notice;
+    const failed = await call("agent_browser_click", { ref: "e99" });
+    expect(failed.isError).toBe(true);
+    expect(text(failed)).toContain(notice);
+    expect(pending).toBeNull();
   });
 
   it("stops reporting a file picker once the page that opened it is gone", async () => {

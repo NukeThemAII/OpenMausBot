@@ -149,6 +149,24 @@ test("while the Cloud is set up, or a payment is being linked, progress is asked
   assert.deepEqual(state.purchase, { state: "confirming", tier: "personal", paidAt: f.now - 60_000 }); assert.equal(state.entitlement.plan, "free"); assert.equal(f.delay, 15_000);
 });
 
+test("a connection that fails while the Admin says My Cloud can't be reached says why, from the Admin's latest word; otherwise the request's own error", async t => {
+  const f = await fixture(t); await f.connect();
+  const origin = "https://home-7f3k2.fly.dev", since = f.now - 6 * 60_000;
+  f.entitlement = { plan: "pro", tier: "pro", status: "active", expiresAt: f.now + 86_400_000, version: 1 };
+  f.cloud = { state: "ready", origin, pairingAvailable: true };
+  await f.client.refresh();
+  // The Admin can't make a connection code here (the fixture has no pairing route), and says nothing about why.
+  await assert.rejects(f.client.pairHome(), { message: "Cloud request failed." });
+  // Its health checks found the server down since this app last read the session: the app reads it again and says why.
+  f.cloud = { state: "ready", origin, pairingAvailable: true, unreachable: { cause: "host", since } };
+  await assert.rejects(f.client.pairHome(), { message: "The server My Cloud runs on is being restarted by our hosting provider. My Cloud and its files are safe, and it comes back on its own, usually within about 20 minutes." });
+  assert.deepEqual(f.client.state().machine, { status: "ready", origin, unreachable: { cause: "host", since } });
+  f.cloud = { ...f.cloud, unreachable: { cause: "no_answer", since } };
+  await assert.rejects(f.client.pairHome(), { message: "My Cloud hasn't answered for a few minutes. Nothing was lost, and we've been told." });
+  f.cloud = { state: "ready", origin, pairingAvailable: true };
+  await assert.rejects(f.client.pairHome(), { message: "Cloud request failed." });
+});
+
 test("a free trial and its AI credit come with a verified session, for display only; an Admin without them changes nothing", async t => {
   const f = await fixture(t); await f.connect();
   const DAY = 86_400_000, endsAt = f.now + 2 * DAY, origin = "https://home-7f3k2.fly.dev";

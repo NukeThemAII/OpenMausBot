@@ -48,7 +48,7 @@ it.each(["comfortable", "compact", "icons"] as const)("shows Files in Simple mod
 it("hides Files without a Ready My Cloud, and shows it when main says My Cloud is Ready", async () => {
   bridge("unavailable");
   await render();
-  expect(host.innerHTML).toBe("");
+  expect(row()).toBeNull();
   await act(async () => emit(files("syncing")));
   expect(row()).toBeTruthy();
   await act(async () => emit(files("unavailable")));

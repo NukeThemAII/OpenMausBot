@@ -24,7 +24,7 @@ import { browserRoot, profileDir, profileHash, profileKind, removeProfile, works
 import { BROWSER_CONTROL_REFUSAL, ProfileControl, type TakeResult } from "./control.ts";
 import { executeTool, toolFailure, type ToolContext } from "./dispatch.ts";
 import { HealthShown, pageHealthLine } from "./health.ts";
-import { errorResult, shapeResult, textResult, type ToolResult } from "./shape.ts";
+import { errorResult, shapeResult, textResult, withParts, type ToolResult } from "./shape.ts";
 import { TabRegistry, type Tab } from "./tabs.ts";
 import { parseToolCall, RESTART_TOOL, TOOL_LIST } from "./tools.ts";
 import { personUrl, ViewerHub, type Viewer, type ViewerOptions, type ViewerOutput } from "./viewers/core.ts";
@@ -427,7 +427,8 @@ export class BrowserService {
       }
       const failure = toolFailure(error);
       if (!failure) throw error;
-      return failure;
+      // A navigation the egress gate refused (a redirect into Reddit from the cloud) says why.
+      return withParts(failure, this.#options.egressNotice?.(profile.key));
     } finally {
       if (control.call === parsed.call.name) control.call = null;
     }

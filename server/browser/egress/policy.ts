@@ -14,7 +14,7 @@ export type EgressHost = "desktop" | "server" | "cloud";
 
 export type AddressClass = "public" | "loopback" | "this-machine" | "private" | "link-local" | "metadata" | "reserved";
 
-export type Refusal = "omb" | "this-computer" | "local-network" | "link-local" | "metadata" | "reserved" | "rebinding";
+export type Refusal = "omb" | "this-computer" | "local-network" | "link-local" | "metadata" | "reserved" | "rebinding" | "reddit";
 
 /** How a refusal reads in the page-health line. */
 export const REFUSAL_TEXT: Record<Refusal, string> = {
@@ -25,6 +25,7 @@ export const REFUSAL_TEXT: Record<Refusal, string> = {
   metadata: "the cloud metadata service",
   reserved: "a reserved address",
   rebinding: "a web address that points at this computer",
+  reddit: "Reddit",
 };
 
 const family = (address: string) => (isIP(address) === 6 ? "ipv6" : "ipv4");

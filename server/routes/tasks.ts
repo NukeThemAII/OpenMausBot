@@ -1,4 +1,4 @@
-import { approvalModeFor, isApprovalMode, type ApprovalMode } from "../../shared/approval-mode.ts";
+import { approvalModeFor, approvalModeWidens, isApprovalMode, type ApprovalMode } from "../../shared/approval-mode.ts";
 import { threadLinkUrl } from "../../shared/thread-link.ts";
 import type { WireBot, WireTask } from "../../shared/wire.ts";
 import { validateBotCwd } from "../bot-cwd.ts";
@@ -279,8 +279,7 @@ export function createTaskRoutes(deps: TaskRouteDeps): RouteHandler {
         if (nextMode === "auto" && current.computer === "local" && approvalModeFor(current) !== "auto" && body.acknowledgeLocalAuto !== true) {
           return json(res, 400, { error: "Auto mode on this computer requires confirming the warning first (acknowledgeLocalAuto)" });
         }
-        const approvalRank = { ask: 0, edits: 1, auto: 2, full: 3, custom: 4 } as const;
-        const widensMode = approvalRank[nextMode] > approvalRank[approvalModeFor(current)];
+        const widensMode = approvalModeWidens(approvalModeFor(current), nextMode);
         const nextAllow = profile.alwaysAllow ?? [];
         const widensAllow = nextAllow.some((key) => !(current.alwaysAllow ?? []).includes(key));
         // Full has no OMB-side guard here; the narrower levels keep this one.

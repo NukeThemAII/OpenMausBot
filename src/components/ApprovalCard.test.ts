@@ -54,7 +54,7 @@ describe("ApprovalCard decided by voice", () => {
 });
 
 describe("ApprovalCard routine proposals", () => {
-  it("describes a chat-created routine as scheduling rather than a raw tool call", () => {
+  it("shows a routine card left open from before Triggers v2 as expired, with nothing to confirm", () => {
     const message: Message = {
       id: "routine-card",
       role: "bot",
@@ -71,8 +71,10 @@ describe("ApprovalCard routine proposals", () => {
     };
 
     const markup = renderToStaticMarkup(createElement(ApprovalCard, { message }));
-    expect(markup).toContain("Wants to schedule a routine");
     expect(markup).toContain("Weekdays at 09:00");
+    expect(markup).toContain("Expired");
+    expect(markup).not.toContain("Waiting for your confirmation");
+    expect(pendingApprovals([message])).toEqual([]);
   });
 
   it("records the exact routine action after confirmation", () => {
@@ -123,36 +125,6 @@ describe("ApprovalCard routine proposals", () => {
     const markup = renderToStaticMarkup(createElement(ApprovalCard, { message }));
     expect(markup).toContain("Routine run queued");
     expect(markup).not.toContain("Routine started");
-  });
-
-  it("speaks a routine's concise title instead of narrating all instructions", () => {
-    const instructions = "Review every item in the backlog. ".repeat(500);
-    const message: Message = {
-      id: "routine-voice-card",
-      role: "bot",
-      kind: "options",
-      at: 1,
-      card: {
-        title: "Schedule routine “Backlog review”?",
-        subtitle: `Action: Create routine\n\nInstructions:\n${instructions}`,
-        options: ["Confirm", "Cancel"],
-        requestId: "routine-request",
-        tool: "schedule_routine",
-        routineRequest: { ...routineRequest, operation: createRoutineOperation },
-      },
-    };
-    const pending: Pending = {
-      message,
-      requestId: "routine-request",
-      tool: "schedule_routine",
-      detail: message.card!.subtitle,
-    };
-
-    const spoken = spokenApprovalPrompt(pending, "Mochi");
-    expect(spoken).toContain("Schedule routine “Backlog review”?");
-    expect(spoken).toContain("Review the schedule and instructions on screen");
-    expect(spoken).not.toContain("Review every item in the backlog");
-    expect(spoken.length).toBeLessThan(200);
   });
 });
 
@@ -621,11 +593,15 @@ describe("ApprovalCard for a change that applied on its own", () => {
   });
   const render = (message: Message) => renderToStaticMarkup(createElement(ApprovalCard, { bot: { name: "Scout" }, message, threadId: "thread-1" }));
 
+  // A create renders the live trigger card (TriggerCard.test.ts); every later change is this one line.
+  const update = { action: "update" as const, routineId: "routine-1", expectedUpdatedAt: 1, changes: { name: "Renamed" } };
+  const before = { ...createRoutineOperation.routine, enabled: true };
+
   it("reads as one plain line with Undo instead of the approval box", () => {
     const at = new Date();
     at.setHours(14, 30, 0, 0);
-    const markup = render(routineCard(createRoutineOperation, { name: "Check before dentist", schedule: { type: "once", at: at.getTime() } }));
-    expect(markup).toMatch(/Scout scheduled a routine: Check before dentist, today 2:30/);
+    const markup = render(routineCard(update, { name: "Check before dentist", schedule: { type: "once", at: at.getTime() }, appliedUpdatedAt: 2, before }));
+    expect(markup).toMatch(/Scout changed an automation: Check before dentist, today 2:30/);
     expect(markup).toContain(">Undo<");
     expect(markup).toContain(">Details<");
     expect(markup).not.toContain("30 14 * * 3");
@@ -635,22 +611,22 @@ describe("ApprovalCard for a change that applied on its own", () => {
 
   it("never shows a cron expression that has no plain name", () => {
     const markup = render(routineCard(
-      { ...createRoutineOperation, routine: { ...createRoutineOperation.routine, schedule: { type: "cron", expression: "*/7 3-5 * * 1", timeZone: "UTC" } } },
+      { ...update, changes: { schedule: { type: "cron", expression: "*/7 3-5 * * 1", timeZone: "UTC" } } },
       { name: "Odd hours", schedule: { type: "cron", expression: "*/7 3-5 * * 1", timeZone: "UTC" } },
     ));
-    expect(markup).toContain("Scout scheduled a routine: Odd hours");
+    expect(markup).toContain("Scout changed an automation: Odd hours");
     expect(markup).not.toContain("*/7");
   });
 
   it("says Undone after Undo, and offers no Undo for a run", () => {
-    const undone = { ...routineCard(createRoutineOperation, { name: "Backlog review" }) };
+    const undone = { ...routineCard(update, { name: "Backlog review", appliedUpdatedAt: 2, before }) };
     undone.card = { ...undone.card!, undone: true };
     const markup = render(undone);
-    expect(markup).toContain("Scout scheduled a routine: Backlog review");
+    expect(markup).toContain("Scout changed an automation: Backlog review");
     expect(markup).toContain(" · Undone");
     expect(markup).not.toContain(">Undo<");
     const run = render(routineCard({ action: "run_now", routineId: "routine-1", expectedUpdatedAt: 1 }, { name: "Backlog review" }));
-    expect(run).toContain("Scout started a routine: Backlog review");
+    expect(run).toContain("Scout ran an automation: Backlog review");
     expect(run).not.toContain(">Undo<");
   });
 
@@ -681,6 +657,24 @@ describe("ApprovalCard for a change that applied on its own", () => {
       },
     }));
     expect(skill).toContain("Scout added a skill: file-expense");
+  });
+
+  it("reads team setup and team memory as one line, with Undo except for a deletion", () => {
+    const setup = { version: 1 as const, requestId: "t", botId: "bot-1", threadId: "thread-1", reason: "asked", createdAt: 1, requesterRevision: "r", newTeams: [] };
+    const team = render(applied({ tool: "set_up_team", teamSetupRequest: { ...setup, operations: [], resumed: true,
+      result: { state: "applied", newTeams: [], bots: [{ id: "b2", name: "Mira", action: "created" }, { id: "b3", name: "Ada", action: "updated" }] },
+      undo: { created: ["b2"], before: [], revisions: {} } } }));
+    expect(team).toContain("Scout set up the team: added @Mira; updated @Ada");
+    expect(team).toContain(">Undo<");
+    const deleted = render(applied({ tool: "delete_bot", teamSetupRequest: { ...setup, operations: [], deletion: { botId: "b3", name: "Ada", expectedRevision: "r" },
+      result: { state: "applied", newTeams: [], bots: [{ id: "b3", name: "Ada", action: "deleted" }] } } }));
+    expect(deleted).toContain("Scout deleted @Ada");
+    expect(deleted).not.toContain(">Undo<");
+    const memory = render(applied({ tool: "propose_team_memory", subtitle: "Person: Ada Lovelace — Runs the payroll review.",
+      teamMemoryRequest: { section: "", entryId: "e", kind: "person", revision: "v1" } }));
+    expect(memory).toContain("Scout saved to team memory: Person: Ada Lovelace");
+    expect(memory).toContain(">Undo<");
+    expect(memory).not.toContain("Remember");
   });
 
   it("keeps the approval box for a card a person confirmed", () => {

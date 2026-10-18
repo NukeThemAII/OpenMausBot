@@ -5,12 +5,13 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { z } from "zod";
 import { sharedSignIn, type SignInLists } from "./admin-activity.ts";
 import {
-  backupsBytes, beginUpload, CLOUD_MOVE_MAX_BYTES, CLOUD_MOVE_MAX_PART_BYTES, CLOUD_MOVE_PART_BYTES, completedUpload, discardNextPreviousCloud,
-  discardUpload, enabledRoutineCount, forgetMoveRestore, freeVolumeBytes, isEmptyWorkspace, moveSpaceNeeded, noteMoveRestore, prepareNextPreviousCloud,
+  backupsBytes, beginUpload, chatsSyncedAt, CLOUD_MOVE_MAX_BYTES, CLOUD_MOVE_MAX_PART_BYTES, CLOUD_MOVE_PART_BYTES, completedUpload, discardNextPreviousCloud,
+  discardUpload, enabledRoutineCount, forgetMoveRestore, freeVolumeBytes, isEmptyWorkspace, moveSpaceNeeded, noteChatsBrought, noteMoveRestore, prepareNextPreviousCloud,
   previousCloud, previousCloudArchiveBytes, removeMoveFiles, stagePreviousCloud, tidyCloudMoveStorage, totalVolumeBytes, uploadStatus, validUploadDeclaration,
   workspaceContents, workspaceMoveSize, writeUploadPart, type PreviousCloud,
 } from "./cloud-move.ts";
-import { commitPendingWorkspaceRestore, createWorkspaceBackup, stageWorkspaceBackup } from "./workspace-backup.ts";
+import { mergeStagedChats, type ChatMergeResult, type ChatStore } from "./cloud-chat-merge.ts";
+import { commitPendingWorkspaceRestore, createWorkspaceBackup, stagedWorkspaceData, stageWorkspaceBackup } from "./workspace-backup.ts";
 import type { RequestAuth } from "./request-auth.ts";
 import type { WorkspaceLeftBehind } from "../shared/workspace-backup.ts";
 
@@ -20,10 +21,11 @@ const HELD_CACHE_MS = 30_000;
 
 type MoveSummary = { appVersion: string; files: number; bytes: number; bots: number; groups: number; threads: number; messages: number };
 export type CloudMoveJob =
-  | { kind: "preview" | "restore" | "undo"; state: "running" }
+  | { kind: "preview" | "restore" | "undo" | "merge"; state: "running" }
   | { kind: "preview"; state: "done"; id: string; summary: MoveSummary }
   | { kind: "restore" | "undo"; state: "done"; id: string; previous?: Omit<PreviousCloud, "bytes"> | null }
-  | { kind: "preview" | "restore" | "undo"; state: "failed"; error: string };
+  | { kind: "merge"; state: "done"; id: string; result: ChatMergeResult }
+  | { kind: "preview" | "restore" | "undo" | "merge"; state: "failed"; error: string };
 
 /** A hosted organisation workspace, or (off a Cloud home) a sign-in list letting someone else in; the owner's own address alone is not. */
 export function workspaceShared(input: { hosted: boolean; cloudHome: boolean; signIn: SignInLists }): boolean {
@@ -42,6 +44,8 @@ export function createCloudMoveRoutes(options: {
   status: () => { busy: boolean; pendingRestore: boolean };
   restored: { id?: string; restored?: boolean; rolledBack?: boolean; safetyCopyPath?: string; leftBehind?: WorkspaceLeftBehind };
   restart: () => void;
+  /** Where Bring newer chats adds what an upload has and this server lacks; without one, this server cannot. */
+  store?: ChatStore;
   freeBytes?: (path: string) => number;
   volumeBytes?: (path: string) => number;
   restartDelayMs?: number;
@@ -88,9 +92,9 @@ export function createCloudMoveRoutes(options: {
       if (job === current) job = { kind, state: "failed", error: error instanceof Error ? error.message : "The copy could not finish." };
     });
   }
-  const quietly = async <T>(work: () => Promise<T>): Promise<T> => {
+  const quietly = async <T>(work: () => Promise<T>, keepLocked = true): Promise<T> => {
     for (let attempt = 0; ; attempt++) {
-      try { return await options.exclusive(work, true); } catch (error) {
+      try { return await options.exclusive(work, keepLocked); } catch (error) {
         if (attempt >= 4 || (error as { status?: number }).status !== 409) throw error;
         await new Promise((resolve) => setTimeout(resolve, options.gateRetryMs ?? 2_000));
       }
@@ -200,9 +204,35 @@ export function createCloudMoveRoutes(options: {
         json(res, 202, { job });
         return true;
       }
+      if (method === "POST" && path === `${CLOUD_MOVE_PREFIX}/merge` && options.store) {
+        const body = z.object({ sha256: z.string().regex(/^[a-f0-9]{64}$/), password: z.string().min(12).max(1024) }).parse(await options.readBody(req, 8192));
+        ready();
+        dropStaged();
+        const store = options.store;
+        start("merge", async () => {
+          const file = await completedUpload(options.dataDir, body.sha256);
+          let staged;
+          try { staged = await stageWorkspaceBackup(options.dataDir, file, { password: body.password, currentAppVersion: options.appVersion }); }
+          finally { discardUpload(options.dataDir); }
+          try {
+            // Applied while no bot is mid-turn here, so nothing writes a conversation while rows are added to it.
+            const result = await quietly(async () => {
+              check(req, auth);
+              const merged = mergeStagedChats(store, options.dataDir, stagedWorkspaceData(options.dataDir, staged.id), chatsSyncedAt(options.dataDir));
+              noteChatsBrought(options.dataDir, staged.summary.createdAt);
+              return merged;
+            }, false);
+            return { kind: "merge", state: "done", id: staged.id, result };
+          } finally { removeMoveFiles(options.dataDir, staged.id); }
+        });
+        json(res, 202, { job });
+        return true;
+      }
       if (method === "POST" && path === `${CLOUD_MOVE_PREFIX}/discard`) {
         await options.readBody(req, 4096);
-        if (job?.state === "running" && job.kind !== "preview") throw failure("This server is already replacing its workspace.", 409);
+        if (job?.state === "running" && job.kind !== "preview") {
+          throw failure(job.kind === "merge" ? "This server is adding chats from this computer. Wait for it to finish." : "This server is already replacing its workspace.", 409);
+        }
         if (job?.state === "running") discardPreview = true;
         dropStaged();
         held = null;

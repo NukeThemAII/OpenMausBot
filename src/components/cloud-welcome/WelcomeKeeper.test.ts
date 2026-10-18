@@ -83,7 +83,7 @@ beforeEach(() => {
     return Promise.resolve().then(() => structuredClone(server));
   });
   const bridge: CloudMoveBridge = {
-    state: vi.fn().mockResolvedValue(overview), start: vi.fn(), cancel: vi.fn(), restorePrevious: vi.fn(), dismiss: vi.fn(), onState: vi.fn(() => () => {}),
+    state: vi.fn().mockResolvedValue(overview), start: vi.fn(), cancel: vi.fn(), restorePrevious: vi.fn(), bring: vi.fn(), dismiss: vi.fn(), onState: vi.fn(() => () => {}),
   };
   window.ogb = { platform: "darwin", cloudMove: bridge, workspaces: { state: vi.fn().mockResolvedValue({ local: false, name: "Studio Cloud" }), menu: vi.fn() } } as unknown as typeof window.ogb;
   host = document.createElement("div");

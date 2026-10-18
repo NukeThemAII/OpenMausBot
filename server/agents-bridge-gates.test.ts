@@ -135,9 +135,9 @@ describe("every mount that puts a selection in front of the agents server", () =
     it("lists the whole catalog but what the selection leaves out, with no bridge tools", async () => {
       const names = await mounted(DENY_VM);
       for (const absent of ["agents_find_tool", "agents_use_tool", "agents_vm_exec"]) expect(names, absent).not.toContain(absent);
-      expect(names).toEqual(expect.arrayContaining(["agents_coordinate_bots", "agents_propose_routine", "agents_list_routines", "agents_session_search"]));
+      expect(names).toEqual(expect.arrayContaining(["agents_coordinate_bots", "agents_create_trigger", "agents_list_triggers", "agents_session_search"]));
       // still OpenMausBot's own server, which never asks
-      expect(session!.view("agents_list_routines", {})).toMatchObject({ ask: false });
+      expect(session!.view("agents_list_triggers", {})).toMatchObject({ ask: false });
       expect(() => session!.validate("agents_use_tool", { name: "vm_exec" })).toThrow("not advertised for this turn");
     });
 
@@ -148,8 +148,8 @@ describe("every mount that puts a selection in front of the agents server", () =
     it("is bridged as built when the bot has no selection", async () => {
       const names = await mounted();
       expect(names.slice(-2)).toEqual(["agents_find_tool", "agents_use_tool"]);
-      expect(names).not.toContain("agents_propose_routine");
-      expect(session!.view("agents_use_tool", { name: "list_routines" })).toMatchObject({ ask: false });
+      expect(names).not.toContain("agents_create_trigger");
+      expect(session!.view("agents_use_tool", { name: "list_triggers" })).toMatchObject({ ask: false });
     });
   });
 });
@@ -161,13 +161,13 @@ describe("the gate and the proxy as processes", () => {
     await withServer(gateServer({ name: "agents", server: BRIDGED, threadId: "thread-gated", budget: 0, toolScope: DENY_VM })!, async (ask) => {
       const names = namesOf(await ask("tools/list"));
       for (const absent of ["find_tool", "use_tool", "vm_exec"]) expect(names, absent).not.toContain(absent);
-      expect(names).toEqual(expect.arrayContaining(["coordinate_bots", "propose_routine", "list_routines", "post_to_room"]));
+      expect(names).toEqual(expect.arrayContaining(["coordinate_bots", "create_trigger", "list_triggers", "post_to_room"]));
       expect(names.length).toBeGreaterThan(20);
       expect((await call(ask, "vm_exec", { command: "true" })).error).toEqual(EXCLUDED);
       // through use_tool the gate refuses it by the tool it names, and for any
       // other tool there is no use_tool behind the gate to call
       expect((await use(ask, "vm_exec", { command: "true" })).error).toEqual(EXCLUDED);
-      expect((await use(ask, "list_routines")).error).toEqual({ code: -32602, message: "Unknown tool: use_tool" });
+      expect((await use(ask, "list_triggers")).error).toEqual({ code: -32602, message: "Unknown tool: use_tool" });
       expect((await call(ask, "find_tool", { query: "run a shell command" })).error).toEqual({ code: -32602, message: "Unknown tool: find_tool" });
     });
   });
@@ -175,7 +175,7 @@ describe("the gate and the proxy as processes", () => {
   it("an allow-list over one: exactly the allowed tools, and neither bridge tool to be hidden by it", async () => {
     await withServer(gateServer({ name: "agents", server: BRIDGED, threadId: "thread-gated", budget: 0, toolScope: ONLY_LIST_BOTS })!, async (ask) => {
       expect(namesOf(await ask("tools/list"))).toEqual(["list_bots"]);
-      expect((await use(ask, "list_routines")).error).toEqual(EXCLUDED);
+      expect((await use(ask, "list_triggers")).error).toEqual(EXCLUDED);
       expect((await call(ask, "find_tool", { query: "routines" })).error).toEqual(EXCLUDED);
     });
   });
@@ -199,7 +199,7 @@ describe("the gate and the proxy as processes", () => {
       expect((await call(ask, "find_tool", { query: "run a shell command in the VM" })).result!.isError).toBe(false);
     });
     // with an allow-list, naming the two bridge tools does not let a tool outside it through
-    await withServer(forgetful({ allow: ["mcp:agents:use_tool", "mcp:agents:find_tool", "mcp:agents:list_routines"] }), async (ask) => {
+    await withServer(forgetful({ allow: ["mcp:agents:use_tool", "mcp:agents:find_tool", "mcp:agents:list_triggers"] }), async (ask) => {
       expect((await use(ask, "vm_exec", { command: "true" })).error).toEqual(EXCLUDED);
       expect((await use(ask, "start_thread", { title: "t", message: "m" })).error).toEqual(EXCLUDED);
     });

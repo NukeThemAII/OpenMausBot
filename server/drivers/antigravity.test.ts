@@ -679,6 +679,7 @@ describe("Antigravity driver over shared ACP", () => {
     expect(antigravityPermissionMode(false, "ask")).toBe("default");
     expect(antigravityPermissionMode(false, "auto")).toBe("default");
     expect(antigravityPermissionMode(false, "edits")).toBe("auto_edit");
+    expect(antigravityPermissionMode(false, "full")).toBe("yolo");
     expect(antigravityPermissionMode(true)).toBe("yolo");
     expect(antigravityPermissionMode(true, "edits")).toBe("yolo");
   });

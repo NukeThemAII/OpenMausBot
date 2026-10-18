@@ -26,18 +26,22 @@ import { isRoutineApproval, isSkillApproval, pendingApprovals, spokenApprovalPro
 import { callStarted } from "@/lib/product-events";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { callCapabilityHelp, type CallCapabilityHelp } from "@/lib/call-capability";
+import { onCallStartRequest } from "@/lib/call-start-request";
 import { VoiceSetupDialog } from "./VoiceSetupDialog";
+import { openBotSettings } from "./bot-panel/panel-link";
 
 type Phase = "listening" | "sending" | "working" | "speaking";
 const CALL_ENDPOINT_MS = 850;
 
 export type CallButtonPlacement = "header" | "composer";
 
-export function CallButton({ bot, placement = "header" }: { bot: Bot; placement?: CallButtonPlacement }) {
+/** `fill` (Simple composer): a round button in that colour, with no chevron; the + menu picks the call mode. */
+export function CallButton({ bot, placement = "header", fill }: { bot: Bot; placement?: CallButtonPlacement; fill?: string }) {
   const { state } = useStore();
   return (
     <CallTargetButton
       placement={placement}
+      fill={fill}
       targetId={bot.id}
       targetName={bot.name}
       threadId={bot.threadId}
@@ -60,8 +64,10 @@ export function CallTargetButton({
   liveCapable = false,
   onStart,
   placement = "header",
+  fill,
 }: {
   placement?: CallButtonPlacement;
+  fill?: string;
   targetId: string;
   targetName: string;
   threadId?: string;
@@ -99,6 +105,7 @@ export function CallTargetButton({
   const liveMode = canLive && mode === "live";
   const turnsReady = capabilitiesReady && supported && voiceReady;
   const unavailable = !active && !liveElsewhere && !liveMode && !turnsReady;
+  const lineHeldElsewhere = liveMode && !onCall && liveLineHeldElsewhere(media, state.liveCall);
   const voiceSetupRequired = capabilitiesReady && supported && !voiceReady;
   const cloudHome = state.config?.cloudHome === true;
   const [helpOpen, setHelpOpen] = useState(false);
@@ -175,6 +182,17 @@ export function CallTargetButton({
     startCall(targetId);
   };
 
+  // The Simple composer's + menu: the same choice as this button's own call-mode menu, which it replaces there.
+  const requestedStart = useRef<(next: CallMode) => void>(() => {});
+  requestedStart.current = (next) => {
+    // Hidden below while Live's line is held on another device: the + menu must not start a second call either.
+    if (active || liveElsewhere || (next === "live" && !canLive) || lineHeldElsewhere) return;
+    closePopovers();
+    setCallMode(next);
+    start(next);
+  };
+  useEffect(() => onCallStartRequest(targetId, (next) => requestedStart.current(next)), [targetId]);
+
   const popoverOpen = helpOpen || menuOpen || startPrompt;
   useEffect(() => {
     if (!popoverOpen) return;
@@ -207,7 +225,7 @@ export function CallTargetButton({
     if (opened) proRef.current?.focus();
   }, [proPopover]);
 
-  if (liveMode && !onCall && liveLineHeldElsewhere(media, state.liveCall)) return null;
+  if (lineHeldElsewhere) return null;
   return (
     <div ref={rootRef} className="relative flex items-center gap-0.5">
       <button
@@ -235,12 +253,15 @@ export function CallTargetButton({
         aria-label={label}
         title={label}
         data-call-button={placement}
+        style={fill && !active ? { backgroundColor: fill } : undefined}
         className={cn(
           "relative flex shrink-0 items-center justify-center disabled:opacity-60",
-          "rounded-l-3xl rounded-r-lg active:rounded-3xl transition-[color,background,border-radius]",
+          fill ? "rounded-full transition-[color,background,filter]" : "rounded-l-3xl rounded-r-lg active:rounded-3xl transition-[color,background,border-radius]",
           composer ? "size-8" : "size-9",
           active
             ? "bg-danger text-white hover:brightness-110"
+            : fill
+              ? "text-white hover:brightness-110"
             : composer
               ? unavailable
                 ? "bg-control text-ink-tertiary hover:text-ink-secondary"
@@ -257,7 +278,7 @@ export function CallTargetButton({
           <span className="absolute right-1 top-1 size-1.5 rounded-full bg-warning ring-2 ring-app" aria-hidden="true" />
         )}
       </button>
-      {canLive && (
+      {canLive && !fill && (
         <button
           ref={chevronRef}
           type="button"
@@ -354,7 +375,7 @@ export function CallTargetButton({
                 setHelpOpen(false);
                 if (remoteClient) {
                   if (setupBot.id !== targetId) openBot(dispatch, setupBot, showThreads);
-                  dispatch({ type: "toggleSettings", open: true, section: "voice" });
+                  openBotSettings(dispatch, "voice");
                   return;
                 }
                 setVoiceSetupOpen(true);

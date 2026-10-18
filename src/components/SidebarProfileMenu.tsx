@@ -335,7 +335,7 @@ export function profileMenuItems({
   ];
 }
 
-export function SidebarProfileMenu({ iconOnly = false }: { iconOnly?: boolean } = {}) {
+export function SidebarProfileMenu({ iconOnly = false, rail = false }: { iconOnly?: boolean; rail?: boolean } = {}) {
   const { state, dispatch } = useStore();
   const phone = useSidebarPhoneStatus();
   const connectPhone = useConnectPhoneEntry(state.config?.cloudHome === true);
@@ -388,11 +388,12 @@ export function SidebarProfileMenu({ iconOnly = false }: { iconOnly?: boolean } 
           <span
             ref={triggerRef}
             className={cn(
-              "relative flex size-[46px] items-center justify-center rounded-xl transition-colors",
+              "relative flex items-center justify-center rounded-xl transition-colors",
+              rail ? "size-10" : "size-[46px]",
               open ? "bg-raised" : "hover:bg-raised/50",
             )}
           >
-            <InitialsAvatar initials={profileInitials(profile)} size={28} />
+            <InitialsAvatar initials={profileInitials(profile)} size={rail ? 30 : 28} />
             {noteworthy && (
               <span
                 aria-hidden

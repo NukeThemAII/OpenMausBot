@@ -102,7 +102,7 @@ describe("The run card in the chat pane", () => {
   it("appears once the bot runs a control CLI, with the run as a checklist and its verified steps tagged", () => {
     const markup = render(run);
     expect(markup).toContain(CARD);
-    expect(markup).toContain('class="pointer-events-none absolute inset-x-0 bottom-0 z-[2]"');
+    expect(markup).toContain('class="pointer-events-none absolute inset-x-0 bottom-0 z-[2] chat-column-dock"');
     expect(markup).toContain(`>${t("chat.verify.title")}<`);
     expect(markup).toContain("2 steps · 2 verified · 1 failed");
     expect(markup).not.toContain("Execution timeline");
@@ -169,7 +169,7 @@ describe("The run card in the chat pane", () => {
     fixture.showRunCard = false;
     const markup = render(run);
     expect(markup).not.toContain(CARD);
-    expect(markup).toContain('class="pointer-events-none absolute inset-x-0 bottom-0 z-[2]"');
+    expect(markup).toContain('class="pointer-events-none absolute inset-x-0 bottom-0 z-[2] chat-column-dock"');
   });
 
   it("shows the card by default", () => {

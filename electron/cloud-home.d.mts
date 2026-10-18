@@ -1,5 +1,6 @@
 export type CloudMachineStatus = "provisioning" | "ready" | "stopped" | "payment-problem" | "failed";
 export type CloudSetupStep = "reserving" | "storage" | "starting" | "checking";
+export type CloudUnreachableCause = "host" | "no_answer";
 /** What the renderer may know about the person's Cloud machine: never a code. */
 export interface CloudMachine {
   status: CloudMachineStatus;
@@ -10,6 +11,8 @@ export interface CloudMachine {
   retryAt?: number;
   /** The volume now and the most the plan lets it grow to, when the Admin says. */
   disk?: { gb: number; maxGb: number };
+  /** Ready, but the Admin's health checks can't reach it: its server is being restarted by the hosting provider (`host`), or it stopped answering. */
+  unreachable?: { cause: CloudUnreachableCause; since: number };
 }
 /** A payment received but not yet linked to this account: nobody pays twice. */
 export interface CloudPurchase { state: "confirming" | "held"; tier?: string; paidAt?: number }
@@ -73,7 +76,9 @@ export declare const CLOUD_HOME_NAME: string;
 export declare const CLOUD_MACHINE_STATUSES: readonly CloudMachineStatus[];
 export declare const CLOUD_MACHINE_CONNECTABLE: readonly CloudMachineStatus[];
 export declare const CLOUD_SETUP_STEPS: readonly CloudSetupStep[];
+export declare const CLOUD_UNREACHABLE_CAUSES: readonly CloudUnreachableCause[];
 export declare function parseCloudSummary(input: unknown): CloudMachine | null;
+export declare function cloudUnreachableText(state: unknown, origin?: string | null): string | null;
 export declare function parseCloudPurchase(input: unknown): CloudPurchase | null;
 export declare const CLOUD_TRIAL_STATES: readonly CloudTrialState[];
 export declare function parseCloudTrial(input: unknown): CloudTrial | null;

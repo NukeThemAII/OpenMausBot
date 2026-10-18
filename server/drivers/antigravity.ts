@@ -37,7 +37,7 @@ export const STATIC_ANTIGRAVITY_MODELS: ModelCatalog = {
 
 /** Antigravity's session modes: `yolo` for Full, `auto_edit` for auto-accept edits, `default` otherwise (it has no reviewer for Auto). */
 export function antigravityPermissionMode(fullAuto: boolean, approvalMode?: ApprovalMode): "yolo" | "auto_edit" | "default" {
-  if (fullAuto) return "yolo";
+  if (fullAuto || approvalMode === "full") return "yolo";
   return approvalMode === "edits" ? "auto_edit" : "default";
 }
 

@@ -6,7 +6,7 @@ import { z } from "zod";
 import { cronScheduleLabel } from "../shared/cron-label.ts";
 import { normalizeCronSchedule, nextCronRuns } from "../shared/routine-schedule.ts";
 import { newId } from "./contracts.ts";
-import { SELF_ROUTINE_CAP, UNDO_STALE, type DirectApply, type DirectApplyCheck } from "./direct-apply.ts";
+import { UNDO_STALE, type DirectApply, type DirectApplyCheck } from "./direct-apply.ts";
 import { redactSecretsInText } from "./redact.ts";
 import { parseJson, schemaIssue, type JsonObject, type JsonValue } from "./schema.ts";
 import {
@@ -1029,7 +1029,7 @@ function revalidateOperation(operation: RoutineRequestOperation, manager: Routin
     if (duplicate) {
       // The tool cannot choose a result destination.
       throw new RoutineRequestError(
-        `An enabled routine with the same instructions and execution settings already exists (${duplicate.id}). Use list_routines to review it, then update or run that routine instead.`,
+        `An enabled routine with the same instructions and execution settings already exists (${duplicate.id}). Use list_triggers to review it, then change or run that trigger instead.`,
         409,
         { terminal: true },
       );
@@ -1157,13 +1157,15 @@ export class RoutineRequestService {
     this.autoApply = options.autoApply;
   }
 
+  /** Writes the card without applying it, the first half of submit(); no production path stops here since Triggers v2. */
   async propose(args: ProposeRoutineRequestArgs): Promise<RoutineProposalResult> {
     return this.prepare(args);
   }
 
+  /** Applies the change at once and records it on a card with Undo; it throws rather than leave anything pending. */
   async submit(args: ProposeRoutineRequestArgs) {
     const proposal = await this.prepare(args, true);
-    return { ...proposal, state: proposal.result ? "applied" as const : "pending" as const };
+    return { ...proposal, state: "applied" as const };
   }
 
   private async prepare(args: ProposeRoutineRequestArgs, submitted = false): Promise<RoutineProposalResult & {
@@ -1212,8 +1214,9 @@ export class RoutineRequestService {
     };
     if (args.from) messageInput.from = args.from;
     const owner = operation.forBot?.botId ?? botId;
+    // A submitted change always applies: OpenMausBot shows no confirmation card of its own. The grant only names why.
     const grant = submitted ? this.autoApply?.(botId, threadId, owner) ?? null : null;
-    const automatic = grant === "full-access" || (grant === "self" && !this.overSelfCap(operation, owner));
+    const automatic = submitted;
     // Check and append stay adjacent and synchronous, so no other proposal can interleave.
     const persistence = this.canPersist?.(botId, threadId, !automatic);
     if (persistence && !persistence.ok) {
@@ -1259,12 +1262,6 @@ export class RoutineRequestService {
       }, ...(grant ? { appliedBy: grant } : {}) };
     }
     throw new RoutineRequestError(result.state === "invalid" ? result.error : "The routine change could not be applied", result.state === "invalid" ? result.status : 409);
-  }
-
-  private overSelfCap(operation: RoutineRequestOperation, owner: string): boolean {
-    if (operation.action !== "create" && operation.action !== "resume") return false;
-    const enabled = this.routines.listRoutines().filter((routine) => routine.botId === owner && routine.enabled).length;
-    return enabled + 1 > SELF_ROUTINE_CAP;
   }
 
   private snapshotOf(routineId: string, owner: string): RoutineRequestSnapshot | undefined {

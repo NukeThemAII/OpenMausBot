@@ -26,11 +26,11 @@ import {
   type AppConfig,
 } from "../config.ts";
 import type { InstanceConfigMap, ModelSelection } from "../contracts.ts";
-import { deciderIncludedHere, deciderPatchKey, deciderSavePatch, type Decider } from "../decider/index.ts";
+import { deciderIncludedHere, deciderPatchKey, deciderSavePatch, deciderSharedKeyUsable, type Decider } from "../decider/index.ts";
 import type { ProviderRegistry } from "../harness/registry.ts";
 import { HOSTED_PROVIDER_SETTINGS_ERROR } from "../hosted-models.ts";
 import { forgetKey } from "../key-rejections.ts";
-import type { LocalVmIdleTimer } from "../local-vm-idle.ts";
+import type { ComputerIdleTimer } from "../computer-idle.ts";
 import { PROVIDER_KEY_KINDS } from "../provider-key-check.ts";
 import type { SessionRegistry } from "../sessions.ts";
 import type { SharedComputerControl } from "../shared-computer-control.ts";
@@ -55,7 +55,7 @@ export type ConfigStatus = Record<string, unknown>;
 export interface ConfigRouteDeps {
   store: Pick<Store, "bots" | "patchBot" | "clearVoiceSelections">;
   cfg: AppConfig;
-  registry: Pick<ProviderRegistry, "get">;
+  registry: Pick<ProviderRegistry, "get" | "forgetSnapshots">;
   sessions: Pick<SessionRegistry, "revalidateEmailSessions">;
   browserCleanup: Pick<BrowserCleanupCoordinator, "hasPendingProfile" | "prepare" | "abort" | "commit" | "ensure">;
   browserLive: Pick<BrowserLive, "closeAll" | "closeForSession">;
@@ -72,7 +72,7 @@ export interface ConfigRouteDeps {
   lendingEnabled(): boolean;
   providerConfigs(): InstanceConfigMap;
   localVmIdleMs(): number;
-  localVmIdles: { values(): Iterable<Pick<LocalVmIdleTimer, "setIdleMs">> };
+  localVmIdles: { values(): Iterable<Pick<ComputerIdleTimer, "setIdleMs">> };
   localVmActiveThreads: { readonly size: number };
   localVmLifecycleBusy: { readonly size: number };
   localVmImageBusy: Pick<BusyFlag, "get">;
@@ -141,7 +141,7 @@ export function createConfigRoutes(deps: ConfigRouteDeps): RouteHandler {
       }
       if (!Object.keys(patch).length) return json(res, 400, { error: "nothing to save" });
       if (patch.decider) {
-        const planned = deciderSavePatch(patch.decider, cfg.decider, deciderIncludedHere());
+        const planned = deciderSavePatch(patch.decider, cfg.decider, { included: deciderIncludedHere(), shared: deciderSharedKeyUsable(cfg) });
         if (!planned.ok) return json(res, 400, { error: planned.error });
         patch.decider = planned.patch;
       }
@@ -534,6 +534,8 @@ export function createConfigRoutes(deps: ConfigRouteDeps): RouteHandler {
         throw error;
       }
       for (const key of resetKeys) if (key) forgetKey(key);
+      // A saved key reaches an engine through the environment its status read uses, often with no reload.
+      registry.forgetSnapshots();
       if (patch.localVm?.idleTimeoutMinutes !== undefined) {
         for (const idle of localVmIdles.values()) idle.setIdleMs(localVmIdleMs());
       }

@@ -23,6 +23,7 @@ function homeOrigin(value) {
 }
 
 export const CLOUD_SETUP_STEPS = Object.freeze(["reserving", "storage", "starting", "checking"]);
+export const CLOUD_UNREACHABLE_CAUSES = Object.freeze(["host", "no_answer"]);
 const GB = 1024 ** 3;
 const record = value => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 const moment = value => Number.isSafeInteger(value) && value > 0;
@@ -40,7 +41,20 @@ export function parseCloudSummary(input) {
   const retryAt = status === "failed" && moment(input.retryAt) ? input.retryAt : null;
   const disk = record(input.disk) && wholeGb(input.disk.gb) && wholeGb(input.disk.maxGb) && input.disk.maxGb >= input.disk.gb
     ? { gb: input.disk.gb, maxGb: input.disk.maxGb } : null;
-  return { status, ...(origin ? { origin } : {}), ...(setup ? { setup } : {}), ...(retryAt ? { retryAt } : {}), ...(disk ? { disk } : {}) };
+  const unreachable = status === "ready" && record(input.unreachable) && CLOUD_UNREACHABLE_CAUSES.includes(input.unreachable.cause) && moment(input.unreachable.since)
+    ? { cause: input.unreachable.cause, since: input.unreachable.since } : null;
+  return { status, ...(origin ? { origin } : {}), ...(setup ? { setup } : {}), ...(retryAt ? { retryAt } : {}), ...(disk ? { disk } : {}), ...(unreachable ? { unreachable } : {}) };
+}
+
+const UNREACHABLE_TEXT = Object.freeze({
+  host: "The server My Cloud runs on is being restarted by our hosting provider. My Cloud and its files are safe, and it comes back on its own, usually within about 20 minutes.",
+  no_answer: "My Cloud hasn't answered for a few minutes. Nothing was lost, and we've been told.",
+});
+/** Why My Cloud can't be reached when the Admin says so, for main's dialogs; with `origin`, only for that server. */
+export function cloudUnreachableText(state, origin = null) {
+  const machine = state?.status === "connected" ? state.machine : null;
+  if (!machine?.unreachable || (origin !== null && machine.origin !== origin)) return null;
+  return UNREACHABLE_TEXT[machine.unreachable.cause] ?? null;
 }
 
 const PURCHASE_STATES = Object.freeze(["confirming", "held"]);

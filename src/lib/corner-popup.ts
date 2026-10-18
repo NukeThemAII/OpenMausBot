@@ -12,6 +12,6 @@ export function cornerPopupWaits(state: AppState, updater: UpdaterState | null,
   const setup = state.welcomeOpen || state.tourOpen || (Boolean(record?.completedAt) && currentStep(record) !== null)
     || welcomeDue(state.config, { remoteClient: false, legacyDone: emailGateDone(), ...(viewer ? { hosted: viewer.hosted, canSave: viewer.canSave, cloudHome: viewer.cloudHome } : {}) });
   return !state.connected || !state.config || setup || busy || quiet
-    || state.appSettingsOpen || state.settingsOpen || state.newBotOpen || state.pluginsOpen || state.triggersOpen || state.shortcutsOpen
+    || state.appSettingsOpen || state.settingsOpen || state.newBotOpen || state.pluginsOpen || state.shortcutsOpen
     || Boolean(updater && !["idle", "checking"].includes(updater.status));
 }

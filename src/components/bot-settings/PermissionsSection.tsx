@@ -17,12 +17,16 @@ import { ProposalStatus } from "./ProposalStatus";
 import type { useBotSettingsDerived } from "./useBotSettingsDerived";
 import { useBotEditor } from "./BotEditorContext";
 
+export type PermissionsPart = "chief" | "peers" | "approval" | "outbound";
+
 export function PermissionsSection({
   bot,
   derived,
+  parts,
 }: {
   bot: Bot;
   derived: ReturnType<typeof useBotSettingsDerived>;
+  parts?: readonly PermissionsPart[];
 }) {
   const { patch, engine, canCoordinate, approvalMode, trustedModesAvailable, sectionName, currentChief } = derived;
   const { state, dispatch } = useStore();
@@ -30,6 +34,7 @@ export function PermissionsSection({
   const { draft } = useBotEditor();
   const [localAutoWarning, setLocalAutoWarning] = useState<string | null>(null);
   const [commandAllowlistTarget, setCommandAllowlistTarget] = useState<{ botId: string; botName: string } | null>(null);
+  const shows = (part: PermissionsPart) => !parts || parts.includes(part);
   const applyFullEverywhere = () =>
     dispatch({ type: "updateBot", botId: bot.id, patch: { approvalMode: "full", applyToAllThreads: true } });
   const setApprovalMode = (mode: ApprovalMode) => {
@@ -47,7 +52,7 @@ export function PermissionsSection({
 
   return (
     <div className="flex flex-col gap-4">
-      <div
+      {shows("chief") && <div
         className={cn(
           "rounded-xl border p-4",
           bot.chiefOfStaff ? "border-accent/40 bg-accent/10" : "border-hairline/40 bg-card",
@@ -95,9 +100,9 @@ export function PermissionsSection({
           onSave={managedSections => patch({ managedSections, acknowledgePeerScope: true })}
         />}
         {bot.chiefOfStaff && <ProposalStatus bot={bot} kind="owner" />}
-      </div>
+      </div>}
 
-      <div className="flex items-center justify-between gap-4 rounded-xl bg-card p-4">
+      {shows("peers") && <div className="flex items-center justify-between gap-4 rounded-xl bg-card p-4">
         <div>
           <div className="text-[15px] font-medium text-ink">Ask me before contacting other bots</div>
           <div className="mt-0.5 text-[13px] text-ink-secondary">
@@ -115,9 +120,9 @@ export function PermissionsSection({
           title={!bot.approvePeerComms && !canCoordinate ? "This model cannot contact other bots" : undefined}
           className="disabled:cursor-not-allowed"
         />
-      </div>
+      </div>}
 
-      <div className="rounded-xl bg-card p-4">
+      {shows("approval") && <div className="rounded-xl bg-card p-4">
         <div className="text-[15px] font-medium text-ink">Approval level</div>
         <div className="mt-0.5 text-[13px] text-ink-secondary">
           {draft ? "Default for the new bot's threads, routines and delegated work." : "Default for new threads, routines and delegated work. Full access also applies at once to every existing thread. Use Refresh permissions on a thread to apply the current level to that conversation."}
@@ -147,14 +152,14 @@ export function PermissionsSection({
           className="mt-3 block text-[13px] text-accent hover:underline"
           onClick={() => setCommandAllowlistTarget({ botId: bot.id, botName: bot.name })}
         >{t("commandAllowlist.manage")}</button>}
-      </div>
+      </div>}
 
       {commandAllowlistTarget && <CommandAllowlistDialog
         key={`command-allowlist:${commandAllowlistTarget.botId}`}
         {...commandAllowlistTarget}
         onClose={() => setCommandAllowlistTarget(null)}
       />}
-      {!draft && <OutboundControl key={bot.id} bot={bot} onChange={(outbound) => patch({ outbound })} />}
+      {!draft && shows("outbound") && <OutboundControl key={bot.id} bot={bot} onChange={(outbound) => patch({ outbound })} />}
       <LocalComputerAutoWarning
         open={localAutoWarning !== null}
         onCancel={() => setLocalAutoWarning(null)}

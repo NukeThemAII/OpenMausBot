@@ -35,10 +35,13 @@ export interface CloudMoveStatus extends ServerIdentity {
   rolledBackId: string | null;
   partBytes: number;
 }
-export type CloudMovePhase = "idle" | "preparing" | "growing" | "exporting" | "uploading" | "checking" | "replacing" | "restarting" | "done" | "failed";
+export type CloudMovePhase = "idle" | "preparing" | "growing" | "exporting" | "uploading" | "checking" | "merging" | "replacing" | "restarting" | "done" | "failed";
+/** What Bring newer chats added: `messages` counts text lines; `intoExisting` those added to conversations the destination
+ * already had (its bots have not read them); `deleted` conversations the destination once had and deleted since. */
+export interface BroughtChats { conversations: number; messages: number; intoExisting: number; skippedBots: number; skippedRooms: number; deleted: number }
 export interface CloudMoveState {
   phase: CloudMovePhase;
-  action?: "move" | "restore";
+  action?: "move" | "restore" | "bring";
   /** Where the current (or last) copy goes; an overview's null: this
    * computer's own page asked without naming a server. */
   destination?: MoveDestination | null;
@@ -57,6 +60,7 @@ export interface CloudMoveState {
   /** Routines that were on here and arrived paused on the Cloud. */
   routines?: number;
   leftBehind?: WorkspaceLeftBehind;
+  brought?: BroughtChats;
 }
 export interface MoveFit { fit: "now" | "grow" | "never"; neededBytes: number; freeBytes: number; maxBytes?: number; largest?: true; volumeBytes?: number; sizeGb?: number }
 /** What Settings and a server's card read (main adds the parts it knows). */
@@ -74,6 +78,8 @@ export interface CloudMoveOverview extends CloudMoveState {
   blocked?: MoveBlocked | null;
   /** busy_elsewhere: the server a copy is running to. */
   busyWith?: string;
+  /** This computer's own page, asked without naming a server: its bots and chats were copied to the person's Cloud. */
+  movedHome?: boolean;
 }
 /** `id`: a saved server's id, or "cloud"; only this computer's own page may
  * name one (a server's page is answered about itself). */
@@ -82,6 +88,8 @@ export interface CloudMoveBridge {
   start(id?: string): Promise<CloudMoveState>;
   cancel(): Promise<CloudMoveState>;
   restorePrevious(id?: string): Promise<CloudMoveState>;
+  /** This computer's page only. */
+  bring(id?: string): Promise<CloudMoveState>;
   dismiss(id?: string): Promise<CloudMoveOverview>;
   onState(callback: (state: CloudMoveState) => void): () => void;
 }
@@ -104,11 +112,13 @@ export declare function mintOwnerCode(fetchImpl: typeof fetch, origin: string, o
 export declare function parseMoveEstimate(value: unknown): MoveEstimate | null;
 export declare function moveFit(input: { localBytes: number; freeBytes: number; uploadReceived?: number; volumeBytes?: number | null; disk?: import("./cloud-home.mjs").CloudPlanDisk | null }): MoveFit;
 export declare function parseCloudMoveStatus(value: unknown): CloudMoveStatus | null;
+export declare function parseBrought(value: unknown): BroughtChats | null;
 export interface CloudMove {
   state(): CloudMoveState;
   estimate(signal?: AbortSignal): Promise<MoveEstimate>;
   move(dest: MoveTarget, options?: { requireEmpty?: boolean }): Promise<CloudMoveState>;
   restorePrevious(dest: MoveTarget): Promise<CloudMoveState>;
+  bring(dest: MoveTarget): Promise<CloudMoveState>;
   cancel(): CloudMoveState;
   reset(): CloudMoveState;
   running(): boolean;

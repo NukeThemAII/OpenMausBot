@@ -507,20 +507,14 @@ describe("routine comms e2e on the job runtime (fake ACP fleet)", () => {
       const send = await startRoutine(chief.id, "Create the specialist team and start the design review.");
       expect(send.status).toBe(201);
       const threadId = send.body.run.threadId;
-      let card: any;
+      // Team setup applies at once at every level, Ask included: its one record is a notice with Undo, and nothing waits on a person.
+      let notice: any;
       await waitUntil(async () => {
         const messages = (await api("GET", `/api/threads/${threadId}/messages?limit=50`)).body.messages ?? [];
-        card = messages.find((message: any) => message.card?.requestId && message.card?.title?.includes("Apply setup"))?.card;
-        return Boolean(card);
-      }, 30_000, "create_bot never showed the team setup card");
-      expect((await api("GET", "/api/bots")).body.bots.some((bot: any) => bot.name === "Pixel")).toBe(false);
-      await waitUntil(async () => (await api("GET", "/api/bots")).body.bots.every((bot: any) => !bot.busy), 15_000, "bots never went idle");
-      const applied = await fetch(`${BASE}/api/threads/${threadId}/respond`, {
-        method: "POST",
-        headers: { "content-type": "application/json", origin: BASE },
-        body: JSON.stringify({ requestId: card.requestId, behavior: "allow" }),
-      });
-      expect(applied.status, await applied.clone().text()).toBe(200);
+        notice = messages.find((message: any) => message.card?.requestId && message.card?.teamSetupRequest)?.card;
+        return Boolean(notice);
+      }, 30_000, "create_bot never showed the team setup notice");
+      expect(notice).toMatchObject({ title: "Team setup applied", autoApplied: true, answered: "allow", options: [] });
 
       let operator: any;
       let work: any[] = [];
@@ -546,6 +540,7 @@ describe("routine comms e2e on the job runtime (fake ACP fleet)", () => {
         modelSelection: defaultSelection,
       });
       expect(operator.chiefOfStaff).toBeFalsy();
+      expect(notice.teamSetupRequest.undo.created).toEqual([operator.id]);
       expect(work.some((message: any) => message.text?.includes("Review the new onboarding flow."))).toBe(true);
     },
     60_000,

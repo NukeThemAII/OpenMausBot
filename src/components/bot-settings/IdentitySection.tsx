@@ -15,29 +15,34 @@ import { ProposalStatus } from "./ProposalStatus";
 import { randomBotName } from "@/lib/random-bot-name";
 import { t } from "@/lib/i18n";
 
+export type IdentityPart = "avatar" | "provenance" | "name" | "title" | "blurb";
+
 export function IdentitySection({
   bot,
   patch,
   activeState,
   mascotMotion,
   namePlaceholder,
+  parts,
 }: {
   bot: Bot;
   patch: (patch: BotPatch) => void;
   activeState: MausState;
   mascotMotion: { kind: Exclude<MausMotion, "none">; nonce: number } | null;
   namePlaceholder?: string;
+  parts?: readonly IdentityPart[];
 }) {
   const [instructionsOpen, setInstructionsOpen] = useState(false);
   const { draft } = useBotEditor();
   const { state } = useStore();
+  const shows = (part: IdentityPart) => !parts || parts.includes(part);
 
   return (
     <div className="flex flex-col gap-4">
-      <BotProfileAvatarCard bot={bot} activeState={activeState} mascotMotion={mascotMotion} onPatch={patch} />
-      <PackageProvenance bot={bot} />
+      {shows("avatar") && <BotProfileAvatarCard bot={bot} activeState={activeState} mascotMotion={mascotMotion} onPatch={patch} />}
+      {shows("provenance") && <PackageProvenance bot={bot} />}
 
-      <div>
+      {shows("name") && <div>
         <div className="mb-1.5 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
           <label htmlFor={`bot-name-${bot.id}`} className="text-[13px] text-ink-secondary">Name</label>
           {draft && <div className="flex flex-wrap gap-1">
@@ -58,8 +63,8 @@ export function IdentitySection({
           placeholder={namePlaceholder}
           onChange={(e) => patch({ name: e.target.value })}
         />
-      </div>
-      <Field label="Title">
+      </div>}
+      {shows("title") && <Field label="Title">
         <ProposalStatus bot={bot} kind="chief" />
         <input
           className={inputCls}
@@ -68,8 +73,8 @@ export function IdentitySection({
           value={bot.title}
           onChange={(e) => patch({ title: e.target.value })}
         />
-      </Field>
-      <div className="block">
+      </Field>}
+      {shows("blurb") && <div className="block">
         <div className="mb-1.5 flex items-center justify-between gap-3">
           <label htmlFor={`bot-instructions-${bot.id}`} className="text-[13px] text-ink-secondary">
             Blurb
@@ -100,7 +105,7 @@ export function IdentitySection({
             </span>
           )}
         </div>
-      </div>
+      </div>}
 
       {instructionsOpen && <BotInstructionsDialog bot={bot} inline={draft} onClose={() => setInstructionsOpen(false)} />}
     </div>

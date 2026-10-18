@@ -42,8 +42,8 @@ import { writeClipboardText } from "./clipboard-write.mjs";
 import {
   ensureManagedComposioCredentials,
   managedComposioAccess,
+  managedComposioBrokerUrl,
   managedComposioChildEnvironment,
-  normalizeManagedComposioBrokerUrl,
 } from "./managed-composio.mjs";
 import {
   createManagedCompanionTunnel,
@@ -90,10 +90,11 @@ import { cloudLinkOpensSheet, colorDotIcons, createCloudLook, createCloudReadyNo
 import { createTrialNotices } from "./cloud-trial-notice.mjs";
 import { DESKTOP_PORTS, jsonFile, registerDesktopPrefs } from "./desktop-prefs.mjs";
 import { createProPlanRelay } from "./pro-plan.mjs";
-import { cloudHomeConnectUrl, cloudPlanDisk, isCloudHomeEntry, myCloudOrigin, rememberedCloudHome, savedCloudHomeOrigin, withCloudHome } from "./cloud-home.mjs";
+import { cloudHomeConnectUrl, cloudPlanDisk, cloudUnreachableText, isCloudHomeEntry, myCloudOrigin, rememberedCloudHome, savedCloudHomeOrigin, withCloudHome } from "./cloud-home.mjs";
 import { installCloudFiles } from "./cloud-sync-main.mjs";
 import { createCloudEntry } from "./cloud-entry.mjs";
 import { cloudPageSenderAllowed, createCloudMove, mintOwnerCode, moveBlocked, moveFit, moveRefusal, moveSenderDestination, parseCloudMoveStatus } from "./cloud-move.mjs";
+import { cloudMoveChoices } from "./cloud-move-choices.mjs";
 import { createOrgLibrary } from "./org-library.mjs";
 import { createCompanyBackups } from "./company-backups.mjs";
 import { createCompanyBackupSchedule } from "./company-backup-schedule.mjs";
@@ -115,7 +116,6 @@ const { MIN_BOUNDS, normalizeUnreadCount, parseWindowState, resolveWindowState }
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // vite binds IPv4; a bare "localhost" can resolve to ::1.
 const DEV_URL = process.env.ELECTRON_START_URL ?? "http://127.0.0.1:5199";
-const DEFAULT_COMPOSIO_BROKER_URL = "https://openmausbot-composio.milindsoni201.workers.dev";
 let SERVER_PORT = 8799;
 const APP_ICON = path.join(__dirname, "resources/app-icon.png");
 let desktopViewerWindow = null;
@@ -487,10 +487,7 @@ async function secureWorkspaceConfig() {
 }
 
 function composioBrokerUrl() {
-  const configured = process.env.OMB_COMPOSIO_BROKER_URL?.trim();
-  return normalizeManagedComposioBrokerUrl(
-    configured || (app.isPackaged ? DEFAULT_COMPOSIO_BROKER_URL : ""),
-  );
+  return managedComposioBrokerUrl(process.env.OMB_COMPOSIO_BROKER_URL, app.isPackaged);
 }
 
 // Finder/Explorer launches have no usable stdio, so the server child's output goes to server.log here.
@@ -1697,8 +1694,8 @@ async function workspaceMenuAction(action) {
 }
 
 function navigateMainWindow(url) {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  void mainWindow.loadURL(url).catch(() => {});
+  if (!mainWindow || mainWindow.isDestroyed()) return Promise.resolve(false);
+  return mainWindow.loadURL(url).then(() => true, () => false);
 }
 
 let rememberedHome = null;
@@ -2221,7 +2218,7 @@ function createWindow({ deferNavigation = false } = {}) {
     void dialog.showMessageBox({
       type: "warning",
       message: `${remote.name} is not reachable`,
-      detail: `${errorDescription}. Showing the local server instead; choose it again from the Server menu when it is back.`,
+      detail: `${cloudUnreachableText(cloudAccount?.state(), remote.origin) ?? `${errorDescription}.`} Showing the local server instead; choose it again from the Server menu when it is back.`,
     });
     void workspaceMenuAction(() => switchEnvironment(LOCAL_ID));
   });
@@ -2781,22 +2778,16 @@ async function peekCloudMove(origin) {
   } catch { return { status: null, refusal: "unreachable" }; }
 }
 
-const cloudMoveChoicesFile = () => path.join(app.getPath("userData"), "cloud-move.json");
-function cloudMoveDismissed(origin) {
-  try { return JSON.parse(fs.readFileSync(cloudMoveChoicesFile(), "utf8"))?.dismissed?.includes(origin) === true; } catch { return false; }
-}
+const moveChoices = () => cloudMoveChoices(path.join(app.getPath("userData"), "cloud-move.json"));
 function dismissCloudMove(origin) {
   const move = ensureCloudMove();
   if (!move.running() && move.state().destination?.origin === origin) move.reset();
-  if (!origin || cloudMoveDismissed(origin)) return;
-  let dismissed = [];
-  try { dismissed = JSON.parse(fs.readFileSync(cloudMoveChoicesFile(), "utf8"))?.dismissed ?? []; } catch {}
-  fs.writeFileSync(cloudMoveChoicesFile(), JSON.stringify({ dismissed: [...dismissed.filter(entry => typeof entry === "string"), origin].slice(-20) }), { mode: 0o600 });
+  moveChoices().dismiss(origin);
 }
 
 async function cloudMoveOverview(dest, onServerPage) {
   const move = ensureCloudMove(), state = move.state();
-  if (!dest) return { ...state, local: null, cloud: null, fit: null, suggest: false, destination: null, blocked: null };
+  if (!dest) return { ...state, local: null, cloud: null, fit: null, suggest: false, destination: null, blocked: null, movedHome: await cloudAccountRestored().then(() => moveChoices().movedHome(myCloud())) };
   const [local, peek] = await Promise.all([move.estimate().catch(() => null), dest.origin ? peekCloudMove(dest.origin) : { status: null, refusal: "unreachable" }]);
   const own = !state.destination || state.destination.origin === dest.origin;
   const cloud = peek.status;
@@ -2806,7 +2797,7 @@ async function cloudMoveOverview(dest, onServerPage) {
   const blocked = moveBlocked({ kind: dest.kind, refusal: peek.refusal, local, cloud, busyElsewhere: move.running() && !own });
   const hasWork = Boolean(local && (local.bots > 1 || local.rooms > 0 || local.chats > 0));
   const view = own ? state : { phase: "idle" };
-  const suggest = Boolean(onServerPage && !blocked && cloud?.empty && hasWork && fit?.fit !== "never" && view.phase === "idle" && !cloudMoveDismissed(dest.origin));
+  const suggest = Boolean(onServerPage && !blocked && cloud?.empty && hasWork && fit?.fit !== "never" && view.phase === "idle" && !moveChoices().dismissed(dest.origin));
   const shown = value => { if (!value) return null; const { environmentId: _, ...rest } = value; return rest; };
   return { ...view, local: shown(local), cloud: shown(cloud), fit, suggest, destination: { id: dest.id, name: dest.name, origin: dest.origin, kind: dest.kind }, blocked,
     ...(blocked === "busy_elsewhere" ? { busyWith: state.destination?.name } : {}) };
@@ -2836,6 +2827,7 @@ function moveSender(channel, event, id, { localOnly = false } = {}) {
 const named = dest => { if (!dest) throw new Error("Choose a server to copy this computer's bots and chats to."); return dest; };
 const afterCloudMove = dest => async result => {
   if (result.phase !== "done") return result;
+  try { if (dest.kind === "cloud") moveChoices().setHome(result.action === "move" ? dest.origin : null); } catch {}
   try {
     if (dest.id === environmentsState.activeId) navigateMainWindow(dest.origin);
     else if (environmentsState.environments.some(entry => entry.id === dest.id)) await switchEnvironment(dest.id);
@@ -2865,6 +2857,8 @@ ipcMain.handle("cloud-move:dismiss", (event, id) => {
   if (asked.dest) dismissCloudMove(asked.dest.origin);
   return cloudMoveOverview(asked.dest, asked.remote);
 });
+// Adds what the destination lacks and stays on this computer's Settings, where the result shows.
+ipcMain.handle("cloud-move:bring", (event, id) => ensureCloudMove().bring(named(moveSender("cloud-move:bring", event, id, { localOnly: true }).dest)));
 ipcMain.handle("cloud-move:restore-previous", (event, id) => {
   const dest = named(moveSender("cloud-move:restore-previous", event, id, { localOnly: true }).dest);
   return ensureCloudMove().restorePrevious(dest).then(afterCloudMove(dest));
@@ -3267,9 +3261,9 @@ app.whenReady().then(async () => {
   registerCuaIpc();
   androidDevice.registerIpc(ipcMain);
   registerUpdaterIpc({ pageAllowed: updaterPageAllowed });
-  registerDesktopPrefs({ ipcMain, ...jsonFile(path.join(app.getPath("userData"), "desktop-prefs.json")), cloudOffered: () => cloudAccountRestored().then(cloudOffersReady),
+  registerDesktopPrefs({ ipcMain, ...jsonFile(path.join(app.getPath("userData"), "desktop-prefs.json")), localConfig: jsonFile(path.join(desktopDataDir(), "config.json")).read, cloudOffered: () => cloudAccountRestored().then(cloudOffersReady),
     page: event => senderIsLocal(event) ? "local" : cloudPageAsking(event) ?? (workspaceSenderAllowed(event, mainWindow?.webContents, environmentsState, rendererOrigin()) ? "server" : null),
-    thisComputer: async () => { let ok = false; if (serverReady) await workspaceMenuAction(async () => { ok = (await switchEnvironment(LOCAL_ID))?.ok !== false; }); return ok; } });
+    thisComputer: async landing => { let ok = false; if (serverReady) await workspaceMenuAction(async () => { ok = (await switchEnvironment(LOCAL_ID))?.ok !== false; }); return ok && await navigateMainWindow(`${rendererOrigin()}/${landing}`); } });
   // Before the window, so the harness has the CUA descriptor on first render.
   cuaReady =
     !desktopRemoteAccess && (process.platform === "darwin" || process.platform === "linux" || process.platform === "win32")

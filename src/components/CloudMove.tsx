@@ -1,16 +1,17 @@
 import { useEffect, useRef, useState } from "react";
-import type { CloudMoveBridge, CloudMoveOverview, CloudMoveState } from "../../electron/cloud-move.mjs";
+import type { BroughtChats, CloudMoveBridge, CloudMoveOverview, CloudMoveState } from "../../electron/cloud-move.mjs";
 import type { LocaleKey } from "@/locales";
 import { cloudFilesBridge } from "@/lib/cloud-files";
 import { activeLocale, t } from "@/lib/i18n";
+import { useStore } from "@/state/store";
 import { OpenFilesButton } from "./OpenFilesButton";
 import { Card } from "./SettingsPrimitives";
 
-const RUNNING = new Set<CloudMoveState["phase"]>(["preparing", "growing", "exporting", "uploading", "checking", "replacing", "restarting"]);
+const RUNNING = new Set<CloudMoveState["phase"]>(["preparing", "growing", "exporting", "uploading", "checking", "merging", "replacing", "restarting"]);
 const CANCELLABLE = new Set<CloudMoveState["phase"]>(["preparing", "growing", "exporting", "uploading", "checking"]);
 const PHASE: Record<string, LocaleKey> = {
   preparing: "cloudMove.phase.preparing", growing: "cloudMove.phase.growing", exporting: "cloudMove.phase.exporting", uploading: "cloudMove.phase.uploading",
-  checking: "cloudMove.phase.checking", replacing: "cloudMove.phase.replacing", restarting: "cloudMove.phase.restarting",
+  checking: "cloudMove.phase.checking", merging: "cloudMove.phase.merging", replacing: "cloudMove.phase.replacing", restarting: "cloudMove.phase.restarting",
 };
 const ERROR: Record<string, LocaleKey> = {
   busy: "cloudMove.error.busy", cloud_busy: "cloudMove.error.cloudBusy", too_large: "cloudMove.error.tooLarge",
@@ -32,7 +33,7 @@ export const formatMoveBytes = (value: number) => {
 const savedAt = (iso: string) => new Intl.DateTimeFormat(activeLocale(), { dateStyle: "medium", timeStyle: "short" }).format(new Date(iso));
 
 type Destination = NonNullable<CloudMoveState["destination"]>;
-export type MoveActionKind = "start" | "cancel" | "open" | "check" | "dismiss";
+export type MoveActionKind = "start" | "bring" | "cancel" | "open" | "check" | "dismiss";
 export interface MoveView {
   server: string;
   running: boolean;
@@ -62,6 +63,7 @@ function errorText(error: NonNullable<CloudMoveState["error"]>, server: string, 
     return error.maxBytes !== undefined ? t("cloudMove.error.growUnavailable", { max: formatMoveBytes(error.maxBytes) }) : t("cloudMove.error.cloudFullPlain", { server });
   }
   if (error.code === "restore_failed") return t("cloudMove.error.notReplaced", { server, detail: error.message });
+  if (error.code === "merge_failed") return t("cloudMove.bring.failed", { server, detail: error.message });
   if (error.code === "outdated") {
     if (cloud) return t("cloudMove.error.cloudOutdated");
     return error.destVersion && error.localVersion ? t("cloudMove.error.serverOutdated", { server, dest: error.destVersion, local: error.localVersion })
@@ -99,8 +101,25 @@ export function leftBehindToShare(state: CloudMoveState): string[] | null {
   return state.phase === "done" && state.action !== "restore" && state.destination?.kind === "cloud" && paths.length > 0 && cloudFilesBridge() ? paths : null;
 }
 
+const counted = (count: number, one: LocaleKey, many: LocaleKey, params: Record<string, string> = {}) => t(count === 1 ? one : many, { count, ...params });
+
+/** What a finished Bring newer chats says: one sentence, then what stayed on this computer and what the bots there have not read. */
+export function broughtView(brought: BroughtChats | undefined, server: string): { text: string; next: string[] } {
+  const b = brought ?? { conversations: 0, messages: 0, intoExisting: 0, skippedBots: 0, skippedRooms: 0, deleted: 0 };
+  const messages = counted(b.messages, "cloudMove.bring.messageOne", "cloudMove.bring.messages");
+  const text = b.conversations
+    ? t("cloudMove.bring.done", { server, messages, conversations: counted(b.conversations, "cloudMove.bring.conversationOne", "cloudMove.bring.conversations") })
+    : b.messages ? t("cloudMove.bring.doneMessages", { server, messages }) : t("cloudMove.bring.none", { server });
+  return { text, next: [
+    ...(b.skippedBots ? [counted(b.skippedBots, "cloudMove.bring.skippedBotOne", "cloudMove.bring.skippedBots")] : []),
+    ...(b.skippedRooms ? [counted(b.skippedRooms, "cloudMove.bring.skippedRoomOne", "cloudMove.bring.skippedRooms")] : []),
+    ...(b.deleted ? [counted(b.deleted, "cloudMove.bring.deletedOne", "cloudMove.bring.deleted", { server })] : []),
+    ...(b.intoExisting ? [t("cloudMove.bring.context", { server })] : []),
+  ] };
+}
+
 export function moveNextSteps(state: CloudMoveState): string[] {
-  if (state.phase !== "done" || state.action === "restore") return [];
+  if (state.phase !== "done" || state.action === "restore" || state.action === "bring") return [];
   const server = state.destination?.name || t("cloudMove.thisServer");
   return [...(state.routines ? [t("cloudMove.doneRoutines", { count: state.routines, server })] : []), ...leftBehindStep(state, server), t("cloudMove.donePhone", { server })];
 }
@@ -115,13 +134,18 @@ export function moveView(overview: CloudMoveOverview | null, state: CloudMoveSta
     return view(phase ? { text: t(phase, { server }), tone: "status" } : null,
       CANCELLABLE.has(state.phase) ? { kind: "cancel", label: t("cloudMove.cancel") } : null, { running: true });
   }
+  if (state.phase === "done" && state.action === "bring") {
+    const brought = broughtView(state.brought, server);
+    return view({ text: brought.text, tone: "done" }, { kind: "dismiss", label: t("cloudMove.ok") }, { next: brought.next });
+  }
   if (state.phase === "done") {
     const text = state.action === "restore" ? t("cloudMove.restored", { server }) : t("cloudMove.done", { server, bots: state.moved?.bots ?? 0, chats: state.moved?.chats ?? 0 });
     return view({ text, tone: "done" }, { kind: "dismiss", label: t("cloudMove.ok") }, { next: moveNextSteps(state) });
   }
   if (state.phase === "failed" && state.error) {
-    const resumable = state.resumable === true;
-    return view({ text: errorText(state.error, server, cloud), tone: "error" }, actionFor(state.error.code, true, server, resumable), { resumable });
+    const resumable = state.resumable === true, action = actionFor(state.error.code, true, server, resumable);
+    const again = state.action === "bring" && action?.kind === "start" ? { kind: "bring" as const, label: t("cloudMove.bring.start", { server }) } : action;
+    return view({ text: errorText(state.error, server, cloud), tone: "error" }, again, { resumable });
   }
   const blocked = overview?.blocked;
   if (blocked) {
@@ -176,6 +200,7 @@ export function useCloudMove(bridge: CloudMoveBridge | undefined, destination?: 
   const run = (kind: MoveActionKind) => {
     if (!bridge) return;
     if (kind === "start") act(() => bridge.start(destination));
+    else if (kind === "bring") act(() => bridge.bring(destination));
     else if (kind === "cancel") act(() => bridge.cancel());
     else if (kind === "dismiss") act(() => bridge.dismiss(destination).then(next => { setLive(null); setOverview(next); }));
     else if (kind === "check") load();
@@ -228,6 +253,7 @@ export function CloudMoveSettings({ destination, onClose }: { destination: strin
   const idle = !view.running && state.phase !== "done";
   const date = previous ? savedAt(previous.createdAt) : "";
   const ready = idle && !overview?.blocked;
+  const bring = ready && cloud && !cloud.empty && view.action?.kind !== "bring";
   return <Card title={t("cloudMove.title")} subtitle={t("cloudMove.intro", { server: view.server })}>
     <div data-cloud-move={state.phase} className="flex flex-col items-start gap-3">
       <p className="text-[13px] text-ink">{local
@@ -238,8 +264,10 @@ export function CloudMoveSettings({ destination, onClose }: { destination: strin
         ? t("cloudMove.replaceWarningPrevious", { server: view.server, bots: cloud.contents.bots, chats: cloud.contents.chats, date })
         : t("cloudMove.replaceWarning", { server: view.server, bots: cloud.contents.bots, chats: cloud.contents.chats })}</p>}
       {ready && !cloud && <p className="text-[12px] text-ink-secondary">{t("cloudMove.replaceMaybe", { server: view.server })}</p>}
+      {bring && <p className="text-[13px] text-ink">{t("cloudMove.bring.intro", { server: view.server })}</p>}
       {moveStatus(view, state)}
       <div className="flex flex-wrap gap-2">
+        {bring && <button type="button" disabled={pending} className="ui-button" onClick={() => move.run("bring")}>{t("cloudMove.bring.start", { server: view.server })}</button>}
         {moveButton(view, move)}
         {ready && previous && <button type="button" disabled={pending} className="ui-button" onClick={() => move.act(() => bridge.restorePrevious(destination))}>{t("cloudMove.restorePrevious", { server: view.server })}</button>}
         {onClose && !view.running && <button type="button" className="ui-button" onClick={onClose}>{t("cloudMove.close")}</button>}
@@ -288,4 +316,26 @@ export function CloudMoveImport() {
   return <Card title={t("backup.fromComputer")} subtitle={t("backup.fromComputerHint")}>
     <div data-cloud-move-import={move.state.phase}>{cloudMoveOffer(move)}</div>
   </Card>;
+}
+
+/** This computer's own page, once its bots and chats were copied to the person's Cloud: one line, never a dialog. */
+export function CloudHomeNote() {
+  const { dispatch } = useStore();
+  const local = window.ogb?.remoteClient !== undefined && !window.ogb.remoteClient.active;
+  const bridge = local ? window.ogb?.cloudMove : undefined, account = local ? window.ogb?.cloudAccount : undefined;
+  const [moved, setMoved] = useState(false);
+  useEffect(() => {
+    if (!bridge) return;
+    let active = true;
+    const read = () => void bridge.state().then(next => { if (active) setMoved(next.movedHome === true); }).catch(() => {});
+    read();
+    const unsubscribe = bridge.onState(next => { if (next.phase === "done") read(); });
+    return () => { active = false; unsubscribe(); };
+  }, [bridge]);
+  if (!moved || !account) return null;
+  const open = () => void account.connectHome().catch(() => dispatch({ type: "toggleAppSettings", open: true, section: "cloudAccount" }));
+  return <div role="note" data-cloud-home-note className="flex shrink-0 items-center justify-center gap-2 border-t border-hairline/40 bg-raised px-4 py-1.5 text-[12.5px] text-ink-secondary">
+    <span className="min-w-0 truncate">{t("cloudMove.home.note")}</span>
+    <button type="button" className="shrink-0 font-medium text-accent-text underline underline-offset-2 hover:text-ink" onClick={open}>{t("cloudHome.connect")}</button>
+  </div>;
 }

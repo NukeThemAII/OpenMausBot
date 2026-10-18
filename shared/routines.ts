@@ -68,6 +68,11 @@ export type RoutineRunStatus =
   | "cancelled"
   | "missed";
 
+/** Why a run started a second time by itself: its engine stalled, OpenMausBot
+ * restarted while it ran, the provider rate-limited it or failed for a moment,
+ * or it waited for its engine's usage limit to reset. A run gets one. */
+export type RoutineRetryCause = "stalled" | "restarted" | "rate_limited" | "provider" | "usage_limit";
+
 /** The statuses both failure indicators count: a run that went wrong and has
  * not been acknowledged. */
 export const ROUTINE_PROBLEM_STATUSES: readonly RoutineRunStatus[] = ["failed", "missed"];
@@ -101,6 +106,8 @@ export interface Routine {
   skippedRuns?: number;
   lastSkippedAt?: number;
   failureStreak?: number;
+  /** Runs that finished in the last seven days, and how many of them completed. */
+  weekRuns?: { ok: number; total: number };
   /** A plain sentence when the routine names a path that cannot exist on the computer that runs it. */
   warning?: string;
   attachments?: RoutineContextAttachment[];
@@ -139,7 +146,10 @@ export interface RoutineRun {
   finishedAt?: number;
   output?: string;
   error?: string;
-  /** Concise, redacted question or approval reason while status is waiting. */
+  /** Set when the run used its one automatic second start, and why. */
+  retried?: RoutineRetryCause;
+  /** Concise, redacted question or approval reason while status is waiting,
+   * or why a queued run starts later. */
   attention?: string;
   cost?: number | null;
   denials?: string[];

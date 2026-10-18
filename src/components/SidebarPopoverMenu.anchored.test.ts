@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   ANCHORED_MENU_WIDTH,
@@ -157,6 +157,53 @@ describe("the anchored menu in a document", () => {
     await key(sheet()!, "Escape");
     expect(sheet()).toBeNull();
     expect(document.activeElement).toBe(trigger());
+  });
+
+  describe("inside something that also closes on Escape, such as a panel", () => {
+    const outer = vi.fn();
+    const onWindow = vi.fn();
+    beforeEach(async () => {
+      outer.mockReset();
+      onWindow.mockReset();
+      window.addEventListener("keydown", onWindow);
+      await act(async () => {
+        root.render(createElement("div", { onKeyDown: (event: { key: string }) => outer(event.key) },
+          createElement(SidebarPopoverMenu, { items, ariaLabel: "You", renderTrigger: () => "You" })));
+      });
+    });
+    afterEach(() => window.removeEventListener("keydown", onWindow));
+    const escape = (target: Element) => act(async () => {
+      target.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    });
+
+    it("closes a mouse-opened menu on Escape at its trigger, and the panel never sees that Escape", async () => {
+      trigger().focus();
+      await act(async () => trigger().dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })));
+      expect(sheet()).not.toBeNull();
+      expect(document.activeElement).toBe(trigger());
+      await escape(trigger());
+      expect(sheet()).toBeNull();
+      expect(document.activeElement).toBe(trigger());
+      expect(outer).not.toHaveBeenCalled();
+      expect(onWindow).not.toHaveBeenCalled();
+      // With the menu closed, the next Escape is the panel's again.
+      await escape(trigger());
+      expect(outer).toHaveBeenCalledWith("Escape");
+    });
+
+    it("closes on Escape from inside the portalled sheet before the key bubbles to the panel", async () => {
+      await key(trigger(), "ArrowDown");
+      await flush();
+      const first = sheet()!.querySelector<HTMLElement>('[role="menuitem"]')!;
+      expect(document.activeElement).toBe(first);
+      outer.mockReset();
+      onWindow.mockReset();
+      await escape(first);
+      expect(sheet()).toBeNull();
+      expect(document.activeElement).toBe(trigger());
+      expect(outer).not.toHaveBeenCalled();
+      expect(onWindow).not.toHaveBeenCalled();
+    });
   });
 
   it("closes on a press outside, but not on a press inside the portalled sheet", async () => {

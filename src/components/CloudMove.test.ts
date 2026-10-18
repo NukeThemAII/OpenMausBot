@@ -11,7 +11,7 @@ vi.mock("react", async original => ({ ...await original<typeof import("react")>(
 }));
 const dispatch = vi.hoisted(() => vi.fn());
 vi.mock("@/state/store", () => ({ useStore: () => ({ dispatch }) }));
-import { CloudMoveImport, CloudMoveSettings, CloudMoveSuggestion, leftBehindToShare, moveNextSteps, moveView } from "./CloudMove";
+import { broughtView, CloudHomeNote, CloudMoveImport, CloudMoveSettings, CloudMoveSuggestion, leftBehindToShare, moveNextSteps, moveView } from "./CloudMove";
 import { OpenFilesButton } from "./OpenFilesButton";
 
 type Node = ReactElement<{ children?: ReactNode; onClick?: () => void; disabled?: boolean; suggest?: string[] }>;
@@ -39,7 +39,7 @@ beforeEach(() => {
   f.values = []; f.index = 0; f.effects = []; push = () => {}; switched = [];
   bridge = {
     state: vi.fn().mockResolvedValue(overview()), start: vi.fn().mockResolvedValue({ phase: "done" }), cancel: vi.fn().mockResolvedValue({ phase: "failed" }),
-    restorePrevious: vi.fn().mockResolvedValue({ phase: "done" }), dismiss: vi.fn().mockResolvedValue(overview()),
+    restorePrevious: vi.fn().mockResolvedValue({ phase: "done" }), bring: vi.fn().mockResolvedValue({ phase: "done" }), dismiss: vi.fn().mockResolvedValue(overview()),
     onState: vi.fn(callback => { push = callback; return () => {}; }),
   };
   vi.stubGlobal("window", { ogb: { platform: "darwin", cloudMove: bridge, environments: { switch: async (id: string) => { switched.push(id); } } }, location: { reload: vi.fn() } });
@@ -141,6 +141,7 @@ it("after a copy: what came, what is not running yet there, and Done", async () 
   expect(vi.mocked(bridge.dismiss).mock.calls).toEqual([["cloud"]]);
   expect(moveNextSteps({ phase: "done", action: "move", destination: VPS, moved: { bots: 1, rooms: 0, chats: 1 } })).toEqual([expect.stringContaining("To use bots.example.test from your phone")]);
   expect(moveNextSteps({ phase: "done", action: "restore" })).toEqual([]);
+  expect(moveNextSteps({ phase: "done", action: "bring", destination: CLOUD })).toEqual([]);
   expect(moveNextSteps({ phase: "failed", action: "move" })).toEqual([]);
 });
 
@@ -353,4 +354,80 @@ it("Settings → Backups on a server: Import from this computer is the same copy
   render(backups); f.effects[0]?.();
   expect(render(backups).html).toBe("");
   expect(bridge.state).not.toHaveBeenCalled();
+});
+
+it("a Cloud with work of its own also offers Bring newer chats, which adds only what it lacks and replaces nothing", async () => {
+  const has = { ...emptyCloud, empty: false, contents: { bots: 3, rooms: 1, chats: 12 } };
+  await ready(settings(), overview({ cloud: has }));
+  const html = render(settings()).html;
+  expect(html).toContain("Bring newer chats adds the conversations and messages from this computer that My Cloud doesn't have yet. Nothing on My Cloud is replaced or removed, and its bots, routines and settings stay as they are.");
+  button(settings(), "Bring newer chats to My Cloud")!.props.onClick!(); await flush();
+  expect(vi.mocked(bridge.bring).mock.calls).toEqual([["cloud"]]);
+  expect(vi.mocked(bridge.start)).not.toHaveBeenCalled();
+  expect(button(settings(), "Replace My Cloud with this computer's bots and chats")).toBeDefined();
+  f.values = [];
+  await ready(settings());
+  expect(button(settings(), "Bring newer chats to My Cloud")).toBeUndefined();
+  f.values = [];
+  await ready(settings(), overview({ cloud: has, blocked: "outdated" }));
+  expect(button(settings(), "Bring newer chats to My Cloud")).toBeUndefined();
+});
+
+it("while bringing, says what it is doing; after, one sentence of what came and a line for each thing that stayed or was not read", async () => {
+  await ready(settings(), overview({ cloud: { ...emptyCloud, empty: false } }));
+  push({ phase: "merging", action: "bring", destination: CLOUD });
+  expect(render(settings()).html).toContain("My Cloud is adding the newer chats…");
+  expect(button(settings(), "Stop the copy")).toBeUndefined();
+  push({ phase: "done", action: "bring", destination: CLOUD, brought: { conversations: 12, messages: 340, intoExisting: 40, skippedBots: 2, skippedRooms: 1, deleted: 1 } });
+  const html = render(settings()).html;
+  expect(html).toContain("Added 12 conversations and 340 messages to My Cloud.");
+  expect(html).toContain("Chats with 2 bots that are only on this computer stayed here.");
+  expect(html).toContain("Chats in 1 room that is only on this computer stayed here.");
+  expect(html).toContain("1 conversation you deleted on My Cloud was not brought back.");
+  expect(html).toContain("Bots on My Cloud may not have read what was added to conversations they were already in.");
+  expect(html).not.toContain("from your phone");
+  button(settings(), "Done")!.props.onClick!(); await flush();
+  expect(vi.mocked(bridge.dismiss).mock.calls).toEqual([["cloud"]]);
+  expect(broughtView({ conversations: 1, messages: 1, intoExisting: 0, skippedBots: 0, skippedRooms: 0, deleted: 0 }, "My Cloud")).toEqual({ text: "Added 1 conversation and 1 message to My Cloud.", next: [] });
+  expect(broughtView({ conversations: 0, messages: 3, intoExisting: 3, skippedBots: 1, skippedRooms: 0, deleted: 0 }, "My Cloud").text).toBe("Added 3 messages to My Cloud.");
+  expect(broughtView({ conversations: 0, messages: 0, intoExisting: 0, skippedBots: 0, skippedRooms: 0, deleted: 0 }, "My Cloud").text)
+    .toBe("My Cloud already has every chat from this computer, so nothing was added.");
+});
+
+it("a bring that failed says why, and trying again brings again rather than copying", async () => {
+  await ready(settings(), overview({ cloud: { ...emptyCloud, empty: false } }));
+  push({ phase: "failed", action: "bring", destination: CLOUD, error: { code: "merge_failed", message: "The backup could not be read." } });
+  expect(render(settings()).html).toContain("My Cloud could not add the chats: The backup could not be read. Nothing on My Cloud was removed.");
+  expect(render(settings()).nodes.filter(node => node.type === "button" && text(node) === "Bring newer chats to My Cloud")).toHaveLength(1);
+  expect(button(settings(), "Copy again")).toBeUndefined();
+  button(settings(), "Bring newer chats to My Cloud")!.props.onClick!(); await flush();
+  expect(vi.mocked(bridge.bring).mock.calls).toEqual([["cloud"]]);
+  expect(vi.mocked(bridge.start)).not.toHaveBeenCalled();
+  push({ phase: "failed", action: "bring", destination: CLOUD, error: { code: "cloud_busy", message: "" } });
+  button(settings(), "Bring newer chats to My Cloud")!.props.onClick!(); await flush();
+  expect(vi.mocked(bridge.bring).mock.calls).toHaveLength(2);
+});
+
+it("This computer's page says in one line that its bots live on My Cloud once copied there, with a way to open it", async () => {
+  const connectHome = vi.fn().mockRejectedValue(new Error("signed out"));
+  const note = () => CloudHomeNote();
+  vi.stubGlobal("window", { ogb: { platform: "darwin", cloudMove: bridge, remoteClient: { active: false }, cloudAccount: { connectHome } } });
+  await ready(note, { ...overview(), destination: null, movedHome: true });
+  expect(bridge.state).toHaveBeenCalledWith();
+  const view = render(note);
+  expect(view.html).toContain("Your bots now live on My Cloud. Chats here stay on this computer.");
+  expect(view.html).toContain("role=\"note\"");
+  button(note, "Open My Cloud")!.props.onClick!(); await flush();
+  expect(connectHome).toHaveBeenCalledTimes(1);
+  expect(dispatch).toHaveBeenCalledWith({ type: "toggleAppSettings", open: true, section: "cloudAccount" });
+  f.values = [];
+  await ready(note, { ...overview(), destination: null, movedHome: false });
+  expect(render(note).html).toBe("");
+  for (const ogb of [{ cloudMove: bridge, remoteClient: { active: true }, cloudAccount: { connectHome } }, { cloudMove: bridge }]) {
+    f.values = []; vi.mocked(bridge.state).mockClear();
+    vi.stubGlobal("window", { ogb });
+    render(note); for (const effect of f.effects) effect(); await flush();
+    expect(bridge.state).not.toHaveBeenCalled();
+    expect(render(note).html).toBe("");
+  }
 });

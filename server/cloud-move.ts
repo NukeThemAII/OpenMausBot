@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { writeFileAtomic } from "./atomic.ts";
 import {
-  MAX_WORKSPACE_BACKUP_FILES, MAX_WORKSPACE_BACKUP_UPLOAD_BYTES, omittedFromWorkspaceBackup, removeWorkspaceBackupJob,
+  MAX_WORKSPACE_BACKUP_FILES, MAX_WORKSPACE_BACKUP_UPLOAD_BYTES, omittedFromWorkspaceBackup, readLastWorkspaceRestore, removeWorkspaceBackupJob,
   stageWorkspaceBackup, type WorkspaceBackupSummary,
 } from "./workspace-backup.ts";
 
@@ -353,4 +353,29 @@ export function backupsBytes(dataDir: string): number {
   };
   try { walk(join(dataDir, ".backups")); } catch {}
   return bytes;
+}
+
+// When this server's chats were last in step with the computer they came from, on that computer's clock: the export the
+// last restore installed (a copy), or a later Bring newer chats on top of that same restore.
+const broughtPath = (dataDir: string) => join(dataDir, ".backups", "chats-brought.json");
+function installedRestore(dataDir: string): { id: string | null; exportedAt: number } {
+  try {
+    const restore = readLastWorkspaceRestore(dataDir);
+    return { id: restore?.id ?? null, exportedAt: restore?.summary ? Date.parse(restore.summary.createdAt) : Number.NaN };
+  } catch { return { id: null, exportedAt: Number.NaN }; }
+}
+export function chatsSyncedAt(dataDir: string): number {
+  const restore = installedRestore(dataDir);
+  let brought = Number.NaN;
+  try {
+    const value: unknown = JSON.parse(readFileSync(broughtPath(dataDir), "utf8"));
+    if (record(value) && value.restoreId === restore.id && typeof value.exportedAt === "string") brought = Date.parse(value.exportedAt);
+  } catch {}
+  return Math.max(Number.NEGATIVE_INFINITY, ...[restore.exportedAt, brought].filter(Number.isFinite));
+}
+export function noteChatsBrought(dataDir: string, exportedAt: string): void {
+  const at = Date.parse(exportedAt);
+  if (!Number.isFinite(at) || at <= chatsSyncedAt(dataDir)) return;
+  backupsRoot(dataDir);
+  writeFileAtomic(broughtPath(dataDir), JSON.stringify({ restoreId: installedRestore(dataDir).id, exportedAt }), { mode: 0o600 });
 }

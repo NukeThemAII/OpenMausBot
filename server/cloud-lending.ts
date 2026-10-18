@@ -8,7 +8,7 @@ import { z } from "zod";
 import { writeFileAtomic } from "./atomic.ts";
 import type { RoutineRunTrigger } from "./routines.ts";
 
-type Card = { requestId?: string; answered?: string; answeredText?: string; dismissed?: boolean; answeredBy?: { kind: string; person?: string } };
+type Card = { requestId?: string; answered?: string; answeredText?: string; dismissed?: boolean; autoApplied?: boolean; answeredBy?: { kind: string; person?: string } };
 type Line = { id: string; role: string; peerAsk?: unknown; sender?: { id?: string }; card?: Card };
 
 export interface CloudLendingTurn {
@@ -63,10 +63,10 @@ export function ownerOnlyConversation(
     (!answeredByPerson(line.card) || ownerPerson(cardAnswerer(line.card!))));
 }
 
-/** The harness's own settlements are marked dismissed or unavailable and carry nobody's words. */
-function answeredByPerson(card: Card | undefined): boolean {
+/** The harness's own settlements (dismissed, unavailable, or a bot's change applied on its own) carry nobody's words. */
+export function answeredByPerson(card: Card | undefined): boolean {
   if (!card) return false;
-  return (Boolean(card.answered) && card.answered !== "unavailable" && card.dismissed !== true) || Boolean(card.answeredText);
+  return (Boolean(card.answered) && card.answered !== "unavailable" && card.dismissed !== true && card.autoApplied !== true) || Boolean(card.answeredText);
 }
 
 type RoutineShape = {

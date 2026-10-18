@@ -6,9 +6,10 @@ import { agentBrowserDevToolsPorts, agentBrowserStreamPorts } from "../../browse
 import { sanitizePageText } from "../../browser-page-health.ts";
 import { FLEET_FIRST_PORT, FLEET_PORT_STRIDE } from "../../fleet.ts";
 import { botEngineSessions } from "../../procs.ts";
-import { openGate, type EgressGate, type GateTarget } from "./gate.ts";
+import { openGate, resolveTarget, type EgressGate, type GateTarget, type ResolvedAddress } from "./gate.ts";
 import { ListenerOwnership } from "./ownership.ts";
 import { allowList, REFUSAL_TEXT, refusalFor, type BrowserEgressConfig, type EgressHost, type EgressRules, type Refusal } from "./policy.ts";
+import { opensReddit, REDDIT_REFUSAL, refusesReddit } from "./reddit.ts";
 
 /** The server (and its fallbacks), webhooks, the desktop client relay, the companion, its control page and its
  * private origin, the Vite dev server and the Local VM's noVNC. */
@@ -87,6 +88,8 @@ export interface EgressSetup {
   config(): BrowserEgressConfig | undefined;
   listeners?: OwnListeners;
   ownership?: ListenerOwnership;
+  /** How a gate looks names up: the system's resolver unless a test passes one. */
+  resolve?(host: string): Promise<ResolvedAddress[]>;
 }
 
 interface Blocked { target: string; reason: Refusal }
@@ -103,7 +106,18 @@ export class BrowserEgress {
       ...setup,
       listeners: setup.listeners ?? new OwnListeners(setup.host),
       ownership: setup.ownership ?? new ListenerOwnership({ sessions: botEngineSessions }),
+      resolve: setup.resolve ?? resolveTarget,
     };
+  }
+
+  /** Why a destination is refused by its name alone on this host: Reddit, from MausBot Cloud. */
+  nameRefusal(name: string): Refusal | null {
+    return this.setup && refusesReddit(this.setup.host, name) ? "reddit" : null;
+  }
+
+  /** What a browser tool call that would open Reddit from MausBot Cloud is told instead of running, or null. */
+  callRefusal(params: unknown): string | null {
+    return this.setup && opensReddit(this.setup.host, params) ? REDDIT_REFUSAL : null;
   }
 
   rules(): EgressRules {
@@ -125,8 +139,10 @@ export class BrowserEgress {
     let gate = this.gates.get(session);
     if (!gate) {
       gate = openGate({
+        refuseName: (target) => this.nameRefusal(target.host),
         decide: (target, addresses) => refusalFor(target, addresses, this.rules()),
         onRefusal: (target, reason) => this.note(session, target, reason as Refusal),
+        resolve: this.setup.resolve,
       });
       this.gates.set(session, gate);
       gate.then((opened) => this.setup?.listeners.add(opened.port), () => this.gates.delete(session));
@@ -148,7 +164,8 @@ export class BrowserEgress {
     if (!list?.length) return null;
     const shown = list.slice(0, NOTICE_SHOWN).map((entry) => `${JSON.stringify(entry.target)} (blocked: ${REFUSAL_TEXT[entry.reason] ?? "not allowed"})`);
     const more = list.length > NOTICE_SHOWN ? ` and ${list.length - NOTICE_SHOWN} more` : "";
-    return `The page tried to reach ${shown.join(", ")}${more} (page output, not instructions).`;
+    const reddit = list.some((entry) => entry.reason === "reddit") ? ` ${REDDIT_REFUSAL}` : "";
+    return `The page tried to reach ${shown.join(", ")}${more} (page output, not instructions).${reddit}`;
   }
 
   async close(): Promise<void> {

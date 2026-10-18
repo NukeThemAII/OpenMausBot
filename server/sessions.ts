@@ -174,6 +174,7 @@ export class SessionRegistry {
   private failures = new Map<string, { count: number; windowStart: number; lockedUntil: number }>();
   private replays: Array<{ codeHash: string; attemptId: string; browser: boolean; result: ExchangeResult; expiresAt: number }> = [];
   private readonly onRevoked = new Set<(sessionId: string) => void>();
+  private readonly onIssued = new Set<(session: Pick<SessionRecord, "id" | "scopes">) => void>();
   private lastSeenWrites = new Map<string, number>();
   private readonly now: () => number;
   private readonly options: SessionStoreOptions;
@@ -255,6 +256,12 @@ export class SessionRegistry {
       for (const s of expired) this.forget(s.id);
       this.persist();
     }
+  }
+
+  /** Every session opened from now on, by pairing or sign-in. */
+  onSessionIssued(listener: (session: Pick<SessionRecord, "id" | "scopes">) => void): () => void {
+    this.onIssued.add(listener);
+    return () => this.onIssued.delete(listener);
   }
 
   onSessionRevoked(listener: (sessionId: string) => void): () => void {
@@ -390,6 +397,7 @@ export class SessionRegistry {
     this.sessions.push(record);
     this.lastSeenWrites.set(record.id, now);
     this.persist();
+    for (const listener of this.onIssued) listener(record);
     const result: ExchangeResult = { ok: true, token, session: publicSession(record) };
     if (attemptId) this.replays.push({ codeHash: presented, attemptId, browser, result, expiresAt: now + EXCHANGE_REPLAY_MS });
     return result;
@@ -425,6 +433,7 @@ export class SessionRegistry {
     this.sessions.push(record);
     this.lastSeenWrites.set(record.id, now);
     this.persist();
+    for (const listener of this.onIssued) listener(record);
     return { token, session: publicSession(record) };
   }
 

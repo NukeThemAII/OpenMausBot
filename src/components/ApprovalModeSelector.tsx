@@ -1,75 +1,24 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import { Check, FilePen, Hand, ListChecks, Settings, ShieldAlert, ShieldCheck } from "lucide-react";
+import { Check, ListChecks } from "lucide-react";
 
-import { approvalModeFor, hasNativeAutoReview, supportsApprovalMode, type ApprovalMode } from "../../shared/approval-mode";
+import { approvalModeFor, type ApprovalMode } from "../../shared/approval-mode";
 import { cn } from "@/lib/cn";
 import { useMenuMotion } from "./MenuMotion";
 import { APPROVAL_LEVELS_URL, openExternalLink } from "@/lib/app-links";
 import { t } from "@/lib/i18n";
-import type { LocaleKey } from "@/locales";
+import {
+  approvalModeOptions,
+  approvalModeOptionsFor,
+  approvalModeSelectionRequiresLocalDesktop,
+  shownApprovalMode,
+} from "@/lib/approval-mode-options";
 
-/** Keys, not labels: a label resolved in this module-scope array would freeze the language the app booted in. */
-const APPROVAL_MODE_KEYS: ReadonlyArray<{
-  mode: ApprovalMode;
-  labelKey: LocaleKey;
-  chipKey: LocaleKey;
-  descriptionKey: LocaleKey;
-  Icon: typeof Hand;
-}> = [
-  { mode: "ask", labelKey: "approvalMode.ask.label", chipKey: "approvalMode.ask.chip", descriptionKey: "approvalMode.ask.desc", Icon: Hand },
-  { mode: "edits", labelKey: "approvalMode.edits.label", chipKey: "approvalMode.edits.chip", descriptionKey: "approvalMode.edits.desc", Icon: FilePen },
-  { mode: "auto", labelKey: "approvalMode.auto.label", chipKey: "approvalMode.auto.chip", descriptionKey: "approvalMode.auto.desc", Icon: ShieldCheck },
-  { mode: "full", labelKey: "approvalMode.full.label", chipKey: "approvalMode.full.chip", descriptionKey: "approvalMode.full.desc", Icon: ShieldAlert },
-  { mode: "custom", labelKey: "approvalMode.custom.label", chipKey: "approvalMode.custom.chip", descriptionKey: "approvalMode.custom.desc", Icon: Settings },
-];
-
-export interface ApprovalModeOption {
-  mode: ApprovalMode;
-  label: string;
-  chip: string;
-  description: string;
-  Icon: typeof Hand;
-}
-
-export function approvalModeOptions(): ApprovalModeOption[] {
-  return APPROVAL_MODE_KEYS.map(({ mode, labelKey, chipKey, descriptionKey, Icon }) => ({
-    mode,
-    label: t(labelKey),
-    chip: t(chipKey),
-    description: t(descriptionKey),
-    Icon,
-  }));
-}
-
-export function approvalModeOptionsFor(driverKind: string, trustedModesAvailable = true) {
-  return approvalModeOptions()
-    .filter((option) => supportsApprovalMode(driverKind, option.mode)
-      // Antigravity has no native reviewer: its full-access grant is shown as Auto below, and the real Auto, which
-      // behaves as Ask, is not offered.
-      && (driverKind !== "antigravityAgent" || option.mode !== "auto")
-      && (trustedModesAvailable || option.mode !== "custom"))
-    .map((option) => {
-      if (driverKind === "antigravityAgent" && option.mode === "full") {
-        return {
-          ...option,
-          label: t("approvalMode.antigravity.label"),
-          chip: t("approvalMode.auto.chip"),
-          description: t("approvalMode.antigravity.desc"),
-        };
-      }
-      return option.mode === "auto" && !hasNativeAutoReview(driverKind)
-        ? { ...option, description: t("approvalMode.noNativeReview") }
-        : option;
-    });
-}
-
-export function approvalModeSelectionRequiresLocalDesktop(
-  currentMode: ApprovalMode,
-  trustedModesAvailable: boolean,
-) {
-  // Custom cannot leave through HTTP even while the provider instance is missing, so the lock follows the durable mode.
-  return currentMode === "custom" && !trustedModesAvailable;
-}
+export {
+  approvalModeOptions,
+  approvalModeOptionsFor,
+  approvalModeSelectionRequiresLocalDesktop,
+  type ApprovalModeOption,
+} from "@/lib/approval-mode-options";
 
 export function ApprovalModeSelector({
   approvalMode,
@@ -102,9 +51,7 @@ export function ApprovalModeSelector({
   const motion = useMenuMotion(open);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const savedMode = approvalModeFor({ approvalMode, autoApprove });
-  // Security: old Antigravity Auto settings still ask; never display or silently grant the new Auto until it is chosen.
-  const mode = driverKind === "antigravityAgent" && savedMode === "auto" ? "ask" : savedMode;
+  const mode = shownApprovalMode(driverKind, approvalModeFor({ approvalMode, autoApprove }));
   const allOptions = approvalModeOptions();
   const current = approvalModeOptionsFor(driverKind).find((option) => option.mode === mode)
     ?? allOptions.find((option) => option.mode === mode)

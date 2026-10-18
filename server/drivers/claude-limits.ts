@@ -1,4 +1,5 @@
 import { hostTimeZone } from "../turn-clock.ts";
+import { engineFailureMessage, type EngineFailureKind } from "./engine-errors.ts";
 import { USAGE_LIMIT } from "./retry.ts";
 
 export interface ClaudeLimit {
@@ -56,4 +57,24 @@ export function claudeLimitMessage(limit: ClaudeLimit | null, said?: string, now
   }
   const words = said?.trim().replace(/[.\s]+$/, "");
   return `This Claude account has reached its ${name}${words ? ` (Claude says: "${words}")` : ""}. For now, ${meanwhile}.`;
+}
+
+/** Claude Code 2.1.295's api-error kinds (the assistant frame's `error`) that say the cause outright. */
+const CLAUDE_ERROR_KINDS: Record<string, EngineFailureKind> = {
+  billing_error: "credits",
+  overloaded: "overloaded",
+  server_error: "server",
+  rate_limit: "rate_limit",
+};
+
+/** An api-error frame or error result in plain words. Claude Code sends the frame as a synthetic message whose
+ * stop_reason is "stop_sequence", with `error` (billing_error, overloaded, server_error, rate_limit, invalid_request,
+ * model_not_found, unknown…) and its text ("API Error: 529 …", "Credit balance is too low"); the result repeats the
+ * text with `api_error_status`. Each is one plain row, never a reply: a kind or status OMB words is named, anything
+ * else keeps Claude's own words. */
+export function claudeApiErrorMessage(frame: { error?: unknown; api_error_status?: unknown }, text: string): string {
+  const said = text.trim();
+  const kind = typeof frame.error === "string" && Object.hasOwn(CLAUDE_ERROR_KINDS, frame.error) ? CLAUDE_ERROR_KINDS[frame.error] : null;
+  const status = typeof frame.api_error_status === "number" ? frame.api_error_status : undefined;
+  return engineFailureMessage("Claude", said, { kind, status }) ?? said;
 }

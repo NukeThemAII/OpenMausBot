@@ -89,9 +89,9 @@ beforeEach(() => {
 });
 afterEach(() => { live.closeAll(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); vi.useRealTimers(); });
 
-async function open({ botId = "bot-a", session = "profile-a", owner = "admin-a", current = () => true }: { botId?: string; session?: string; owner?: string; current?: () => boolean } = {}) {
+async function open({ botId = "bot-a", session = "profile-a", owner = "admin-a", current = () => true, resume }: { botId?: string; session?: string; owner?: string; current?: () => boolean; resume?: string } = {}) {
   const res = new ResponseFixture();
-  await live.open({ botId, session, owner, isCurrent: current, res: res as unknown as ServerResponse,
+  await live.open({ botId, session, owner, isCurrent: current, res: res as unknown as ServerResponse, ...(resume ? { resume } : {}),
     spec: { command: "/trusted/agent-browser", args: ["mcp", "--tools", "core"], env: { AGENT_BROWSER_SESSION: session, AGENT_BROWSER_SOCKET_DIR: "/isolated/socket" } } });
   return { res, socket: SocketFixture.instances.at(-1)!, action: (body: unknown) => live.action({ viewerId: res.id, botId, owner, body }) };
 }
@@ -739,6 +739,130 @@ describe("authenticated browser viewer relay", () => {
     await expect(runtime.withAgentAction("profile-a", async () => true)).rejects.toThrow();
     await a.action({ type: "restart" });
     await expect(runtime.withAgentAction("profile-a", async () => true)).resolves.toBe(true);
+  });
+});
+
+describe("a person's view whose stream drops while they hold the browser", () => {
+  const bodies = () => nativeInput.mock.calls.map(([, init]) => JSON.parse(init.body));
+  const botWorks = () => runtime.withAgentAction("profile-a", async () => true);
+  beforeEach(() => { runtime = new BrowserRuntime(); live = new BrowserLive({ runtime }); });
+
+  it("keeps their control for the same panel's reconnect, takes its input there, and hands back afterwards", async () => {
+    const a = await open(); await a.action({ type: "take" });
+    await a.action({ type: "input_keyboard", eventType: "char", text: "person@example.test" });
+    // The proxy logs the client's live stream as "context canceled".
+    a.res.destroy();
+    await expect(botWorks()).rejects.toThrow("paused while a person controls");
+    const b = await open({ resume: a.res.id });
+    expect(b.res.events("control").at(-1)).toEqual({ held: true, owned: true, controlling: true });
+    nativeInput.mockClear();
+    await b.action({ type: "input_keyboard", eventType: "char", text: "typed after reconnecting" });
+    expect(bodies()).toEqual([{ action: "keyboard", subaction: "insertText", text: "typed after reconnecting" }]);
+    await b.action({ type: "release" });
+    await expect(botWorks()).resolves.toBe(true);
+    expect(runtime.interrupted("profile-a")).toBe(false);
+  });
+
+  it("lets go of a key and button it held in the page instead of asking for a restart", async () => {
+    const a = await open(); await a.action({ type: "take" });
+    // Alt+Tab to another app: Alt went down here, its key-up never reached the server.
+    await a.action({ type: "input_keyboard", eventType: "keyDown", key: "Alt", code: "AltLeft", modifiers: 1 });
+    await a.action({ type: "input_mouse", eventType: "mousePressed", x: 12, y: 20, button: "left", clickCount: 1 });
+    nativeInput.mockClear();
+    a.res.destroy();
+    await vi.waitFor(() => expect(bodies()).toHaveLength(2));
+    expect(bodies()).toEqual([
+      { action: "input_keyboard", type: "keyUp", key: "Alt", code: "AltLeft" },
+      { action: "input_mouse", type: "mouseReleased", x: 12, y: 20, button: "left", clickCount: 1, modifiers: 0, deltaX: 0, deltaY: 0 },
+    ]);
+    const b = await open({ resume: a.res.id });
+    expect(b.res.events("control").at(-1)).toEqual({ held: true, owned: true, controlling: true });
+    await b.action({ type: "release" });
+    await expect(botWorks()).resolves.toBe(true);
+  });
+
+  it("keeps the restart barrier when the browser does not confirm that release", async () => {
+    const a = await open(); await a.action({ type: "take" });
+    await a.action({ type: "input_keyboard", eventType: "keyDown", key: "Shift", code: "ShiftLeft", modifiers: 8 });
+    nativeInput.mockRejectedValue(new Error("relay closed"));
+    a.res.destroy();
+    await vi.waitFor(() => expect(runtime.interrupted("profile-a")).toBe(true));
+    const b = await open({ resume: a.res.id });
+    await expect(b.action({ type: "take" })).rejects.toThrow("Choose Restart browser…");
+    await b.action({ type: "release" });
+    await expect(botWorks()).rejects.toThrow("Restart");
+  });
+
+  it("finishes an input that was on its way before letting go of what it pressed", async () => {
+    const a = await open(); await a.action({ type: "take" });
+    let finish!: (value: Response) => void;
+    nativeInput.mockImplementationOnce(() => new Promise<Response>((resolve) => { finish = resolve; }));
+    const typing = a.action({ type: "input_keyboard", eventType: "keyDown", key: "m", code: "KeyM", text: "m" });
+    await vi.waitFor(() => expect(nativeInput).toHaveBeenCalledOnce());
+    a.res.destroy();
+    const reopening = open({ resume: a.res.id });
+    await Promise.resolve();
+    expect(bodies()).toHaveLength(1);
+    finish(Response.json({ success: true })); await typing;
+    const b = await reopening;
+    expect(bodies().at(-1)).toEqual({ action: "input_keyboard", type: "keyUp", key: "m", code: "KeyM" });
+    expect(b.res.events("control").at(-1)).toEqual({ held: true, owned: true, controlling: true });
+  });
+
+  it("hands back when the sign-in card's Done is pressed before the panel reconnects", async () => {
+    const a = await open(); await a.action({ type: "take" });
+    a.res.destroy();
+    live.handBack("profile-a");
+    await expect.poll(() => runtime.heldBy("profile-a")).toBeNull();
+    await expect(botWorks()).resolves.toBe(true);
+    const b = await open({ resume: a.res.id });
+    expect(b.res.events("control").at(-1)).toEqual({ held: false, owned: false, controlling: false });
+  });
+
+  it("hands back a late hand-back from the dropped view itself", async () => {
+    const a = await open(); await a.action({ type: "take" });
+    a.res.destroy();
+    await expect(a.action({ type: "release" })).resolves.toEqual({ ok: true });
+    await expect.poll(() => runtime.heldBy("profile-a")).toBeNull();
+    await expect(a.action({ type: "take" })).rejects.toThrow("no longer available");
+  });
+
+  it("hands back by itself when the panel does not come back", async () => {
+    vi.useFakeTimers();
+    const a = await open(); await a.action({ type: "take" });
+    a.res.destroy();
+    await vi.advanceTimersByTimeAsync(110_000);
+    expect(runtime.heldBy("profile-a")).not.toBeNull();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(runtime.heldBy("profile-a")).toBeNull();
+    await expect(botWorks()).resolves.toBe(true);
+  });
+
+  it("gives the hold to no other view, and lets the same person take it back with an explicit take", async () => {
+    const a = await open(); await a.action({ type: "take" });
+    a.res.destroy();
+    const stranger = await open({ owner: "other", resume: a.res.id });
+    expect(stranger.res.events("control").at(-1)).toEqual({ held: true, owned: false, controlling: false });
+    await expect(stranger.action({ type: "take" })).rejects.toThrow("Another window or device controls this browser");
+    const reloaded = await open({ botId: "bot-a" });
+    expect(reloaded.res.events("control").at(-1)).toEqual({ held: true, owned: false, controlling: false });
+    await expect(reloaded.action({ type: "take" })).resolves.toEqual({ ok: true, waited: false });
+    expect(runtime.canControl("profile-a", reloaded.res.id)).toBe(true);
+  });
+
+  it("does not keep a hold for a view closed on purpose: a revoked owner, a deleted profile, a changed session", async () => {
+    let current = true;
+    const a = await open({ current: () => current }); await a.action({ type: "take" });
+    current = false;
+    a.res.destroy();
+    expect(runtime.heldBy("profile-a")).toBeNull();
+    const b = await open(); await b.action({ type: "take" });
+    live.closeForOwner("admin-a");
+    expect(runtime.heldBy("profile-a")).toBeNull();
+    const c = await open(); await c.action({ type: "take" });
+    c.res.destroy();
+    live.closeForSession("profile-a");
+    await expect.poll(() => runtime.heldBy("profile-a")).toBeNull();
   });
 });
 

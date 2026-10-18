@@ -1,6 +1,9 @@
 import { CURSOR_STATES, type CursorState } from "@/components/CursorAvatar";
 import { botShowsUnread } from "./bot-unread";
 import { lastNonReceipt } from "./receipts";
+import type { MausColor } from "../../shared/wire";
+
+export { MAUS_COLOR_NAMES, type MausColor } from "../../shared/wire";
 
 export type MausState = CursorState;
 export const MAUS_STATES = CURSOR_STATES;
@@ -43,21 +46,6 @@ export const STATE_GROUPS = {
     "powering-down",
   ],
 } satisfies Record<string, MausState[]>;
-
-export const MAUS_COLOR_NAMES = [
-  "green",
-  "blue",
-  "red",
-  "orange",
-  "purple",
-  "cyan",
-  "pink",
-  "yellow",
-  "teal",
-  "coral",
-] as const;
-
-export type MausColor = (typeof MAUS_COLOR_NAMES)[number];
 
 export const MAUS_COLORS = {
   green: "#009957",

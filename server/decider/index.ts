@@ -40,6 +40,21 @@ export function deciderApi(cfg: AppConfig): OpenRouterApi {
   return cfg.decider.openrouterApi === "decisions" ? "decisions" : "chat";
 }
 
+/** The OpenRouter key the decider uses: its own, else the one under Settings → API keys. The shared key goes
+ * only to OpenRouter's default address: an operator base URL is not given the engine's key. */
+export function deciderOpenRouterKey(cfg: AppConfig, draft?: string): { token: string; source: "own" | "shared" } | null {
+  const own = draft?.trim() || cfg.decider?.openrouterKey?.trim();
+  if (own) return { token: own, source: "own" };
+  const shared = sharedOpenRouterKey(cfg);
+  return shared ? { token: shared, source: "shared" } : null;
+}
+
+function sharedOpenRouterKey(cfg: AppConfig): string | undefined {
+  const baseUrl = cfg.decider?.openrouterBaseUrl?.trim();
+  if (baseUrl && baseUrl !== OPENROUTER_DEFAULT_BASE_URL) return undefined;
+  return cfg.openrouter?.key?.trim() || undefined;
+}
+
 /** An own key goes to its provider (or the operator base URL); else Cloud Pro's included token goes to the
  * Admin's relay, Jev only, and only for seams the relay accepts. */
 function deciderAccount(
@@ -49,8 +64,8 @@ function deciderAccount(
   provider: DeciderProvider | "off" = deciderProvider(cfg),
 ): ServiceCredential | null {
   if (provider === "openrouter") {
-    const token = draft?.trim() || cfg.decider?.openrouterKey?.trim();
-    return token ? { token, api: cfg.decider?.openrouterBaseUrl?.trim() || OPENROUTER_DEFAULT_BASE_URL, included: false } : null;
+    const key = deciderOpenRouterKey(cfg, draft);
+    return key ? { token: key.token, api: cfg.decider?.openrouterBaseUrl?.trim() || OPENROUTER_DEFAULT_BASE_URL, included: false } : null;
   }
   const account = deciderCredential(draft?.trim() || cfg.decider?.key, cfg.decider?.baseUrl);
   return account?.included && seam && !relaySeam(seam) ? null : account;
@@ -79,30 +94,46 @@ export function deciderReady(cfg: AppConfig, job: DeciderJob): boolean {
   return deciderEnabled(cfg) && deciderJobOn(cfg, job) && Boolean(deciderAccount(cfg, job));
 }
 
-/** Never the key, nor the base URL (an operator setting with no UI). */
+/** Whether Settings → API keys holds an OpenRouter key the decision model may use. */
+export function deciderSharedKeyUsable(cfg: AppConfig): boolean {
+  return Boolean(sharedOpenRouterKey(cfg));
+}
+
+/** Never the key, nor the base URL (an operator setting with no UI). `keySource` and `sharedKey` are OpenRouter's. */
 export function describeDecider(cfg: AppConfig) {
   const account = deciderAccount(cfg);
   const provider = deciderProvider(cfg);
+  const key = provider === "openrouter" ? deciderOpenRouterKey(cfg) : null;
   return {
     provider: provider === "off" ? "jev" as const : provider,
     ...(provider === "openrouter" ? { model: deciderModel(cfg), api: deciderApi(cfg) } : {}),
     configured: Boolean(account),
+    ...(key ? { keySource: key.source } : {}),
+    ...(provider === "openrouter" && deciderSharedKeyUsable(cfg) ? { sharedKey: true as const } : {}),
     ...(account?.included ? { included: true as const } : {}),
     enabled: deciderEnabled(cfg),
     jobs: { roomRouting: deciderJobOn(cfg, "roomRouting") },
   };
 }
 
+/** A key the provider in use falls back on when the decision model has none of its own. */
+export interface DeciderKeyFallback {
+  /** Cloud Pro's included Jev decisions. */
+  included?: boolean;
+  /** The OpenRouter key under Settings → API keys. */
+  shared?: boolean;
+}
+
 /** Jobs merge per job, because saveConfig replaces a section's nested objects whole. */
 export function deciderSavePatch(
   patch: Partial<DeciderConfig>,
   current: DeciderConfig | undefined,
-  included = false,
+  fallback: DeciderKeyFallback = {},
 ): { ok: true; patch: Partial<DeciderConfig> } | { ok: false; error: string } {
   const next: Partial<DeciderConfig> = { ...patch };
   const provider = patch.provider ?? current?.provider ?? "jev";
   const field = provider === "openrouter" ? "openrouterKey" : "key";
-  const includedHere = included && field === "key";
+  const fallbackHere = field === "key" ? fallback.included === true : fallback.shared === true;
   const activeKey = patch[field];
   const savingKey = typeof activeKey === "string" && Boolean(activeKey.trim());
   const clearingKey = typeof activeKey === "string" && !activeKey.trim();
@@ -113,11 +144,11 @@ export function deciderSavePatch(
     next.enabled = patch.enabled ?? true;
     next.jobs = { ...current?.jobs, roomRouting: true, ...patch.jobs };
   } else if (clearingKey) {
-    if (!includedHere) next.enabled = false;
+    if (!fallbackHere) next.enabled = false;
   } else if (patch.jobs) {
     next.jobs = { ...current?.jobs, ...patch.jobs };
   }
-  if (next.enabled === true && !savingKey && !current?.[field]?.trim() && !includedHere) {
+  if (next.enabled === true && !savingKey && !current?.[field]?.trim() && !fallbackHere) {
     const key = field === "key" ? "a Jev API key" : "an OpenRouter API key";
     return { ok: false, error: `Save ${key} before turning on fast decisions.` };
   }

@@ -1,11 +1,11 @@
 // Runs one agents tool: check arguments, call the harness, render the model's text. Stateless;
 // per-turn limits are the harness's, since one proxy can serve many turns of a warm engine.
 import { CREDENTIAL_TARGETS, isCredentialTargetId } from "../../shared/credential-request.ts";
-import { normalizeCronSchedule } from "../../shared/routine-schedule.ts";
 
 import { peerName } from "../peer-roster.ts";
 import { callCardTool, CARD_TOOL_NAMES } from "./agents-call-cards.ts";
-import { catalogProfileFromEnv, SHARED_COMPUTER_TOOL_NAMES, WEEKDAYS } from "./agents-catalog.ts";
+import { callTriggerTool, TRIGGER_TOOL_NAMES } from "./agents-call-triggers.ts";
+import { catalogProfileFromEnv, SHARED_COMPUTER_TOOL_NAMES } from "./agents-catalog.ts";
 import { harnessClientFromEnv } from "./agents-client.ts";
 import type { HarnessClient, Json } from "./agents-client.ts";
 import { memorySearchText } from "./memory-search-text.ts";
@@ -92,182 +92,6 @@ function handoffIds(r: Json): string[] {
 }
 const MOVED_ENTRIES_SHOWN = 5;
 
-const SHORT_WEEKDAYS = {
-  mon: "monday",
-  tue: "tuesday",
-  tues: "tuesday",
-  wed: "wednesday",
-  thu: "thursday",
-  thur: "thursday",
-  thurs: "thursday",
-  fri: "friday",
-  sat: "saturday",
-  sun: "sunday",
-} as const satisfies Record<string, (typeof WEEKDAYS)[number]>;
-
-const SUPPORTED_SCHEDULES =
-  'Supported schedules: {"type":"once","at":"2026-09-01T09:00:00+05:30"} (future RFC3339 with explicit offset), ' +
-  '{"type":"weekly","time":"09:00","weekdays":["monday","friday"]}, {"type":"daily","time":"09:00"}, ' +
-  '{"type":"interval","every_minutes":15,"weekdays":["monday","friday"],"window_start":"09:00","window_end":"17:00"}, ' +
-  'or {"type":"cron","expression":"0 9 1 * *","timeZone":"Asia/Kolkata"} (monthly at 09:00 on day 1; five fields and an explicit IANA timezone).';
-
-interface NormalizedSchedule {
-  schedule?: Json;
-  error?: string;
-}
-
-/** Models stringify nested objects, say "daily" or shorten weekday names; each has one obvious meaning. */
-function normalizeScheduleInput(args: Json): NormalizedSchedule {
-  let raw = args.schedule;
-  if (typeof raw === "string") {
-    try {
-      raw = JSON.parse(raw);
-    } catch {
-      return { error: `The schedule must be a JSON object, not text. ${SUPPORTED_SCHEDULES}` };
-    }
-  }
-  if (!jsonRecord(raw)) return { error: `The schedule must be a JSON object. ${SUPPORTED_SCHEDULES}` };
-  const type = typeof raw.type === "string" ? raw.type.trim().toLowerCase() : "";
-  const fields = type === "once"
-    ? ["type", "at"]
-    : type === "weekly" || type === "daily"
-      ? ["type", "time", "weekdays"]
-      : type === "interval"
-        ? ["type", "every_minutes", "everyMinutes", "starts_at", "anchorAt", "weekdays", "every_day", "window_start", "window_end", "window", "all_day", "ends_at", "endsAt", "never_ends"]
-        : type === "cron"
-          ? ["type", "expression", "timeZone"]
-          : null;
-  // Providers may send unused optional fields as null; any other unknown field refuses the call.
-  const unsupported = fields && Object.keys(raw).find((key) => raw[key] != null && !fields.includes(key));
-  if (unsupported) {
-    return { error: `Unsupported ${type} schedule field "${unsupported}". Weekly and daily times use the computer's timezone from list_routines. ${SUPPORTED_SCHEDULES}` };
-  }
-  if (type === "cron") {
-    try {
-      return { schedule: { ...normalizeCronSchedule({ type, expression: raw.expression, timeZone: raw.timeZone }) } };
-    } catch (error) {
-      return { error: `${error instanceof Error ? error.message : "Invalid cron schedule"}. ${SUPPORTED_SCHEDULES}` };
-    }
-  }
-  if (type === "once") {
-    if (typeof raw.at !== "string" || !raw.at.trim()) {
-      return { error: `A once schedule needs "at": a future RFC3339 date-time with an explicit offset, for example 2026-09-01T09:00:00+05:30.` };
-    }
-    return { schedule: { type: "once", at: raw.at.trim() } };
-  }
-  if (type === "weekly" || type === "daily") {
-    const time = typeof raw.time === "string" ? raw.time.trim() : "";
-    if (!time) return { error: `A ${type} schedule needs "time" in 24-hour HH:MM, for example 09:00.` };
-    let weekdays: string[];
-    if (type === "daily") {
-      weekdays = Array.isArray(raw.weekdays) && raw.weekdays.length ? raw.weekdays : [...WEEKDAYS];
-    } else {
-      if (!Array.isArray(raw.weekdays) || raw.weekdays.length === 0) {
-        return { error: `A weekly schedule needs "weekdays", for example ["monday","friday"] — or use {"type":"daily"} to run every day.` };
-      }
-      weekdays = raw.weekdays;
-    }
-    const normalized: string[] = [];
-    for (const day of weekdays) {
-      const lower = String(day).trim().toLowerCase();
-      const full = (WEEKDAYS as readonly string[]).includes(lower)
-        ? lower
-        : Object.hasOwn(SHORT_WEEKDAYS, lower)
-          ? SHORT_WEEKDAYS[lower as keyof typeof SHORT_WEEKDAYS]
-          : undefined;
-      if (!full) return { error: `Unsupported weekday "${String(day)}". Use full names: ${WEEKDAYS.join(", ")}.` };
-      if (!normalized.includes(full)) normalized.push(full);
-    }
-    return { schedule: { type: "weekly", time, weekdays: normalized } };
-  }
-  if (type === "interval") {
-    for (const flag of ["every_day", "all_day", "never_ends"]) {
-      if (raw[flag] != null && typeof raw[flag] !== "boolean") {
-        return { error: `"${flag}" must be true or false.` };
-      }
-    }
-    if (raw.window != null && (!jsonRecord(raw.window)
-      || Object.keys(raw.window).some((key) => key !== "start" && key !== "end")
-      || typeof raw.window.start !== "string" || typeof raw.window.end !== "string")) {
-      return { error: '"window" must contain "start" and "end" in HH:MM, for example {"start":"09:00","end":"17:00"}.' };
-    }
-    const rawMinutes = raw.every_minutes ?? raw.everyMinutes;
-    const everyMinutes = Number(rawMinutes);
-    if (!Number.isInteger(everyMinutes) || everyMinutes < 5 || everyMinutes > 1_440) {
-      return { error: 'An interval schedule needs "every_minutes": a whole number from 5 to 1440.' };
-    }
-    const rawStart = raw.starts_at ?? raw.anchorAt;
-    if (rawStart !== undefined && (typeof rawStart !== "string" || !rawStart.trim())) {
-      return { error: '"starts_at" must be an RFC3339 date-time with an explicit timezone offset.' };
-    }
-    if (raw.every_day === true && Array.isArray(raw.weekdays) && raw.weekdays.length > 0) {
-      return { error: 'Choose interval "weekdays" or "every_day", not both.' };
-    }
-    let intervalWeekdays: string[] | null | undefined;
-    if (raw.every_day === true) {
-      intervalWeekdays = null;
-    } else if (raw.weekdays !== undefined) {
-      if (!Array.isArray(raw.weekdays) || raw.weekdays.length === 0) {
-        return { error: 'Interval "weekdays" must contain at least one full weekday name.' };
-      }
-      intervalWeekdays = [];
-      for (const day of raw.weekdays) {
-        const lower = String(day).trim().toLowerCase();
-        const full = (WEEKDAYS as readonly string[]).includes(lower)
-          ? lower
-          : Object.hasOwn(SHORT_WEEKDAYS, lower)
-            ? SHORT_WEEKDAYS[lower as keyof typeof SHORT_WEEKDAYS]
-            : undefined;
-        if (!full) return { error: `Unsupported weekday "${String(day)}". Use full names: ${WEEKDAYS.join(", ")}.` };
-        if (!intervalWeekdays.includes(full)) intervalWeekdays.push(full);
-      }
-    }
-    const rawWindow = jsonRecord(raw.window) ? raw.window : undefined;
-    const windowStart = raw.window_start ?? rawWindow?.start;
-    const windowEnd = raw.window_end ?? rawWindow?.end;
-    if (raw.all_day === true && (windowStart !== undefined || windowEnd !== undefined)) {
-      return { error: 'Choose window_start + window_end or "all_day", not both.' };
-    }
-    let window: Json | null | undefined;
-    if (raw.all_day === true) {
-      window = null;
-    } else if (windowStart !== undefined || windowEnd !== undefined) {
-      if (typeof windowStart !== "string" || !windowStart.trim() || typeof windowEnd !== "string" || !windowEnd.trim()) {
-        return { error: 'An interval time window needs both "window_start" and "window_end" in 24-hour HH:MM.' };
-      }
-      window = { start: windowStart.trim(), end: windowEnd.trim() };
-    }
-    const rawEnd = raw.ends_at ?? raw.endsAt;
-    if (raw.never_ends === true && rawEnd !== undefined) {
-      return { error: 'Choose "ends_at" or "never_ends", not both.' };
-    }
-    let endsAt: string | null | undefined;
-    if (raw.never_ends === true) endsAt = null;
-    else if (rawEnd !== undefined) {
-      if (typeof rawEnd !== "string" || !rawEnd.trim()) {
-        return { error: '"ends_at" must be an RFC3339 date-time with an explicit timezone offset.' };
-      }
-      endsAt = rawEnd.trim();
-    }
-    return {
-      schedule: {
-        type: "interval",
-        everyMinutes,
-        ...(typeof rawStart === "string" ? { anchorAt: rawStart.trim() } : {}),
-        ...(intervalWeekdays !== undefined ? { weekdays: intervalWeekdays } : {}),
-        ...(window !== undefined ? { window } : {}),
-        ...(endsAt !== undefined ? { endsAt } : {}),
-      },
-    };
-  }
-  if (type === "hourly" || type === "minutes") {
-    return { error: `Use an interval schedule for every-N-minutes work. ${SUPPORTED_SCHEDULES}` };
-  }
-  return { error: `Unknown schedule type "${type || "(missing)"}". ${SUPPORTED_SCHEDULES}` };
-}
-
-type RoutineAction = "update" | "pause" | "resume" | "run_now" | "delete";
-
 export const capResult = (text: string, context: ToolCallContext) => boundedAgentResult(text, (retained, truncated) => {
   if (context.externalRuntime) throw new Error("External runtime results are not cached");
   return context.client.api("/api/internal/tool-result", { method: "POST", signal: AbortSignal.timeout(3_000),
@@ -283,66 +107,6 @@ function ordinal(n: number): string {
 
 function jsonRecord(value: unknown): value is Json {
   return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function routineAction(value: unknown): RoutineAction | null {
-  return value === "update" || value === "pause" || value === "resume" || value === "run_now" || value === "delete"
-    ? value
-    : null;
-}
-
-function routineFields(args: Json): { fields: Json; error?: string } {
-  const fields: Json = {};
-  const destination = (value: unknown) => value === "box" ? "cloud" : value;
-  if (args.run_on != null && args.runOn != null && destination(args.run_on) !== destination(args.runOn)) {
-    return { fields, error: "Choose one run_on destination; run_on and runOn disagree." };
-  }
-  if (args.timeout_minutes != null && args.timeoutMinutes != null && args.timeout_minutes !== args.timeoutMinutes) {
-    return { fields, error: "Choose one timeout_minutes limit; timeout_minutes and timeoutMinutes disagree." };
-  }
-  const runOn = destination(args.run_on ?? args.runOn);
-  const timeoutMinutes = args.timeout_minutes ?? args.timeoutMinutes;
-  if (runOn != null && runOn !== "maus" && runOn !== "cloud") {
-    return { fields, error: 'Use run_on="maus" for the bot’s current model and configured computer (including VPS), or run_on="box" only for the bot’s cloud computer. Legacy "cloud" also means box.' };
-  }
-  if (timeoutMinutes != null && (
-    typeof timeoutMinutes !== "number" || !Number.isInteger(timeoutMinutes) || timeoutMinutes < 5 || timeoutMinutes > 240
-  )) {
-    return { fields, error: "timeout_minutes must be a whole number from 5 to 240. Use clear_timeout to remove a limit." };
-  }
-  if (args.continuity != null && typeof args.continuity !== "boolean") {
-    return { fields, error: "continuity must be true or false." };
-  }
-  if (args.run_on_startup != null && args.runOnStartup != null && args.run_on_startup !== args.runOnStartup) {
-    return { fields, error: "Choose one run_on_startup value; run_on_startup and runOnStartup disagree." };
-  }
-  const runOnStartup = args.run_on_startup ?? args.runOnStartup;
-  if (runOnStartup != null && typeof runOnStartup !== "boolean") {
-    return { fields, error: "run_on_startup must be true or false." };
-  }
-  if (args.overlap !== undefined && args.overlap !== "skip" && args.overlap !== "queue") {
-    return { fields, error: "overlap must be skip or queue." };
-  }
-  if (args.clear_timeout != null && typeof args.clear_timeout !== "boolean") {
-    return { fields, error: "clear_timeout must be true or false." };
-  }
-  if (args.clear_timeout === true && timeoutMinutes != null) {
-    return { fields, error: "Choose timeout_minutes or clear_timeout, not both." };
-  }
-  if (typeof args.name === "string") fields.name = args.name.trim();
-  if (typeof args.instructions === "string") fields.instructions = args.instructions.trim();
-  if (args.schedule !== undefined && args.schedule !== null) {
-    const normalized = normalizeScheduleInput(args);
-    if (normalized.error) return { fields, error: normalized.error };
-    fields.schedule = normalized.schedule;
-  }
-  if (runOn != null) fields.runOn = runOn;
-  if (args.clear_timeout === true) fields.timeoutMinutes = null;
-  else if (timeoutMinutes != null) fields.timeoutMinutes = timeoutMinutes;
-  if (typeof args.continuity === "boolean") fields.continuity = args.continuity;
-  if (args.overlap !== undefined) fields.overlap = args.overlap;
-  if (typeof runOnStartup === "boolean") fields.runOnStartup = runOnStartup;
-  return { fields };
 }
 
 /** Full Access is decided by the harness, never inferred from a model claim or a local flag. */
@@ -412,6 +176,7 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     return { text: `Attached ${String(body.name ?? "the file")} (${Number(body.bytes ?? 0)} bytes). It now appears in the chat with a preview.` };
   }
   if (CARD_TOOL_NAMES.has(name)) return callCardTool(name, args, context);
+  if (TRIGGER_TOOL_NAMES.has(name)) return callTriggerTool(name, args, context);
   // Second lock: with sharing off the catalog already omits these tools.
   if (SHARED_COMPUTER_TOOL_NAMES.has(name) && !context.sharedComputers) {
     return { text: "Computer sharing is turned off in this workspace. There are no shared computers to use.", isError: true };
@@ -449,16 +214,16 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     if (canonical.group_id === undefined) canonical.group_id = args.groupId;
     if (canonical.done_when === undefined) canonical.done_when = args.doneWhen;
     const ids = canonical.bot_ids;
+    const optional = (key: string, type: "boolean" | "string") => canonical[key] === undefined || typeof canonical[key] === type;
     const usable = Array.isArray(ids) && ids.length > 0 && ids.every((id) => typeof id === "string")
       && typeof canonical.message === "string" && canonical.message.trim().length > 0
       && (canonical.thread === undefined || canonical.thread === "standing" || canonical.thread === "new")
       && (canonical.reply === undefined || canonical.reply === "resume" || canonical.reply === "none")
-      && (canonical.consult === undefined || typeof canonical.consult === "boolean")
-      && (canonical.done_when === undefined || typeof canonical.done_when === "string")
-      && (canonical.reason === undefined || typeof canonical.reason === "string");
+      && optional("consult", "boolean") && optional("in_my_folder", "boolean")
+      && optional("done_when", "string") && optional("reason", "string");
     if (!usable) {
       return {
-        text: `coordinate_bots takes snake_case arguments: bot_ids (an array of 1-4 teammate ids) and message are required; group_id, reason, rework, thread ("standing" or "new"), reply ("resume" or "none"), consult (true or false) and done_when are optional. Received: ${Object.keys(args).join(", ") || "none"}.`,
+        text: `coordinate_bots takes snake_case arguments: bot_ids (an array of 1-4 teammate ids) and message are required; group_id, reason, rework, thread ("standing" or "new"), reply ("resume" or "none"), consult (true or false), in_my_folder (true or false) and done_when are optional. Received: ${Object.keys(args).join(", ") || "none"}.`,
         isError: true,
       };
     }
@@ -466,7 +231,7 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
       groupId: canonical.group_id, botIds: ids, message: canonical.message,
       reason: typeof canonical.reason === "string" && canonical.reason.trim() ? canonical.reason.trim() : undefined,
       rework: canonical.rework,
-      thread: canonical.thread, reply: canonical.reply, consult: canonical.consult,
+      thread: canonical.thread, reply: canonical.reply, consult: canonical.consult, inMyFolder: canonical.in_my_folder,
       done_when: typeof canonical.done_when === "string" && canonical.done_when.trim() ? canonical.done_when.trim() : undefined,
     }) });
     return { text: JSON.stringify(r), ...(r.error ? { isError: true } : {}) };
@@ -782,71 +547,6 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
       return { text: `Voice note not sent: ${error instanceof Error ? error.message : String(error)}`, isError: true };
     }
   }
-  if (name === "list_routines") {
-    const query = new URLSearchParams({ fromBotId: BOT_ID, fromThreadId: THREAD_ID });
-    const r = await api(`/api/internal/routines?${query.toString()}`);
-    const routines = Array.isArray(r.routines) ? r.routines : [];
-    const now = typeof r.now === "string" ? r.now : new Date().toISOString();
-    const timeZone = typeof r.timeZone === "string" && r.timeZone ? r.timeZone : "local computer timezone";
-    if (!routines.length) {
-      return { text: `This bot has no routines. Current time: ${now}. Timezone: ${timeZone}.` };
-    }
-    return {
-      text: `This bot's routines (current time: ${now}; timezone: ${timeZone}):\n${JSON.stringify(routines, null, 2)}`,
-    };
-  }
-  if (name === "propose_routine") {
-    const { fields: routine, error: scheduleError } = routineFields(args);
-    if (scheduleError) return { text: scheduleError, isError: true };
-    if (!routine.name || !routine.instructions || !routine.schedule) {
-      return { text: "propose_routine needs name, instructions, and schedule.", isError: true };
-    }
-    const forBotId = String(args.for_bot_id ?? "").trim();
-    const r = await api("/api/internal/routine-requests", {
-      method: "POST",
-      body: JSON.stringify({
-        fromBotId: BOT_ID,
-        fromThreadId: THREAD_ID,
-        action: "create",
-        routine,
-        forBotId: forBotId || undefined,
-      }),
-    });
-    return confirmationResult(r, `the new routine “${routine.name}”`);
-  }
-  if (name === "propose_routine_action") {
-    const routineId = String(args.routine_id ?? "").trim();
-    const action = routineAction(args.action);
-    if (!routineId || !action) {
-      return { text: "propose_routine_action needs a routine_id and supported action.", isError: true };
-    }
-    const forBotId = String(args.for_bot_id ?? "").trim();
-    const body: Json = {
-      fromBotId: BOT_ID,
-      fromThreadId: THREAD_ID,
-      action,
-      routineId,
-      ...(forBotId ? { forBotId } : {}),
-    };
-    if (action === "update") {
-      if (!jsonRecord(args.changes)) {
-        return { text: "The update action needs at least one field in changes.", isError: true };
-      }
-      const { fields: changes, error: scheduleError } = routineFields(args.changes);
-      if (scheduleError) return { text: scheduleError, isError: true };
-      if (!Object.keys(changes).length) {
-        return { text: "The update action needs at least one supported field in changes.", isError: true };
-      }
-      body.changes = changes;
-    } else if (args.changes !== undefined) {
-      return { text: `The ${action} action does not accept changes.`, isError: true };
-    }
-    const r = await api("/api/internal/routine-requests", {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
-    return confirmationResult(r, `${action.replace("_", " ")} on routine ${routineId}`);
-  }
   if (name === "propose_profile") {
     if ((args.notifications !== undefined && typeof args.notifications !== "boolean")
       || (args.speakReplies !== undefined && typeof args.speakReplies !== "boolean")) {
@@ -961,8 +661,7 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
     const detail = String(args.detail ?? "").trim();
     if (!kind || !entryName || !detail) return { text: "propose_team_memory needs kind, name, and detail.", isError: true };
     const r = await api("/api/internal/team-memory", {
-      method: "POST",
-      body: JSON.stringify({
+      method: "POST", body: JSON.stringify({
         fromBotId: BOT_ID,
         fromThreadId: THREAD_ID,
         kind,
@@ -972,7 +671,7 @@ export async function callTool(name: string, args: Json, context: ToolCallContex
         aliases: Array.isArray(args.aliases) ? args.aliases.filter((alias) => typeof alias === "string") : undefined,
       }),
     });
-    return confirmationResult(r, `remembering ${entryName} for the team`, "entry");
+    return confirmationResult(r, `the team memory entry for ${entryName}`, "entry");
   }
   if (name === "session_search") {
     const q = String(args.query ?? "").trim();

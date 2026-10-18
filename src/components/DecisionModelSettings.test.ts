@@ -48,6 +48,7 @@ function render() {
     model: byTestId("decider-model")[0],
     save: byTestId("decider-save")[0]!,
     test: byTestId("decider-test")[0]!,
+    manage: byTestId("decider-manage-keys")[0],
     input: all.find((node) => node.type === "input")!,
   };
 }
@@ -57,6 +58,7 @@ const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve()
 const status = (decider: NonNullable<ConfigStatus["decider"]>) => ({ decider } as ConfigStatus);
 const change = (node: Node, value: string) => (node.props.onChange as (event: { target: { value: string } }) => void)({ target: { value } });
 const runEffects = () => { for (const effect of fixture.effects) effect(); };
+const SHARED = { configured: true, keySource: "shared", sharedKey: true } as const;
 const openrouter = (extra: Partial<NonNullable<ConfigStatus["decider"]>> = {}) =>
   status({ provider: "openrouter", model: "openai/gpt-4.1-nano", configured: false, enabled: false, jobs: { roomRouting: true }, ...extra });
 const MODELS = {
@@ -352,6 +354,85 @@ describe("DecisionModelSettings", () => {
       await flush();
       expect(fixture.api).toHaveBeenLastCalledWith("/api/decider/test", { method: "POST", body: JSON.stringify({ key: "sk-or-draft" }) });
       expect(render().html).toContain("OpenRouter rejected this key. Check it at openrouter.ai/keys.");
+    });
+
+    describe("with the OpenRouter key from API keys", () => {
+      it("uses it with nothing to enter: labelled, linked, switchable, with no key to clear", async () => {
+        fixture.config = openrouter(SHARED);
+        const view = render();
+        expect(view.html).toContain("Using your OpenRouter API key");
+        expect(view.html).toContain("Shared with your OpenRouter models");
+        expect(view.html).not.toContain("Not connected");
+        expect(view.html).not.toContain("Get a key at openrouter.ai");
+        expect(view.html).not.toContain("Save an OpenRouter key below or under API keys");
+        expect(view.master.props.disabled).toBe(false);
+        expect(view.save.props.disabled).toBe(true);
+        expect(view.html).not.toContain("Clear");
+        expect(view.input.props.placeholder).toBe("Use a different key (optional)");
+        expect(view.test.props.disabled).toBe(false);
+        fixture.api.mockResolvedValueOnce(openrouter({ ...SHARED, enabled: true }));
+        click(view.master);
+        await flush();
+        expect(fixture.api).toHaveBeenCalledWith("/api/config", { method: "PUT", body: JSON.stringify({ decider: { enabled: true } }) });
+      });
+
+      it("links to where the key is managed", () => {
+        fixture.config = openrouter(SHARED);
+        fixture.dispatch.mockReset();
+        click(render().manage!);
+        expect(fixture.dispatch).toHaveBeenCalledExactlyOnceWith({ type: "toggleAppSettings", open: true, section: "connections" });
+      });
+
+      it("Test checks the shared key without sending one, and a pasted key still saves as the override", async () => {
+        fixture.config = openrouter(SHARED);
+        fixture.api.mockResolvedValueOnce({ ok: true, latencyMs: 280 });
+        click(render().test);
+        await flush();
+        expect(fixture.api).toHaveBeenCalledWith("/api/decider/test", { method: "POST", body: "{}" });
+        expect(render().html).toContain("OpenRouter answered in 280 ms with your shared key.");
+        fixture.api.mockResolvedValueOnce(openrouter({ ...SHARED, keySource: "own" }));
+        type(render().input, KEY);
+        click(render().save);
+        await flush();
+        expect(fixture.api).toHaveBeenLastCalledWith("/api/config", { method: "PUT", body: JSON.stringify({ decider: { openrouterKey: KEY } }) });
+        expect(render().html).not.toContain(KEY);
+      });
+
+      it("a separate saved key shows as such, can be replaced or cleared, and says what clearing does", async () => {
+        fixture.config = openrouter({ ...SHARED, keySource: "own", enabled: true });
+        const view = render();
+        expect(view.html).toContain("Connected (separate key)");
+        expect(view.html).toContain("Clear this key to use your shared OpenRouter API key instead.");
+        expect(view.html).not.toContain("Using your OpenRouter API key");
+        expect(view.manage).toBeUndefined();
+        expect(view.input.props.placeholder).toBe("••••••••  (paste to replace)");
+        expect(view.html).toContain("Clear");
+        expect(view.save.props.disabled).toBe(false);
+        fixture.api.mockResolvedValueOnce(openrouter({ ...SHARED, enabled: true }));
+        click(view.save);
+        await flush();
+        expect(fixture.api).toHaveBeenCalledWith("/api/config", { method: "PUT", body: JSON.stringify({ decider: { openrouterKey: "" } }) });
+        expect(render().html).toContain("Using your OpenRouter API key");
+      });
+
+      it("with no key anywhere, asks for one and points to API keys", () => {
+        const view = render();
+        expect(view.html).toContain("Not connected");
+        expect(view.html).toContain("Save an OpenRouter key under API keys to use it here and for models");
+        expect(view.html).toContain("Save an OpenRouter key below or under API keys to turn this on.");
+        expect(view.manage).toBeDefined();
+        expect(view.master.props.disabled).toBe(true);
+        expect(view.test.props.disabled).toBe(true);
+      });
+
+      it("a separate key with nothing shared reads as plain Connected", () => {
+        fixture.config = openrouter({ configured: true, keySource: "own", enabled: true });
+        const view = render();
+        expect(view.html).toContain("Connected");
+        expect(view.html).not.toContain("separate key");
+        expect(view.html).not.toContain("shared OpenRouter API key");
+        expect(view.manage).toBeUndefined();
+      });
     });
 
     it("maps every OpenRouter failure to a fixed sentence", () => {

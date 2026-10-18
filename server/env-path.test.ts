@@ -248,6 +248,32 @@ describe("augmentedPath", () => {
       rmSync(localAppData, { recursive: true, force: true });
     }
   });
+
+  // MOCA-152: the Podman installer (and Podman Desktop's) puts podman.exe in %ProgramFiles%\RedHat\Podman.
+  it("finds Podman installed after launch on Windows", () => {
+    const realPlatform = process.platform;
+    const previous = { ProgramFiles: process.env.ProgramFiles, PATHEXT: process.env.PATHEXT };
+    const programFiles = mkdtempSync(join(tmpdir(), "omb-programfiles-"));
+    try {
+      Object.defineProperty(process, "platform", { value: "win32" });
+      process.env.ProgramFiles = programFiles;
+      process.env.PATHEXT = ".com;.exe;.bat;.cmd";
+      const podmanDir = join(programFiles, "RedHat", "Podman");
+      mkdirSync(podmanDir, { recursive: true });
+      writeFileSync(join(podmanDir, "podman.exe"), "");
+      resetPathCacheForTests();
+      expect(augmentedPath().split(delimiter)).toContain(podmanDir);
+      expect(findCliCandidates("podman").map((path) => path.toLowerCase())).toContain(join(podmanDir, "podman.exe").toLowerCase());
+    } finally {
+      Object.defineProperty(process, "platform", { value: realPlatform });
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+      resetPathCacheForTests();
+      rmSync(programFiles, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("userHome / harnessHome", () => {

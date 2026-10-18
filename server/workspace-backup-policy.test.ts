@@ -68,6 +68,13 @@ describe("workspace backup data boundary", () => {
     for (const path of ["highlevel.md", "workspaces/bot/highlevel.json.enc", "attachments/highlevel-key"]) expect(excludedWorkspaceAuthPath(path)).toBe(false);
   });
 
+  it("never exports or restores a Cloud home's connected-apps installation", () => {
+    for (const path of ["connected-apps-installation.json", "connected-apps-installation.json.4242.05a7b3e0-1234-4abc-8def-0123456789ab.tmp"]) {
+      expect(excludedWorkspaceAuthPath(path)).toBe(true);
+    }
+    for (const path of ["connected-apps-installation.json.md", "workspaces/bot/connected-apps-installation.json"]) expect(excludedWorkspaceAuthPath(path)).toBe(false);
+  });
+
   it("never exports or restores MCP sign-in tokens", () => {
     for (const path of ["mcp-oauth.json", "mcp-oauth.json.4242.05a7b3e0-1234-4abc-8def-0123456789ab.tmp"]) expect(excludedWorkspaceAuthPath(path)).toBe(true);
     for (const path of ["mcp-oauth.json.md", "workspaces/bot/mcp-oauth.json"]) expect(excludedWorkspaceAuthPath(path)).toBe(false);

@@ -19,13 +19,16 @@ describe("Muse Code driver", () => {
   });
 
   it("builds the picker from the account's own model list", () => {
+    // Muse Code 1.4.9 without a sessionId: isActive marks a session's model, so it is false on every row.
     const listed = museCatalog({ models: [
-      { modelId: "muse-wonder-1.0", displayLabel: "muse-wonder-1.0", isDefault: true, isActive: true, contextLimit: null },
-      { modelId: "muse-spark-1.3", displayLabel: "Muse Spark 1.3", isActive: true, contextLimit: 500_000 },
-      { modelId: "muse-retired", isActive: false }, { modelId: "muse-spark-1.3" }, { modelId: 7 }, null,
+      { modelId: "muse-wonder-1.0", displayLabel: "muse-wonder-1.0", isDefault: true, isActive: false, contextLimit: null },
+      { modelId: "muse-wonder-full-1.0", displayLabel: "muse-wonder-full-1.0", isDefault: false, isActive: false },
+      { modelId: "muse-spark-1.3", displayLabel: "Muse Spark 1.3", isActive: false, contextLimit: 500_000 },
+      { modelId: "muse-spark-1.3" }, { modelId: 7 }, null,
     ] });
     expect(listed).toEqual({ default: "muse-wonder-1.0", options: [
       { id: "muse-wonder-1.0", label: "Muse Wonder 1.0", contextWindow: 1_048_576 },
+      { id: "muse-wonder-full-1.0", label: "Muse Wonder Full 1.0", contextWindow: 1_048_576 },
       { id: "muse-spark-1.3", label: "Muse Spark 1.3", contextWindow: 500_000 },
     ] });
     expect(museCatalog({ models: [{ modelId: "muse-spark-1.3" }] }, "muse-next")?.default).toBe("muse-next");

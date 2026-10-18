@@ -29,6 +29,7 @@ import { ClaudeCodeSwitches } from "./ClaudeCodeSwitches";
 import { WhopIcon } from "./WhopIcon";
 import { McpResultBudgetField, resultBudgetDraft, withResultBudget, type McpMessage, type McpResultBudgetDraft, type McpResultBudgetListing } from "./McpResultBudgetField";
 import { WHOP_MCP_URL, isWhopServer, whopServerName } from "@/lib/whop-integration";
+import { openBotSettings } from "./bot-panel/panel-link";
 
 /** Security: secrets arrive as names only. */
 interface StdioMcpListing extends McpResultBudgetListing {
@@ -605,7 +606,7 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
         <summary className="cursor-pointer">{t("whop.access")}</summary>
         <p className="mt-2 leading-relaxed">{t("whop.notice")}</p>
         <p className="mt-2 leading-relaxed">{t("whop.accessHint")}</p>
-        <div className="mt-2 flex flex-wrap gap-2">{(store.bots ?? []).filter((bot) => !bot.hidden).map((bot) => <button key={bot.id} type="button" onClick={() => { dispatch({ type: "togglePlugins", open: false }); dispatch({ type: "toggleSettings", open: true, section: "access", botId: bot.id }); }} className="rounded-lg bg-control px-2.5 py-1.5 text-ink hover:bg-raised-hover">{t("whop.botSettings", { name: bot.name })}</button>)}</div>
+        <div className="mt-2 flex flex-wrap gap-2">{(store.bots ?? []).filter((bot) => !bot.hidden).map((bot) => <button key={bot.id} type="button" onClick={() => { dispatch({ type: "togglePlugins", open: false }); openBotSettings(dispatch, "access", { botId: bot.id, page: "mcp" }); }} className="rounded-lg bg-control px-2.5 py-1.5 text-ink hover:bg-raised-hover">{t("whop.botSettings", { name: bot.name })}</button>)}</div>
       </details>
       </div>
     </div>;
@@ -957,7 +958,7 @@ export function McpServersPanel({ embedded = false, whopCard = false, hideWhop =
                     <details className="mt-2">
                       <summary className="cursor-pointer font-medium text-ink">{t("whop.access")}</summary>
                       <p className="mt-2">{t("whop.accessHint")}</p>
-                      <div className="mt-2 flex flex-wrap gap-2">{(store.bots ?? []).filter((bot) => !bot.hidden).map((bot) => <button key={bot.id} type="button" onClick={() => { dispatch({ type: "togglePlugins", open: false }); dispatch({ type: "toggleSettings", open: true, section: "access", botId: bot.id }); }} className="rounded-lg bg-control px-2.5 py-1.5 text-ink hover:bg-raised-hover">{t("whop.botSettings", { name: bot.name })}</button>)}</div>
+                      <div className="mt-2 flex flex-wrap gap-2">{(store.bots ?? []).filter((bot) => !bot.hidden).map((bot) => <button key={bot.id} type="button" onClick={() => { dispatch({ type: "togglePlugins", open: false }); openBotSettings(dispatch, "access", { botId: bot.id, page: "mcp" }); }} className="rounded-lg bg-control px-2.5 py-1.5 text-ink hover:bg-raised-hover">{t("whop.botSettings", { name: bot.name })}</button>)}</div>
                     </details>
                   </div>}
                   {renderSignIn(server)}

@@ -43,7 +43,7 @@ async function mount() { render(); for (const effect of f.effects) effect(); awa
 beforeEach(() => {
   f.values = []; f.index = 0; f.effects = [];
   move = { state: vi.fn().mockResolvedValue({ phase: "idle", local: null, cloud: null, suggest: false, destination: { ...VPS, kind: "server" }, blocked: null }),
-    start: vi.fn(), cancel: vi.fn(), restorePrevious: vi.fn(), dismiss: vi.fn(), onState: vi.fn(() => () => {}) };
+    start: vi.fn(), cancel: vi.fn(), restorePrevious: vi.fn(), bring: vi.fn(), dismiss: vi.fn(), onState: vi.fn(() => () => {}) };
   stub(); setLocale("en");
 });
 afterEach(() => { vi.unstubAllGlobals(); setLocale("en"); });

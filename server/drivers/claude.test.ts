@@ -616,7 +616,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     await instance.adapter.sendTurn({ threadId: "t-weekly", text: "Hey talk to @Tango" });
     await recorder.until((event) => event.type === "turn.completed");
     const errors = recorder.events.filter((event) => event.type === "runtime.error");
-    expect(errors).toEqual([expect.objectContaining({ message: claudeLimitMessage({ window: "seven_day", resetsAt }) })]);
+    expect(errors).toEqual([expect.objectContaining({ message: claudeLimitMessage({ window: "seven_day", resetsAt }), limitResetsAt: resetsAt * 1000 })]);
     expect((errors[0] as any).message).toMatch(/^This Claude account has reached its weekly limit, which resets .+\. Until then, /);
     expect(errors[0]).not.toHaveProperty("setup");
     expect(errors[0]).not.toHaveProperty("claudeUpdate");
@@ -652,6 +652,26 @@ describe("ClaudeDriver turns (fake CLI)", () => {
       expect.objectContaining({ message, setup: true, claudeUpdate: true }),
     ]);
     expect(recorder.events.at(-1)).toMatchObject({ type: "turn.completed", ok: false, stopReason: "update_required" });
+  });
+
+  it.each([
+    // 2.1.295 on Cloud: no terminal_reason, so the result's only stop token is its synthetic message's "stop_sequence"
+    [{ FAKE_CLAUDE_API_ERROR: "Credit balance is too low", FAKE_CLAUDE_API_ERROR_KIND: "billing_error", FAKE_CLAUDE_API_ERROR_STATUS: "402", FAKE_CLAUDE_NO_TERMINAL_REASON: "1" },
+      'Your Claude account is out of credits (Claude says: "Credit balance is too low"). Add credits with Claude, then run it again.', "stop_sequence"],
+    [{ FAKE_CLAUDE_API_ERROR: "API Error: Repeated 529 Overloaded errors. The API is at capacity — this is usually temporary. Try again in a moment.", FAKE_CLAUDE_API_ERROR_KIND: "overloaded" },
+      'Claude is overloaded right now (Claude says: "Repeated 529 Overloaded errors"). This is usually temporary, so try again in a few minutes.', "api_error"],
+    [{ FAKE_CLAUDE_API_ERROR: "There's an issue with the selected model (claude-fixture). It may not exist or you may not have access to it.", FAKE_CLAUDE_API_ERROR_KIND: "model_not_found", FAKE_CLAUDE_NO_TERMINAL_REASON: "1" },
+      "There's an issue with the selected model (claude-fixture). It may not exist or you may not have access to it.", "stop_sequence"],
+  ])("shows an api-error frame as one plain error row in Claude's real cause, never a reply or a bare stop token (%#)", async (environment, message, stopReason) => {
+    await create("api-error", environment);
+    await instance.adapter.sendTurn({ threadId: "t-api-error-words", text: "hi" });
+    await recorder.until((event) => event.type === "turn.completed");
+    expect(recorder.events.filter((event) => event.type === "runtime.error")).toEqual([expect.objectContaining({ message })]);
+    expect(recorder.events.filter((event) => event.type === "runtime.error")[0]).not.toHaveProperty("setup");
+    expect(recorder.events.some((event) => event.type === "item.completed" && event.itemType === "assistant_text")).toBe(false);
+    expect(recorder.events.some((event) => event.type === "content.delta")).toBe(false);
+    expect(recorder.events.some((event) => event.type === "thread.token-usage.updated" && event.contextTokens === 0)).toBe(false);
+    expect(recorder.events.at(-1)).toMatchObject({ type: "turn.completed", ok: false, stopReason });
   });
 
   it("retires an outdated child before retry while preserving a healthy pooled session", async () => {

@@ -935,10 +935,9 @@ export const WORKSPACE_CREDENTIAL_ENV = [
   "OMB_CLOUD_VOICE_TOKEN",
   "OMB_CLOUD_DECIDER_TOKEN",
   "OMB_CLOUD_AI_TOKEN",
+  "OMB_CLOUD_CONNECTED_APPS_GRANT",
   // Not credentials, but they point a shell-capable agent at app-owned state.
-  "OMB_BROWSER_CONNECTION",
-  "OMB_USER_DATA",
-  "OMB_BOAT_API",
+  "OMB_BROWSER_CONNECTION", "OMB_USER_DATA", "OMB_BOAT_API",
 ] as const;
 
 /** Operator secrets only this process reads, plus every `OMB_CLOUD_` var (the underscore leaves out OMB_CLOUDFLARED_PATH). */

@@ -44,6 +44,9 @@ describe("who may use a Mac lent to a Cloud home (review: guests, webhooks)", ()
     // The harness's own settlements carry nobody's words.
     expect(mayLend(turn({ thread: [said("m1", OWNER), card(undefined, { answered: "allow", answeredText: undefined, dismissed: true })] }))).toBe(true);
     expect(mayLend(turn({ thread: [said("m1", OWNER), card(undefined, { answered: "unavailable", answeredText: undefined, dismissed: true })] }))).toBe(true);
+    // A bot's own change applied with an Undo receipt (a skill it authored, a team it set up) is nobody's answer either.
+    expect(mayLend(turn({ thread: [said("m1", OWNER), card(undefined, { answered: "allow", answeredText: undefined, autoApplied: true })] }))).toBe(true);
+    expect(mayLend(turn({ thread: [said("m1", OWNER), card(undefined, { answered: "answer", autoApplied: true })] }))).toBe(false);
     expect(mayLend(turn({ thread: [card({ kind: "session", name: "Guest", person: GUEST }), said("m1", OWNER)] }))).toBe(false);
   });
   it("a conversation someone else opened, or one that holds a report of someone else's routine, is not the owner's (review: titles, reports)", () => {

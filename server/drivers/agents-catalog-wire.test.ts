@@ -188,7 +188,7 @@ describe("agents proxy tools/list golden", () => {
       for (const alias of ["delegate_bot", "ask_bot", "send_to_bot", "check_delegation", "wait_delegation"]) expect(tools.has(alias), `${name}: ${alias}`).toBe(false);
       expect(JSON.stringify([...tools.values()])).not.toMatch(/Deprecated alias|works for this release/);
       const coordinate = tools.get("coordinate_bots")!.inputSchema.properties;
-      expect(Object.keys(coordinate)).toEqual(["group_id", "bot_ids", "message", "reason", "rework", "thread", "reply", "consult", "done_when"]);
+      expect(Object.keys(coordinate)).toEqual(["group_id", "bot_ids", "message", "reason", "rework", "thread", "in_my_folder", "reply", "consult", "done_when"]);
       expect(coordinate.thread!.enum).toEqual(["standing", "new"]);
       expect(coordinate.reply!.enum).toEqual(["resume", "none"]);
       expect(Object.keys(tools.get("assignment_status")!.inputSchema.properties)).toEqual(["id", "wait_ms"]);
@@ -251,8 +251,8 @@ describe("agents proxy tools/list golden", () => {
       }
       expect(chiefTools.find((tool) => tool.name === "propose_profile")!.description).toContain(CHIEF_PROFILE_TARGET);
       expect(JSON.stringify(CHIEF_TARGET_TOOLS.map((tool) => tools.get(tool)))).not.toContain("for_bot_id");
-      for (const routine of ["propose_routine", "propose_routine_action"]) {
-        expect(tools.get(routine)!.inputSchema.properties, `${name}: ${routine}`).toHaveProperty("for_bot_id");
+      for (const trigger of ["list_triggers", "create_trigger", "manage_trigger"]) {
+        expect(tools.get(trigger)!.inputSchema.properties, `${name}: ${trigger}`).toHaveProperty("for_bot_id");
       }
     }
   });
@@ -264,14 +264,14 @@ describe("agents proxy tools/list golden", () => {
     }
   });
 
-  it("writes the routine fields out identically in both routine tools", () => {
-    type RoutineTool = Tool & { inputSchema: { properties: Record<string, unknown> & { changes: { properties: Record<string, unknown> } } } };
-    const tools = new Map(toolsOf(wires[FULL]!).map((tool) => [tool.name, tool as RoutineTool]));
-    const created = tools.get("propose_routine")!.inputSchema.properties;
-    const changed = tools.get("propose_routine_action")!.inputSchema.properties.changes.properties;
+  it("writes the trigger fields out identically in create_trigger and manage_trigger", () => {
+    type TriggerTool = Tool & { inputSchema: { properties: Record<string, unknown> & { changes: { properties: Record<string, unknown> } } } };
+    const tools = new Map(toolsOf(wires[FULL]!).map((tool) => [tool.name, tool as TriggerTool]));
+    const created = tools.get("create_trigger")!.inputSchema.properties;
+    const changed = tools.get("manage_trigger")!.inputSchema.properties.changes.properties;
     expect(Object.keys(changed).length).toBeGreaterThan(0);
     for (const field of Object.keys(changed)) expect(JSON.stringify(created[field]), field).toBe(JSON.stringify(changed[field]));
-    expect(Object.keys(created).slice(0, Object.keys(changed).length)).toEqual(Object.keys(changed));
+    expect(Object.keys(created).slice(1, Object.keys(changed).length + 1)).toEqual(Object.keys(changed));
   });
 
   it("uses no JSON-Schema keyword a provider conversion is known to drop or mangle", () => {

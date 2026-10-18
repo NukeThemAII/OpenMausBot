@@ -409,9 +409,16 @@ pnpm package:win   # Windows installer + zip → release/
 pnpm package:linux # Ubuntu x64 .deb + AppImage → release/
 ```
 
-### Routines and webhook triggers
+### Triggers: schedules and webhooks
 
-Routines can run once, on selected weekdays, or every 5–1,440 minutes, using either a MAUS's configured
+A trigger is "when something happens, a bot does something". Tell a bot "every weekday at 9, send me a summary
+of my inbox" or "whenever our form calls, draft a reply" and it sets the trigger up in that turn with
+`create_trigger` (no confirmation; the chat shows a live card with Edit, Pause and Undo). **Triggers**, first in
+the sidebar, lists every schedule and webhook, with a calendar and the run history. Bots manage them with
+`list_triggers`, `create_trigger` and `manage_trigger`; a webhook a bot makes never shows the bot its secret:
+the person copies the link from the card or the Triggers page.
+
+Schedules (routines) can run once, on selected weekdays, or every 5–1,440 minutes, using either a bot's configured
 model/computer or the Cloud VM runner. Interval schedules stay aligned to their chosen start time and skip
 an occurrence when the previous run is still active, so slow work cannot build an unbounded queue. A
 separate optional Advanced run limit can safely stop stuck work; no timeout is imposed unless one is chosen.

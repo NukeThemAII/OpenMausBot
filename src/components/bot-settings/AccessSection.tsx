@@ -32,7 +32,7 @@ import type { useBotSettingsDerived } from "./useBotSettingsDerived";
  * Claude keeps sessions per project folder, so the server pins each task's folder on its first turn. PATCHed directly,
  * not via updateBot: the server validates the path, and a rejected folder must not stick in local state.
  */
-function WorkingFolder({ bot }: { bot: Bot }) {
+export function WorkingFolder({ bot }: { bot: Bot }) {
   const { request: api } = useBotEditor();
   const { capabilities } = useDesktopCapabilities();
   const home = capabilities.host.homeDir;
@@ -113,7 +113,7 @@ function WorkingFolder({ bot }: { bot: Bot }) {
  * Absent list = all enabled; the first flip writes an explicit list so servers added later never silently reach this
  * bot.
  */
-function McpServersCard({ bot, patch }: { bot: Bot; patch: (patch: { mcpServers: string[] | null }) => void }) {
+export function McpServersCard({ bot, patch }: { bot: Bot; patch: (patch: { mcpServers: string[] | null }) => void }) {
   const { dispatch } = useStore();
   const { servers, error, refresh } = useMcpServers();
   const mounted = new Set((servers ? mcpServersForBot(servers, bot.mcpServers) : []).map((server) => server.name));
@@ -514,12 +514,54 @@ function RecordStepsRow({ on, browserOn, myChrome, onChange }: { on: boolean; br
   );
 }
 
+export function cloudPreferenceShown(bot: Pick<Bot, "computer">, config: { cloudHome?: boolean } | null | undefined): boolean {
+  return (!bot.computer || bot.computer === "cloud") && !config?.cloudHome;
+}
+
+export function CloudPreference({ bot, patch }: { bot: Bot; patch: ReturnType<typeof useBotSettingsDerived>["patch"] }) {
+  const { state } = useStore();
+  if (!cloudPreferenceShown(bot, state.config)) return null;
+  return (
+    <>
+      {!bot.computer && (
+        <div className="mt-3 rounded-lg bg-inset px-3 py-2.5 text-[11.5px] leading-relaxed text-ink-secondary">
+          <span className="font-medium text-ink">Auto cloud preference.</span>{" "}
+          This chooses what Auto may reuse during a task; viewing settings does not create or wake a computer.
+        </div>
+      )}
+      <CloudBackendPicker
+        value={bot.cloudBackend ?? "box"}
+        onChange={(backend) => patch({ cloudBackend: backend })}
+      />
+      {!bot.computer && bot.cloudBackend === "vps" && (
+        <div className="mt-3 flex items-center justify-between gap-4 rounded-lg bg-inset px-3 py-2.5">
+          <div className="min-w-0">
+            <div className="text-[13px] text-ink">Start VPS automatically</div>
+            <div className="mt-0.5 text-[11.5px] text-ink-secondary">
+              Allow Auto to create or wake this bot's managed container when needed.
+            </div>
+          </div>
+          <Switch
+            checked={Boolean(bot.autoStartVps)}
+            aria-label="Start VPS automatically"
+            onClick={() => patch({ autoStartVps: !bot.autoStartVps })}
+          />
+        </div>
+      )}
+    </>
+  );
+}
+
+export type AccessPart = "worksOn" | "folder" | "apps" | "mcp" | "tools" | "browser" | "webhooks" | "always";
+
 export function AccessSection({
   bot,
   derived,
+  parts,
 }: {
   bot: Bot;
   derived: ReturnType<typeof useBotSettingsDerived>;
+  parts?: readonly AccessPart[];
 }) {
   const { draft } = useBotEditor();
   const { state, dispatch } = useStore();
@@ -550,10 +592,11 @@ export function AccessSection({
 
   const webhooks = state.webhooks.filter((webhook) => webhook.botId === bot.id);
   const alwaysAllow = bot.alwaysAllow ?? [];
+  const shows = (part: AccessPart) => !parts || parts.includes(part);
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="rounded-xl bg-card p-4" data-testid="access-works-on">
+      {shows("worksOn") && <div className="rounded-xl bg-card p-4" data-testid="access-works-on">
         <div className="text-[15px] font-medium text-ink">{t("access.worksOn", { name: bot.name, short: worksOn.short })}</div>
         <ProposalStatus bot={bot} kind="owner" />
         <button
@@ -566,40 +609,12 @@ export function AccessSection({
         >
           {t("place.action.openComputerPanel")}
         </button>
-        {(!bot.computer || bot.computer === "cloud") && !state.config?.cloudHome && (
-          <>
-            {!bot.computer && (
-              <div className="mt-3 rounded-lg bg-inset px-3 py-2.5 text-[11.5px] leading-relaxed text-ink-secondary">
-                <span className="font-medium text-ink">Auto cloud preference.</span>{" "}
-                This chooses what Auto may reuse during a task; viewing settings does not create or wake a computer.
-              </div>
-            )}
-            <CloudBackendPicker
-              value={bot.cloudBackend ?? "box"}
-              onChange={(backend) => patch({ cloudBackend: backend })}
-            />
-            {!bot.computer && bot.cloudBackend === "vps" && (
-              <div className="mt-3 flex items-center justify-between gap-4 rounded-lg bg-inset px-3 py-2.5">
-                <div className="min-w-0">
-                  <div className="text-[13px] text-ink">Start VPS automatically</div>
-                  <div className="mt-0.5 text-[11.5px] text-ink-secondary">
-                    Allow Auto to create or wake this bot's managed container when needed.
-                  </div>
-                </div>
-                <Switch
-                  checked={Boolean(bot.autoStartVps)}
-                  aria-label="Start VPS automatically"
-                  onClick={() => patch({ autoStartVps: !bot.autoStartVps })}
-                />
-              </div>
-            )}
-          </>
-        )}
-      </div>
+        <CloudPreference bot={bot} patch={patch} />
+      </div>}
 
-      <WorkingFolder bot={bot} />
+      {shows("folder") && <WorkingFolder bot={bot} />}
 
-      <div className="rounded-xl bg-card p-4">
+      {shows("apps") && <div className="rounded-xl bg-card p-4">
         <div className="flex items-center justify-between gap-4">
           <div>
             <div className="text-[15px] font-medium text-ink">Connected apps</div>
@@ -654,12 +669,12 @@ export function AccessSection({
             <Plus size={14} /> {t("botAccess.connectApp")}
           </button>
         )}
-      </div>
+      </div>}
 
-      <McpServersCard bot={bot} patch={patch} />
-      <ToolSelectionCard key={bot.id} bot={bot} engineKind={derived.engine?.driverKind} />
+      {shows("mcp") && <McpServersCard bot={bot} patch={patch} />}
+      {shows("tools") && <ToolSelectionCard key={bot.id} bot={bot} engineKind={derived.engine?.driverKind} />}
 
-      <div className="rounded-xl bg-card p-4">
+      {shows("browser") && <div className="rounded-xl bg-card p-4">
         <div className="flex items-center justify-between gap-4">
           <div>
             <div className="text-[15px] font-medium text-ink">Browser</div>
@@ -700,9 +715,9 @@ export function AccessSection({
             onChange={(recordBrowserSteps) => patch({ recordBrowserSteps })}
           />
         )}
-      </div>
+      </div>}
 
-      {!draft && <div className="rounded-xl bg-card p-4">
+      {!draft && shows("webhooks") && <div className="rounded-xl bg-card p-4">
         <div className="text-[15px] font-medium text-ink">Webhooks</div>
         <div className="mt-0.5 text-[13px] text-ink-secondary">Inbound triggers wired to this bot.</div>
         <ProposalStatus bot={bot} kind="owner" />
@@ -730,7 +745,7 @@ export function AccessSection({
         )}
       </div>}
 
-      {!draft && <div className="rounded-xl bg-card p-4">
+      {!draft && shows("always") && <div className="rounded-xl bg-card p-4">
         <div className="text-[15px] font-medium text-ink">Always allowed</div>
         <div className="mt-0.5 text-[13px] text-ink-secondary">Tools this bot no longer asks about.</div>
         <ProposalStatus bot={bot} kind="owner" />

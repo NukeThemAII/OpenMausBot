@@ -57,6 +57,8 @@ async function remoteFixture(mode: "http" | "event-stream" | "sse") {
           if (mode === "sse") res.writeHead(202).end();
           return;
         }
+        const refusedWith = (frame.params?.arguments as Record<string, unknown>)?.status;
+        if (typeof refusedWith === "number") return res.writeHead(refusedWith).end(TOKEN);
         if ((frame.params?.arguments as Record<string, unknown>)?.error) error = { code: -32000, message: TOKEN };
         else result = { content: [{ type: "text", text: (frame.params?.arguments as Record<string, unknown>)?.large ? "x".repeat(2_000_000) : "read completed" }] };
       } else {
@@ -175,6 +177,36 @@ describe("scoped remote MCP subprocess", () => {
     expect(reply.error).toBeDefined();
     expect(JSON.stringify(reply)).not.toContain(TOKEN);
     expect(stderr).not.toContain(TOKEN);
+  });
+
+  it.each([
+    [403, "HTTP 403", "permission (scope)"],
+    [404, "HTTP 404", "Check its URL"],
+    [429, "HTTP 429", "Try again in a moment"],
+    [503, "HTTP 503", "Try again later"],
+    [418, "Remote MCP request failed (HTTP 418)", "HTTP 418"],
+  ])("names HTTP %i from the remote server without its body", async (status, said, hint) => {
+    fixture = await remoteFixture("http");
+    start(gateServer({ name: "notes", server: fixture.spec, budget: 0, threadId: "fixture", toolScope: { allow: ["mcp:notes:read"] } })!);
+    await initialize();
+    send({ id: 2, method: "tools/call", params: { name: "read", arguments: { status } } });
+    const reply = await answer();
+    expect(reply.error.code).toBe(-32603);
+    expect(reply.error.message).toContain(said);
+    expect(reply.error.message).toContain(hint);
+    expect(JSON.stringify(reply)).not.toContain(TOKEN);
+    expect(JSON.stringify(reply)).not.toContain(fixture.spec.url);
+  });
+
+  it("says when the remote server cannot be reached", async () => {
+    fixture = await remoteFixture("http");
+    start(gateServer({ name: "notes", server: fixture.spec, budget: 0, threadId: "fixture", toolScope: { allow: ["mcp:notes:read"] } })!);
+    await initialize();
+    await fixture.close();
+    send({ id: 2, method: "tools/call", params: { name: "read", arguments: {} } });
+    const reply = await answer();
+    expect(reply.error).toEqual({ code: -32603, message: "Could not reach this MCP server. Check its URL and that it is online." });
+    expect(JSON.stringify(reply)).not.toContain(fixture.spec.url);
   });
 
   it("runs the shipped helpers without a TypeScript source tree", async () => {

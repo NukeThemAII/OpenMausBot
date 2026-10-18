@@ -3,6 +3,7 @@ import { ArrowUpRight, Check, Info, KeyRound, RefreshCw } from "lucide-react";
 import { MausAvatar } from "@/components/Avatar";
 import { startCloudSetup } from "@/components/CloudIntent";
 import { engineReady } from "@/components/EngineLibrary";
+import { EngineCheckLine, useEngineLiveCheck } from "@/components/EngineLiveCheck";
 import { EngineSetup } from "@/components/EngineSetup";
 import { ProviderMark } from "@/components/ProviderIcons";
 import { staggerIndex } from "@/components/onboarding/beats/shared";
@@ -40,14 +41,15 @@ export function useCloudEngineChoices() {
       ? [{ id: "grok" as const, driverKind: "grokAgent" as const, label: t("cloudSignIn.grok"), hint: t("cloudSignIn.grokHint") }]
       : []),
   ];
-  return { instances: state.instances, dispatch, open, setOpen, checking, recheck, choices };
+  const live = useEngineLiveCheck(choices.flatMap((choice) => cloudEngine(state.instances, choice.driverKind) ?? []));
+  return { instances: state.instances, dispatch, open, setOpen, checking, recheck, choices, live };
 }
 
 export type CloudEngineChoices = ReturnType<typeof useCloudEngineChoices>;
 
 /** The provider tiles, the picked one's own sign-in, an API key, and what limits apply: the engine sign-in and the Cloud's welcome both show these. */
 export function cloudEngineChoices(engines: CloudEngineChoices, { handing = false, columns }: { handing?: boolean; columns?: string } = {}): ReactNode {
-  const { instances, dispatch, open, setOpen, checking, recheck, choices } = engines;
+  const { instances, dispatch, open, setOpen, checking, recheck, choices, live } = engines;
   return <>
     <div role="group" aria-label={t("cloudSignIn.title")} inert={handing} className={cn("mt-8 grid gap-3 transition-opacity duration-300 ease-out", columns ?? (choices.length === 3 ? "grid-cols-3" : "grid-cols-2"), handing && "opacity-40")}>
       {choices.map((choice, i) => {
@@ -87,6 +89,12 @@ export function cloudEngineChoices(engines: CloudEngineChoices, { handing = fals
         );
       })}
     </div>
+
+    {choices.map((choice) => {
+      const instance = cloudEngine(instances, choice.driverKind);
+      const check = instance && live.checks[instance.instanceId];
+      return check ? <EngineCheckLine key={choice.id} name={choice.label} check={check} onRetry={() => void live.run(instance.instanceId)} /> : null;
+    })}
 
     {open && !handing && (() => {
       const index = choices.findIndex((candidate) => candidate.id === open);

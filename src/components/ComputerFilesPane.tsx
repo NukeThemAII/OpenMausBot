@@ -6,6 +6,7 @@ import { collectMessageFiles, fileIdentity, splitMessageAttachments, type Galler
 import { AttachedFileChip, type MessageAttachmentContext } from "./AttachmentPreview";
 import { shortPath } from "@/lib/short-path";
 import { t } from "@/lib/i18n";
+import { openBotSettings } from "./bot-panel/panel-link";
 
 const MAX_FILES = 20;
 
@@ -97,7 +98,7 @@ export function ComputerFilesPane({ bot }: { bot: Bot }) {
             type="button"
             onClick={() => {
               dispatch({ type: "toggleComputer", open: false });
-              dispatch({ type: "toggleSettings", open: true, section: "access" });
+              openBotSettings(dispatch, "access", { page: "folder" });
             }}
             className="shrink-0 rounded-lg bg-control px-2.5 py-1 text-[12px] text-ink hover:bg-raised-hover"
           >

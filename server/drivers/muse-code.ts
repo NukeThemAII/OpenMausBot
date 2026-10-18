@@ -69,8 +69,8 @@ export function museCatalog(result: unknown, preferred?: string): ModelCatalog |
   const options: ModelCatalog["options"] = [];
   let listedDefault: string | undefined;
   for (const row of rows) {
-    const entry = (row ?? {}) as { modelId?: unknown; displayLabel?: unknown; isActive?: unknown; isDefault?: unknown; contextLimit?: unknown };
-    if (typeof entry.modelId !== "string" || !entry.modelId.trim() || entry.isActive === false) continue;
+    const entry = (row ?? {}) as { modelId?: unknown; displayLabel?: unknown; isDefault?: unknown; contextLimit?: unknown };
+    if (typeof entry.modelId !== "string" || !entry.modelId.trim()) continue;
     if (options.some(option => option.id === entry.modelId)) continue;
     const id = entry.modelId;
     options.push({
