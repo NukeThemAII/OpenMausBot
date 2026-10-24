@@ -6,8 +6,10 @@ import { copyText, type CopyFeedback } from "@/lib/copy-text";
 import { api } from "@/state/store";
 import { isOwnerOrAdmin, readSessionState, type SessionState } from "../lib/session";
 import { readMembership } from "../lib/membership";
+import { lastSeen, minutesLeft } from "../lib/pairing-time";
 import { revealPhonePairing } from "../lib/phone-pairing";
 import { Card } from "./SettingsPrimitives";
+import { TeamPhoneCard } from "./TeamPhoneCard";
 
 export interface PairingOffer {
   id: string;
@@ -42,22 +44,10 @@ export function shownDevices(devices: PairedDevice[], cloudHome: boolean): Paire
   return cloudHome ? devices.filter((device) => device.scopes.includes("admin")) : devices;
 }
 
-export function minutesLeft(expiresAt: number, now = Date.now()): number {
-  return Math.max(0, Math.ceil((expiresAt - now) / 60_000));
-}
-
-export function lastSeen(lastSeenAt: number, now = Date.now()): string {
-  const minutes = Math.max(0, Math.floor((now - lastSeenAt) / 60_000));
-  if (minutes < 1) return t("remote.serverPairing.justNow");
-  if (minutes < 60) return t("remote.serverPairing.minutesAgo", { minutes });
-  if (minutes < 1440) return t("remote.serverPairing.hoursAgo", { hours: Math.round(minutes / 60) });
-  return t("remote.serverPairing.daysAgo", { days: Math.round(minutes / 1440) });
-}
-
 const button = "ui-button ui-button-primary";
 const quiet = "ui-button";
 
-export function ServerPairingCard({ initialSession = null, initialPairingCodes = true, cloudHome = false, focusRequest = 0 }: { initialSession?: SessionState | null; initialPairingCodes?: boolean; cloudHome?: boolean; focusRequest?: number }) {
+export function ServerPairingCard({ initialSession = null, initialPairingCodes = true, cloudHome = false, focusRequest = 0, team }: { initialSession?: SessionState | null; initialPairingCodes?: boolean; cloudHome?: boolean; focusRequest?: number; team?: string }) {
   const [session, setSession] = useState<SessionState | null>(initialSession);
   const [pairingCodes, setPairingCodes] = useState(initialPairingCodes);
   const [scope, setScope] = useState<"admin" | "client">("admin");
@@ -102,6 +92,13 @@ export function ServerPairingCard({ initialSession = null, initialPairingCodes =
     return () => clearInterval(timer);
   }, [offer]);
 
+  if (team && session?.kind === "session" && session.team) {
+    return (
+      <div ref={root} tabIndex={-1} data-phone-pairing="server" className="scroll-mt-4 rounded-xl focus:outline-none">
+        <TeamPhoneCard team={team} />
+      </div>
+    );
+  }
   if (!canPairDevices(session)) {
     if (pairingBlockedReason(session) !== "chat-only") return null;
     return (

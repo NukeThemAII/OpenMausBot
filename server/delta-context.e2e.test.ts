@@ -411,22 +411,22 @@ it("keeps the person's request on work a thread the bot opened on itself hands o
 }), hostTimeout(120_000));
 
 it("keeps the person's request on work handed on after a card answer, on the root that asked", () => fixture(async (f) => {
-  // A specialist the Chief suggests unasked is its question to the person, so it waits on its card at every level.
   const seen = new Set<string>();
-  // The card ends a whole chief turn (launch, agents proxy, three tool calls): the slow CI hosts need the full poll budget.
+  // The card ends a whole chief turn (launch, agents proxy, a tool call): the slow CI hosts need the full poll budget.
   const card = async () => {
     let id = "";
     await expect.poll(async () => {
-      id = (await f.messages()).find((m: any) => m.card?.teamSetupRequest && !seen.has(m.card.requestId))?.card.requestId ?? "";
+      id = (await f.messages()).find((m: any) => m.kind === "secret" && !seen.has(m.id))?.id ?? "";
       return id;
     }, { timeout: hostTimeout(30_000) }).not.toBe("");
     seen.add(id);
     return id;
   };
-  const answer = async (requestId: string, behavior: "allow" | "deny") => {
+  const answer = async (cardId: string, outcome: "provided" | "dismiss") => {
     f.save();
-    const response = await fetch(`${f.session.info.url}/api/threads/${f.thread}/respond`, { method: "POST",
-      headers: { "content-type": "application/json", origin: f.session.info.url }, body: JSON.stringify({ requestId, behavior }) });
+    if (outcome === "provided") await f.api("/api/config", { xai: { key: "xai-fixture-key" } }, "PUT");
+    const response = await fetch(`${f.session.info.url}/api/bots/${f.chief.id}/secret-cards/${cardId}/${outcome}`, { method: "POST",
+      headers: { "content-type": "application/json", origin: f.session.info.url }, body: JSON.stringify({ threadId: f.thread }) });
     expect(response.status, await response.clone().text()).toBeLessThan(300);
   };
   const briefed = async (brief: string) => {
@@ -435,30 +435,30 @@ it("keeps the person's request on work handed on after a card answer, on the roo
     return f.prompt(handed()[0]);
   };
   f.plan[f.lead.id] = { reply: "LEAD_DONE" };
-  const propose = (key: string, brief: string) => ({
-    steps: [{ tool: "create_bot", arguments: { name: `Checker ${key}`, role: "Checks the work", instructions: "Check every result.", suggestion: true } }], reply: "Proposed",
-    byPrompt: [{ promptIncludes: "team setup decision", plan: f.delegate(key, [f.lead], brief) }],
+  const ask = (key: string, brief: string, credential: string) => ({
+    steps: [{ tool: "request_credential", arguments: { credential_id: credential, reason: "The team needs it" } }], reply: "Asked",
+    byPrompt: [{ promptIncludes: "OpenMausBot credential update", plan: f.delegate(key, [f.lead], brief) }],
   });
 
-  f.plan[f.chief.id] = propose("after-card", "CARD_ONE_BRIEF check the team");
+  f.plan[f.chief.id] = ask("after-card", "CARD_ONE_BRIEF check the team", "xaiApiKey");
   await f.send("PERSON_CARD_ONE please tidy the team");
   const first = await card();
   await f.idle();
-  await answer(first, "allow");
+  await answer(first, "provided");
   const afterCard = await briefed("CARD_ONE_BRIEF");
   expect(afterCard).toMatch(assignedBy(f.chief.name));
   expect(afterCard).toContain(personLineage("PERSON_CARD_ONE please tidy the team"));
   // Round one settles first: a line sent into that owed resume would be folded into it.
   await f.wait();
 
-  f.plan[f.chief.id] = propose("late-card", "CARD_TWO_BRIEF check the team");
+  f.plan[f.chief.id] = ask("late-card", "CARD_TWO_BRIEF check the team", "ttsKey");
   await f.send("PERSON_CARD_TWO please tidy the team again");
   const late = await card();
   await f.idle();
-  f.plan[f.chief.id] = { reply: "Hi", byPrompt: propose("late-card", "CARD_TWO_BRIEF check the team").byPrompt };
+  f.plan[f.chief.id] = { reply: "Hi", byPrompt: ask("late-card", "CARD_TWO_BRIEF check the team", "ttsKey").byPrompt };
   await f.send("PERSON_LATER just say hi");
   await f.idle();
-  await answer(late, "deny");
+  await answer(late, "dismiss");
   const after = await briefed("CARD_TWO_BRIEF");
   expect(after).toMatch(assignedBy(f.chief.name));
   expect(after).toContain(personLineage("PERSON_CARD_TWO please tidy the team again"));

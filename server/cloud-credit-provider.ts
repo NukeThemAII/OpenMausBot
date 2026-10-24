@@ -80,6 +80,8 @@ export class CloudCreditProvider {
   /** The credit's engine id, on this Cloud home: also a selection left on it after the token went. */
   owns(instanceId: string): boolean { return instanceId === CLOUD_CREDIT_INSTANCE; }
   status(): CloudCreditStatus { return this.refused ?? "active"; }
+  /** A credit is there and not used up or ended. */
+  lasts(): boolean { return this.options.credential !== null && this.refused === null; }
 
   async start(): Promise<void> {
     if (!this.options.credential) return;

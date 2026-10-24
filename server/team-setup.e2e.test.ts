@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +5,7 @@ import { expect, it } from "vitest";
 import { launchVerificationServer, runControlOmb } from "../scripts/control-omb.ts";
 import { removeTempDir } from "./testing/cleanup.ts";
 
-it("Clive sets up multi-provider teams at Ask with no card, keeps existing threads through setup and deletion, and a suggested specialist still waits on its card", async () => {
+it("Clive sets up multi-provider teams at Ask with no card, keeps existing threads through setup and deletion, and adds a specialist it picked itself at once, with an Undo", async () => {
   const gates = mkdtempSync(join(tmpdir(), "omb-team-setup-gates-"));
   const gate = join(gates, "finish");
   const fixture = await launchVerificationServer({ FAKE_CLAUDE_MODE: "slow", FAKE_CLAUDE_SLOW_FINISH_GATE: gate }, undefined, undefined, undefined, undefined, undefined, ["codex"]);
@@ -37,16 +36,9 @@ it("Clive sets up multi-provider teams at Ask with no card, keeps existing threa
     // The fixture pins its starter's name, but identity is the honest comparison: a name once collided with a random starter.
     const initialBotIds = new Set((await state()).map((bot: any) => bot.id));
     let previousPid: number | undefined;
-    let guardedMessageId: string | undefined;
-    const start = async (text: string, sendId?: string) => {
+    const start = async (text: string) => {
       if (existsSync(gate)) unlinkSync(gate);
-      if (sendId) {
-        const before = await api("GET", `/api/threads/${chief.threadId}/messages`);
-        const accepted = await api("POST", `/api/bots/${chief.id}/messages/guarded`, {
-          threadId: chief.threadId, sendId, text, expectedActiveLeafId: before.activeLeafId,
-        }, 202);
-        guardedMessageId = accepted.message.id;
-      } else await control("send", "--bot", chief.id, "--task", chief.threadId, "--text", text);
+      await control("send", "--bot", chief.id, "--task", chief.threadId, "--text", text);
       await expect.poll(() => {
         if (!existsSync(fixture.fixtureDumpPath)) return false;
         return JSON.parse(readFileSync(fixture.fixtureDumpPath, "utf8")).pid !== previousPid;
@@ -57,28 +49,6 @@ it("Clive sets up multi-provider teams at Ask with no card, keeps existing threa
     const finish = async () => {
       writeFileSync(gate, "finish");
       await expect.poll(async () => !(await state()).find((bot: any) => bot.id === chief.id).busy, { timeout: 20_000 }).toBe(true);
-    };
-    const continueOnce = async (requestId: string) => {
-      await expect.poll(async () => {
-        const bot = (await state()).find((bot: any) => bot.id === chief.id);
-        return !bot.busy && bot.messages.filter((message: any) => message.role === "bot" && message.kind === "text" && message.text?.includes(`team setup decision ${requestId}:`)).length;
-      }, { timeout: 20_000 }).toBe(1);
-      const dump = JSON.parse(readFileSync(fixture.fixtureDumpPath, "utf8")); previousPid = dump.pid;
-      evidence.push({ continuation: { requestId, prompt: dump.prompt, provider: "fixture claude", exactlyOneReply: true } });
-    };
-    const stopWithoutResume = async (requestId: string, threadId: string, target: "--bot" | "--channel", id: string) => {
-      const stoppedPid = previousPid;
-      await control("interrupt", target, id, "--task", threadId);
-      writeFileSync(gate, "finish");
-      await control("wait", target, id, "--task", threadId, "--timeout", "15");
-      // Allow an erroneously queued provider handshake/reply to become visible.
-      await new Promise((resolve) => setTimeout(resolve, 350));
-      await api("POST", `/api/threads/${threadId}/respond`, { requestId, behavior: "deny" });
-      const messages = (await api("GET", `/api/threads/${threadId}/messages`)).messages;
-      expect(messages.some((message: any) => message.text?.includes(`team setup decision ${requestId}:`))).toBe(false);
-      expect(JSON.parse(readFileSync(fixture.fixtureDumpPath, "utf8")).pid).toBe(stoppedPid);
-      expect((await state()).find((bot: any) => bot.id === chief.id).busy).toBe(false);
-      evidence.push({ cancellation: { requestId, threadId, noNewProviderGeneration: true, noContinuationReply: true } });
     };
     const build = (name: string, team: string, modelSelection: unknown) => ({ action: "create", key: name, fields: {
       name, title: `${team} specialist`, soul: `Own ${team.toLowerCase()} work. Return evidence and state uncertainty.`, section: team, modelSelection,
@@ -134,40 +104,27 @@ it("Clive sets up multi-provider teams at Ask with no card, keeps existing threa
       .toEqual([...initialBotIds].sort());
     await finish();
 
-    // A specialist Clive suggests unasked is its question: it waits on its card, is answered only from the app with every bot idle, and resumes Clive once.
-    const setupSendId = randomUUID();
-    token = await start("Does the team need anyone else?", setupSendId);
-    const requestSnapshot = () => api("GET", `/api/bots/${chief.id}/requests/${setupSendId}?threadId=${chief.threadId}`);
-    const suggested = await api("POST", "/api/internal/create-bot", { name: "Scout", role: "Research scout", instructions: "Find and check sources.", suggestion: true }, 201, token);
-    expect(suggested).toMatchObject({ state: "pending", applied: false });
-    await api("POST", `/api/threads/${chief.threadId}/respond`, { requestId: suggested.requestId, behavior: "allow" }, 403);
-    expect((await state()).some((bot: any) => bot.name === "Scout")).toBe(false);
-    await finish();
-    const waiting = await requestSnapshot();
-    expect(waiting).toMatchObject({ messageId: guardedMessageId, phase: "waiting", activeTurnId: null, executionId: expect.any(String) });
-    await api("POST", `/api/threads/${chief.threadId}/respond`, { requestId: suggested.requestId, behavior: "allow" }, 403, undefined, false);
-    const approved = await api("POST", `/api/threads/${chief.threadId}/respond`, { requestId: suggested.requestId, behavior: "allow" });
-    expect(approved.result.state).toBe("applied"); await continueOnce(suggested.requestId);
-    const settled = await requestSnapshot();
-    expect(settled).toMatchObject({ messageId: guardedMessageId, phase: "settled", activeTurnId: null, executionId: expect.any(String) });
-    expect(settled.executionId).not.toBe(waiting.executionId);
-    const replies = settled.messages.filter((message: any) => message.role === "bot" && message.kind === "text" && message.turnTerminal);
-    expect(replies).toHaveLength(2);
-    expect(replies.at(-1).text).toContain(`team setup decision ${suggested.requestId}:`);
+    // A specialist Clive picks without being asked is added at once like a requested one: no card, nothing resumes Clive, and Undo removes it.
+    token = await start("Does the team need anyone else?");
+    const picked = await api("POST", "/api/internal/create-bot", { name: "Scout", role: "Research scout", instructions: "Find and check sources.", suggestion: true }, 201, token);
+    expect(picked).toMatchObject({ state: "applied", applied: true, name: "Scout" });
     expect((await state()).find((bot: any) => bot.name === "Scout")).toMatchObject({ approvalMode: "full" });
-    await api("POST", `/api/threads/${chief.threadId}/respond`, { requestId: suggested.requestId, behavior: "allow" });
-    expect((await state()).filter((bot: any) => bot.name === "Scout")).toHaveLength(1);
-    expect(JSON.parse(readFileSync(fixture.fixtureDumpPath, "utf8")).pid).toBe(previousPid);
+    await finish();
+    expect(await decisionReplies(picked.requestId)).toBe(0);
+    expect(await api("POST", `/api/threads/${chief.threadId}/undo`, { requestId: picked.requestId })).toEqual({ ok: true, undone: true });
+    expect((await state()).some((bot: any) => bot.name === "Scout")).toBe(false);
     const room = (await control("new-channel", "--name", "Chief review", "--members", chief.id)).channel;
     unlinkSync(gate);
-    await control("send-channel", "--channel", room.id, "--task", room.activeTaskId, "--text", "@Clive Suggest a helper, then wait.");
+    await control("send-channel", "--channel", room.id, "--task", room.activeTaskId, "--text", "@Clive Add a helper for this room.");
     await expect.poll(() => JSON.parse(readFileSync(fixture.fixtureDumpPath, "utf8")).pid, { timeout: 15_000 }).not.toBe(previousPid);
     const groupDump = JSON.parse(readFileSync(fixture.fixtureDumpPath, "utf8")); previousPid = groupDump.pid;
-    const groupStopped = await api("POST", "/api/internal/create-bot", { name: "NoRestart", role: "Room helper", instructions: "Help the room.", suggestion: true },
+    const roomPick = await api("POST", "/api/internal/create-bot", { name: "RoomHelper", role: "Room helper", instructions: "Help the room.", suggestion: true },
       201, groupDump.mcpConfig.mcpServers.agents.env.OMB_COMMS_TOKEN);
-    await api("POST", `/api/threads/${room.activeTaskId}/respond`, { requestId: groupStopped.requestId, behavior: "deny" });
-    await stopWithoutResume(groupStopped.requestId, room.activeTaskId, "--channel", room.id);
-    expect((await state()).some((bot: any) => bot.name === "NoRestart")).toBe(false);
+    expect(roomPick).toMatchObject({ state: "applied", applied: true });
+    writeFileSync(gate, "finish");
+    await control("wait", "--channel", room.id, "--task", room.activeTaskId, "--timeout", "15");
+    expect((await api("GET", `/api/threads/${room.activeTaskId}/messages`)).messages.find((message: any) => message.card?.requestId === roomPick.requestId).card)
+      .toMatchObject({ autoApplied: true, answered: "allow", options: [] });
     await control("messages", "--bot", chief.id, "--task", chief.threadId, "--limit", "30");
     await control("wait", "--bot", chief.id, "--task", chief.threadId, "--timeout", "15");
     expect(readFileSync(fixture.info.logPath, "utf8")).not.toMatch(/ReferenceError|change listener threw/);

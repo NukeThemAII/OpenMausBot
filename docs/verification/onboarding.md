@@ -92,10 +92,9 @@ It launches the isolated fake-engine fixture and mounts the whole app
 session and config answer as a Cloud home's owner, with Claude signed out and
 the trial's Claude credit in the engine list. Open the printed `previewUrl`:
 
-- `?desktop=1` adds the reduced bridge a Cloud's page gets in the desktop app,
-  with this computer's work to copy (6 bots, 142 chats, 4 routines);
-  `?copy=uploading` or `?copy=done` shows a copy under way or landed, and
-  `?cloud=full` a Cloud that already has bots of its own.
+- `?desktop=1` adds the reduced bridge a Cloud's page gets in the desktop app;
+  `?move=copy` or `?move=done` shows the one-time move on its way or landed
+  (6 bots, 142 chats, 4 routines).
 - `?step=engine`, `?step=files` or `?step=done` opens the welcome on that step;
   `?skin=daylight` (or any skin) picks the skin.
 - `POST /__fixture/engines?mode=signed-in` (or `signed-out`, `credit`) changes
@@ -104,12 +103,11 @@ the trial's Claude credit in the engine list. Open the printed `previewUrl`:
 What was checked this way (Oct 16 2026): every step and the done state in
 Midnight and Daylight at 1280×860, 1024×760 and 390×844, the bring and engine
 steps in the other seven skins, and
-the setup card in short beside Routines; after review, "Your bots are already
-here" (`?cloud=full`) and step 1 with only its two choices. Steps finished there are written to
+the setup card in short beside Routines. Steps finished there are written to
 the fixture's onboarding record; the record can be cleared with
-`PUT /api/config` (`{"onboarding":{"hintsSeen":[]}}`). The real copy, Electron
-main's empty-Cloud check and its preload bridge are not exercised here; they
-are covered by `electron/cloud-move.node-test.mjs` and
+`PUT /api/config` (`{"onboarding":{"hintsSeen":[]}}`). The real move and the
+desktop's preload bridge are not exercised here; they are covered by
+`server/one-home.e2e.test.ts` and
 `src/components/cloud-welcome/CloudWelcome.test.ts`.
 
 ## Bring what you already use (Oct 16 2026)

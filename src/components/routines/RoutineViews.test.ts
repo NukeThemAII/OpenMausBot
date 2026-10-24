@@ -29,7 +29,7 @@ describe("routine list", () => {
   it("says how many of the week's runs went fine, and which run started again by itself", () => {
     const markup = list({ routines: [{ ...routine, weekRuns: { ok: 6, total: 7 } }], runs: [{ ...run, retried: "stalled" }] });
     expect(markup).toContain("6 of 7 runs OK this week");
-    expect(markup).toContain("Latest: Retried after the engine stalled · Completed");
+    expect(markup).toContain("Latest: Retried after the AI stalled · Completed");
     expect(list()).not.toContain("runs OK this week");
   });
   it("retains visible records and latest results during a failed refresh", () => {

@@ -128,7 +128,7 @@ function group(messages: Message[], foldAssistantTurns: boolean): TranscriptItem
       items.push(turn);
       continue;
     }
-    if (folds.hiddenIds.has(message.id)) continue;
+    if (folds.hiddenIds.has(message.id) || message.reaction) continue;
     if (foldable(message)) {
       const first = run[0];
       if (

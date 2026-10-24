@@ -20,7 +20,7 @@ export function ThreadChip({ message }: { message: Message }) {
         title={t("chat.openThread", { title: ref.title })}
         className="ui-pill"
       >
-        {bot ? <BotAvatar bot={bot} state="happy" size={16} /> : <MessagesSquare size={13} aria-hidden="true" />}
+        {bot ? <BotAvatar bot={bot} state="happy" size={16} animated={false} /> : <MessagesSquare size={13} aria-hidden="true" />}
         <span className="max-w-[480px] truncate">{tool.name}</span>
         <ChevronRight size={13} />
       </button>

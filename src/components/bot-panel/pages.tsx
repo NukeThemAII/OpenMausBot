@@ -1,317 +1,406 @@
 import { useState, type ReactNode } from "react";
-import { AppWindow, Calendar, Check, FileText, Folder, FolderOpen, History, KeyRound, Sparkles, User } from "lucide-react";
+import { FolderOpen, Plus } from "lucide-react";
 
-import { cn } from "@/lib/cn";
+import { withBotApp } from "@/lib/bot-app-access";
+import { skillsLibraryEnabled } from "@/lib/feature-flags";
 import { t } from "@/lib/i18n";
-import type { SetupStep } from "@/lib/bot-overview-types";
-import { useStore, type Bot, type BotSettingsSection } from "@/state/store";
-import { AndroidDevicePanel, useAndroidUsbDevices } from "../AndroidDevicePanel";
-import { AccessSection } from "../bot-settings/AccessSection";
-import { HistorySection } from "../bot-settings/HistorySection";
-import { IdentitySection } from "../bot-settings/IdentitySection";
-import { ManagedTeamsSettings } from "../bot-settings/ManagedTeamsSettings";
-import { ModelSection } from "../bot-settings/ModelSection";
-import { OverviewSection } from "../bot-settings/OverviewSection";
-import { PermissionsSection } from "../bot-settings/PermissionsSection";
-import { PromptPreview } from "../bot-settings/PromptPreview";
-import { ProposalStatus } from "../bot-settings/ProposalStatus";
-import { RoutinesSection } from "../bot-settings/RoutinesSection";
-import { SkillsSection } from "../bot-settings/SkillsSection";
-import { SlackSection } from "../bot-settings/SlackSection";
-import { SoulSection } from "../bot-settings/SoulSection";
-import { VisibilitySection } from "../bot-settings/VisibilitySection";
-import { VoiceSection } from "../bot-settings/VoiceSection";
-import type { useBotHistory, useBotOverview } from "../bot-settings/useBotOverview";
+import { MEMORY_INDEX, saveMemoryDoc } from "@/lib/memory";
+import { openExternalLink } from "@/lib/app-links";
+import type { Routine } from "@/lib/routines";
+import { shortPath } from "@/lib/short-path";
+import { useStore, type Bot } from "@/state/store";
+import { useDesktopCapabilities } from "../DesktopCapabilities";
+import { ServiceIcon } from "../PluginsPanel";
+import { RoutineEditor } from "../RoutinesPage";
+import { useWorkingFolder } from "../bot-settings/AccessSection";
+import { useBotEditor } from "../bot-settings/BotEditorContext";
+import { SkillReviewDialog, useManagedSkills, type ManagedSkill } from "../bot-settings/SkillsSection";
+import { useBotApps, type BotApp } from "../bot-settings/useBotApps";
 import type { useBotSettingsDerived } from "../bot-settings/useBotSettingsDerived";
-import { BrowserLogins } from "./apps-and-logins";
-import { teamNames, useBotActions } from "./bot-actions";
+import { RoutineList } from "../routines/RoutineList";
+import { BrowserLogins } from "./browser-logins";
 import { useOpenComputer } from "./ComputerTab";
-import { PAGES, sectionTarget, setupTarget, type PageId, type PanelTarget } from "./page-registry";
-import { buttonCls, Card, ItemRow, LinkRow, NavRow, NoteRow, rowCls } from "./rows";
+import { memoryNotes, withMemoryNote, withoutMemoryNote } from "./memory-notes";
+import type { SimplePageId } from "./page-registry";
+import { BotSwitch, buttonCls, Card, LinkRow, NoteRow, RadioRow, rowCls, SwitchRow, TextRow, TrashButton } from "./rows";
+import { useMemoryDoc } from "./use-memory-doc";
 
 type Derived = ReturnType<typeof useBotSettingsDerived>;
 
 export interface PageContext {
   bot: Bot;
   derived: Derived;
-  slackUrl: string | null;
-  overview: ReturnType<typeof useBotOverview>;
-  history: ReturnType<typeof useBotHistory>;
-  onOpen: (page: PageId) => void;
-  onGo: (target: PanelTarget) => void;
 }
 
-export const pageSurfaceCls = "flex flex-col gap-3 [&_.bg-card]:bg-ink/[0.03] [&_.rounded-xl.bg-card]:border [&_.rounded-xl.bg-card]:border-ink/[0.04]";
+export const pageSurfaceCls = "flex flex-col gap-3";
 
-const SETUP_ICON: Record<SetupStep["id"], typeof Sparkles> = {
-  identity: User,
-  soul: FileText,
-  folder: Folder,
-  apps: AppWindow,
-  schedule: Calendar,
-};
+const SKILLS_SITE = "https://skills.sh";
 
-export function SetupPage({ bot, derived, overview, onOpen, onGo }: PageContext) {
+function errorText(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback;
+}
+
+/** One switch per connected app; the first app switched on while apps are off for the bot turns them on with only
+ * that app granted. */
+export function AppsPage({ bot, derived }: PageContext) {
   const { dispatch } = useStore();
-  const steps = (overview.overview?.setup ?? []).filter((step) => !step.done);
-  const go = (target: PanelTarget) => (target.page ? onOpen(target.page) : onGo(target));
-  if (!overview.overview) return <NoteRow>{t(overview.overviewError ? "botPanel.overviewError" : "botPanel.loading")}</NoteRow>;
+  const apps = useBotApps(bot);
+  const { patch, canUseConnectedApps, connectedAppsEnabled } = derived;
+
+  const toggle = (app: BotApp) => {
+    const on = app.scope === null;
+    const connectorScopes = on && !connectedAppsEnabled && !bot.connectorScopes
+      ? { apps: { [app.slug]: "write" as const } }
+      : withBotApp(bot.connectorScopes, apps.connectedSlugs, app.slug, on);
+    const next = {
+      ...(connectorScopes ? { connectorScopes } : {}),
+      ...(on && !connectedAppsEnabled ? { composio: true } : {}),
+    };
+    if (Object.keys(next).length > 0) patch(next);
+  };
+  const note = !canUseConnectedApps
+    ? t("botSettings.simple.appsCannot", { name: bot.name })
+    : apps.phase === "loading"
+      ? t("common.checking")
+      : apps.phase === "unknown"
+        ? t("botSettings.simple.appsUnknown")
+        : apps.apps.length === 0
+          ? t("botSettings.simple.appsNone")
+          : null;
+
   return (
     <>
       <Card>
-        {steps.length === 0 ? <NoteRow>{t("botPanel.setupDone")}</NoteRow> : steps.map((step) => (
-          <NavRow
-            key={step.id}
-            data-panel-setup={step.id}
-            icon={SETUP_ICON[step.id]}
-            title={step.label}
-            onClick={() => go(setupTarget(step.id))}
-          />
+        {note && <NoteRow>{note}</NoteRow>}
+        {canUseConnectedApps && apps.apps.map((app) => (
+          <div key={app.slug} data-simple-app={app.slug} className={rowCls}>
+            <ServiceIcon key={`${app.card.logo}:${app.card.domain}`} card={app.card} className="size-7 shrink-0" />
+            <div className="min-w-0 flex-1 truncate text-[13.5px] font-medium text-ink">{app.label}</div>
+            <BotSwitch
+              color={bot.color}
+              checked={app.scope !== null}
+              aria-label={t("botSettings.simple.appToggle", { name: bot.name, app: app.label })}
+              disabled={Boolean(bot.busy)}
+              onClick={() => toggle(app)}
+              className="disabled:cursor-not-allowed"
+            />
+          </div>
         ))}
       </Card>
-      {derived.canCoordinate && !bot.busy && (
+      <Card>
+        <LinkRow
+          data-panel-link="add-app"
+          icon={Plus}
+          onClick={() => {
+            dispatch({ type: "toggleSettings", open: false });
+            dispatch({ type: "togglePlugins", open: true, surface: "apps" });
+          }}
+        >
+          {t("botPanel.apps.connectAnother")}
+        </LinkRow>
+      </Card>
+    </>
+  );
+}
+
+export function RoutinesPage({ bot, derived }: PageContext) {
+  const { state, dispatch } = useStore();
+  const [editing, setEditing] = useState<Routine | "new" | null>(null);
+  return (
+    <>
+      <RoutineList
+        routines={derived.botRoutines}
+        runs={state.routineRuns}
+        loading={state.routinesLoadState === "loading" && derived.botRoutines.length === 0}
+        error={state.routinesLoadState === "error"}
+        onOpen={setEditing}
+        onLogs={(routine) => dispatch({ type: "showRoutines", section: "logs", botId: bot.id, routineId: routine.id })}
+        onToggle={(routine) => dispatch({ type: "updateRoutine", routineId: routine.id, patch: { enabled: !routine.enabled } })}
+      />
+      <Card>
+        <LinkRow data-panel-action="new-routine" icon={Plus} onClick={() => setEditing("new")}>{t("botPanel.routines.add")}</LinkRow>
+      </Card>
+      <p className="mx-1 text-[12.5px] leading-normal text-ink-secondary">{t("botPanel.routines.ask", { name: bot.name })}</p>
+      {editing && (
+        <RoutineEditor
+          key={bot.id}
+          routine={editing === "new" ? undefined : editing}
+          bots={[bot]}
+          lockedBotId={bot.id}
+          onClose={() => setEditing(null)}
+        />
+      )}
+    </>
+  );
+}
+
+/** MEMORY.md's bullets. Every write goes through the memory file route with the hash it was read at, so a note the
+ * bot added meanwhile is never lost: a conflict re-reads and asks again. */
+export function MemoryPage({ bot }: PageContext) {
+  const memory = useMemoryDoc(bot);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const memoryOn = bot.memoryEnabled !== false;
+  const notes = memory.doc ? memoryNotes(memory.doc.text) : null;
+
+  const write = async (text: string) => {
+    if (!memory.doc || saving) return false;
+    setSaving(true);
+    setError(null);
+    try {
+      const result = await saveMemoryDoc(bot.id, MEMORY_INDEX, text, memory.doc.exists ? memory.doc.hash : undefined);
+      if (result.ok) {
+        memory.setDoc(result.doc);
+        return true;
+      }
+      await memory.reload();
+      setError(t("memory.conflict.title", { name: bot.name }));
+      return false;
+    } catch (cause) {
+      setError(errorText(cause, t("botPanel.library.memoryError")));
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  };
+  const forget = (line: number) => { if (memory.doc) void write(withoutMemoryNote(memory.doc.text, line)); };
+  const add = async () => {
+    if (!memory.doc || !draft.trim()) return;
+    if (await write(withMemoryNote(memory.doc.text, draft))) setDraft("");
+  };
+
+  return (
+    <>
+      <Card>
+        {!memoryOn ? (
+          <NoteRow>{t("botPanel.library.memoryOff", { name: bot.name })}</NoteRow>
+        ) : memory.error ? (
+          <NoteRow tone="warn">{t("botPanel.library.memoryError")}</NoteRow>
+        ) : notes === null ? (
+          <NoteRow>{t("common.checking")}</NoteRow>
+        ) : notes.length === 0 ? (
+          <NoteRow>{t("botPanel.memory.empty")}</NoteRow>
+        ) : notes.map((note) => (
+          <div key={`${note.line}:${note.text}`} data-memory-note={note.line} className={rowCls}>
+            <div className="min-w-0 flex-1 text-[13px] leading-[1.45] text-ink">{note.text}</div>
+            <TrashButton label={t("botPanel.memory.forget")} disabled={saving} onClick={() => forget(note.line)} />
+          </div>
+        ))}
+        {error && <NoteRow tone="warn">{error}</NoteRow>}
+      </Card>
+      {memoryOn && (
         <Card>
-          <ItemRow icon={Sparkles} title={t("botSetup.withBot")} hint={t("botSetup.help")}>
-            <button
-              type="button"
-              data-panel-action="setup"
-              onClick={() => {
-                dispatch({ type: "toggleSettings", open: false });
-                dispatch({ type: "send", botId: bot.id, text: "/setup", threadId: bot.threadId });
-              }}
-              className={cn(buttonCls, "bg-accent text-accent-ink hover:bg-accent hover:brightness-110")}
-            >
-              {t("botPanel.start")}
-            </button>
-          </ItemRow>
+          <TextRow
+            data-panel-form="memory-add"
+            value={draft}
+            placeholder={t("botPanel.memory.addPlaceholder", { name: bot.name })}
+            label={t("botPanel.memory.addPlaceholder", { name: bot.name })}
+            action={t("common.add")}
+            disabled={saving || memory.doc === null}
+            onChange={setDraft}
+            onSubmit={() => void add()}
+          />
         </Card>
       )}
     </>
   );
 }
 
-function TeamPage({ bot }: { bot: Bot }) {
-  const { state } = useStore();
-  const { moveToTeam } = useBotActions(bot);
-  const [draft, setDraft] = useState("");
-  const current = bot.section?.trim() ?? "";
-  const teams = teamNames(state);
-  const trimmed = draft.trim();
-  const choice = (team: string, label: string) => (
-    <button
-      key={team || "general"}
-      type="button"
-      data-panel-team={team}
-      aria-pressed={current === team}
-      onClick={() => moveToTeam(team)}
-      className={cn(rowCls, "w-full text-left hover:bg-ink/[0.03]")}
-    >
-      <span className="min-w-0 flex-1 truncate text-[13.5px] font-medium text-ink">{label}</span>
-      <span className="flex w-4 shrink-0 text-ink">{current === team && <Check size={16} aria-hidden="true" />}</span>
-    </button>
-  );
-  return (
-    <>
-      <Card>
-        {choice("", t("botPanel.generalTeam"))}
-        {teams.map((team) => choice(team, team))}
-      </Card>
-      <Card>
-        <form
-          className={rowCls}
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (!trimmed || trimmed.length > 60) return;
-            moveToTeam(trimmed);
-            setDraft("");
-          }}
-        >
-          <input
-            maxLength={60}
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            placeholder={t("sidebar.section.newContext")}
-            aria-label={t("sidebar.section.newContextAria")}
-            className="h-8 min-w-0 flex-1 rounded-lg border border-hairline bg-inset px-2.5 text-[13px] text-ink outline-none placeholder:text-ink-tertiary focus:border-accent-border"
-          />
-          <button type="submit" disabled={!trimmed} className={buttonCls}>{t("common.add")}</button>
-        </form>
-      </Card>
-    </>
-  );
-}
-
-function AndroidPage() {
-  const status = useAndroidUsbDevices();
-  return <AndroidDevicePanel status={status} />;
-}
-
-function PromptPage({ overview }: Pick<PageContext, "overview">) {
-  const [open, setOpen] = useState(true);
-  return <PromptPreview data={overview.prompt} error={overview.promptError} open={open} onToggle={() => setOpen((current) => !current)} />;
-}
-
-function FolderPage({ bot, derived }: Pick<PageContext, "bot" | "derived">) {
-  const openComputer = useOpenComputer(bot);
-  return (
-    <>
-      <AccessSection bot={bot} derived={derived} parts={["folder"]} />
-      <Card>
-        <LinkRow data-panel-link="files" icon={FolderOpen} onClick={() => openComputer("files")}>{t("botPanel.changedFiles")}</LinkRow>
-      </Card>
-    </>
-  );
-}
-
-function BrowserPage({ bot, derived }: Pick<PageContext, "bot" | "derived">) {
-  const openComputer = useOpenComputer(bot);
-  return (
-    <>
-      <AccessSection bot={bot} derived={derived} parts={["browser"]} />
-      <BrowserLogins bot={bot} browserEnabled={derived.browserEnabled} onOpenBrowser={() => openComputer("browser")} />
-    </>
-  );
-}
-
-function ChiefTeamsPage({ bot, derived }: Pick<PageContext, "bot" | "derived">) {
-  const { state } = useStore();
-  if (!bot.chiefOfStaff) return <NoteRow>{t("botPanel.chiefFirst")}</NoteRow>;
-  return (
-    <div className="rounded-xl bg-card p-4 [&>details]:mt-0 [&>details]:border-0 [&>details]:pt-0">
-      <ManagedTeamsSettings
-        key={bot.id + JSON.stringify(bot.managedSections ?? [])}
-        name={bot.name} ownTeam={bot.section?.trim() || ""}
-        teams={["", ...(state.sections ?? []), ...[...state.bots, ...state.groups].map(member => member.section?.trim() || "")]}
-        allowed={bot.managedSections ?? []}
-        onSave={managedSections => derived.patch({ managedSections, acknowledgePeerScope: true })}
-      />
-      <ProposalStatus bot={bot} kind="owner" />
-    </div>
-  );
-}
-
-export function PageBody({ page, ...context }: PageContext & { page: PageId }): ReactNode {
-  const { bot, derived, slackUrl, overview, history, onOpen, onGo } = context;
+export function SkillsPage({ bot }: PageContext) {
+  const { request: api } = useBotEditor();
   const { state, dispatch } = useStore();
-  const openSection = (section: BotSettingsSection) => {
-    const target = sectionTarget(section);
-    if (target.page) onOpen(target.page);
-    else onGo(target);
+  const skills = useManagedSkills(bot);
+  const [source, setSource] = useState("");
+  const [importing, setImporting] = useState(false);
+  const libraryOn = skillsLibraryEnabled(state.config);
+
+  const remove = async (skill: ManagedSkill) => {
+    if (skills.working) return;
+    if (!window.confirm(t("botPanel.skills.removeConfirm", { name: skill.name }))) return;
+    skills.setWorking(skill.name);
+    skills.setError("");
+    try {
+      if (skill.origin === "library") await skills.putAssignments(skill.name, true);
+      else {
+        await api(`/api/bots/${bot.id}/skills/${encodeURIComponent(skill.name)}`, { method: "DELETE" });
+        await skills.refresh();
+      }
+    } catch (cause) {
+      skills.setError(errorText(cause, t("botPanel.skills.removeFailed")));
+    } finally {
+      skills.setWorking("");
+    }
   };
+  const importSkill = async () => {
+    const trimmed = source.trim();
+    if (!trimmed || importing) return;
+    setImporting(true);
+    skills.setError("");
+    try {
+      await api(`/api/bots/${bot.id}/skills`, { method: "POST", body: JSON.stringify({ source: trimmed }) });
+      setSource("");
+      await skills.refresh();
+    } catch (cause) {
+      skills.setError(errorText(cause, t("botPanel.skills.importFailed")));
+    } finally {
+      setImporting(false);
+    }
+  };
+  const browse = () => {
+    if (libraryOn) {
+      dispatch({ type: "toggleSettings", open: false });
+      dispatch({ type: "toggleAppSettings", open: true, section: "skills" });
+      return;
+    }
+    void openExternalLink(SKILLS_SITE);
+  };
+
+  return (
+    <>
+      <Card>
+        {skills.loading ? (
+          <NoteRow>{t("skills.loading")}</NoteRow>
+        ) : skills.skills.length === 0 ? (
+          <NoteRow>{t("botSettings.simple.noSkills")}</NoteRow>
+        ) : skills.skills.map((skill) => (
+          <SwitchRow
+            key={skill.name}
+            data-panel-row={`skill:${skill.name}`}
+            title={skill.name}
+            hint={skill.description || skill.source}
+            label={t("botSettings.simple.skillToggle", { name: skill.name })}
+            color={bot.color}
+            checked={skill.enabled}
+            disabled={Boolean(skills.working)}
+            onChange={() => void skills.toggle(skill)}
+            extra={<TrashButton data-panel-action={`remove-skill:${skill.name}`} label={t("botPanel.skills.remove", { name: skill.name })} disabled={Boolean(skills.working)} onClick={() => void remove(skill)} />}
+          />
+        ))}
+        {skills.error && !skills.reviewing && <NoteRow tone="warn">{skills.error}</NoteRow>}
+      </Card>
+      <Card>
+        <TextRow
+          data-panel-form="skill-import"
+          value={source}
+          placeholder={t("botPanel.skills.importPlaceholder")}
+          label={t("skills.import.label")}
+          action={importing ? t("skills.import.importing") : t("common.add")}
+          disabled={importing}
+          onChange={setSource}
+          onSubmit={() => void importSkill()}
+        />
+        <LinkRow data-panel-link="browse-skills" onClick={browse}>{t("botPanel.skills.browse")}</LinkRow>
+      </Card>
+      {skills.reviewing && (
+        <SkillReviewDialog
+          skill={skills.reviewing.skill}
+          text={skills.reviewing.text}
+          error={skills.error}
+          working={skills.working === skills.reviewing.skill.name}
+          onCancel={() => skills.setReviewing(null)}
+          onEnable={() => void skills.enableReviewed()}
+        />
+      )}
+    </>
+  );
+}
+
+export function FolderPage({ bot }: PageContext) {
+  const { capabilities } = useDesktopCapabilities();
+  const home = capabilities.host?.homeDir;
+  const { draft, setDraft, error, saving, canPick, save, pick } = useWorkingFolder(bot);
+  const [choosing, setChoosing] = useState(false);
+  const chosen = Boolean(bot.cwd) || choosing;
+
+  const choose = () => {
+    if (canPick) {
+      void pick();
+      return;
+    }
+    setChoosing(true);
+  };
+
+  return (
+    <>
+      <Card>
+        <RadioRow
+          data-panel-choice="private"
+          title={t("botPanel.folder.own")}
+          hint={t("botPanel.folder.ownHint")}
+          checked={!chosen}
+          disabled={saving}
+          onClick={() => {
+            setChoosing(false);
+            if (bot.cwd) void save(null);
+          }}
+        />
+        <RadioRow
+          data-panel-choice="pick"
+          title={t("botPanel.folder.pick")}
+          hint={t("botPanel.folder.pickHint")}
+          checked={chosen}
+          disabled={saving}
+          onClick={() => { if (!bot.cwd) choose(); }}
+        />
+      </Card>
+      {chosen && (
+        <Card>
+          {canPick ? (
+            <div className={rowCls}>
+              <div className="min-w-0 flex-1 truncate rounded-lg border border-hairline/40 bg-inset px-3 py-2 font-mono text-[12.5px] text-ink" title={bot.cwd}>
+                {bot.cwd ? shortPath(bot.cwd, home) : <span className="text-ink-secondary">{t("botAccess.folder.private")}</span>}
+              </div>
+              <button type="button" data-panel-action="pick-folder" disabled={saving} onClick={() => void pick()} className={buttonCls}>
+                <FolderOpen size={14} aria-hidden="true" />
+                {t("botAccess.folder.choose")}
+              </button>
+            </div>
+          ) : (
+            <form
+              data-panel-form="folder-path"
+              className={rowCls}
+              onSubmit={(event) => {
+                event.preventDefault();
+                const path = (draft ?? bot.cwd ?? "").trim();
+                if (path) void save(path);
+              }}
+            >
+              <input
+                value={draft ?? bot.cwd ?? ""}
+                placeholder={t("botAccess.folder.placeholder")}
+                aria-label={t("botAccess.folder.title")}
+                onChange={(event) => setDraft(event.target.value)}
+                className="h-8 min-w-0 flex-1 rounded-lg border border-hairline bg-inset px-2.5 font-mono text-[12.5px] text-ink outline-none placeholder:text-ink-tertiary focus:border-accent-border"
+              />
+              <button type="submit" disabled={saving || draft === null} className={buttonCls}>{t("botAccess.folder.save")}</button>
+            </form>
+          )}
+          {error && <NoteRow tone="warn">{error}</NoteRow>}
+        </Card>
+      )}
+    </>
+  );
+}
+
+export function BrowserPage({ bot, derived }: PageContext) {
+  const openComputer = useOpenComputer(bot);
+  return <BrowserLogins bot={bot} browserEnabled={derived.browserEnabled} onOpenBrowser={() => openComputer("browser")} />;
+}
+
+export function PageBody({ page, ...context }: PageContext & { page: SimplePageId }): ReactNode {
   switch (page) {
-    case "setup":
-      return <SetupPage {...context} />;
-    case "model":
-      return (
-        <>
-          <ModelSection bot={bot} />
-          <Card>
-            <NavRow
-              data-panel-row="providers"
-              icon={KeyRound}
-              title={t("botPanel.providers")}
-              hint={t("botPanel.providersHint")}
-              onClick={() => dispatch({ type: "toggleAppSettings", open: true, section: "engines" })}
-            />
-          </Card>
-        </>
-      );
-    case "instructions":
-      return (
-        <>
-          <SoulSection bot={bot} patch={derived.patch} />
-          <Card>
-            <NavRow data-panel-page="history" icon={History} title={t("botPanel.earlierVersions")} hint={t("botPanel.earlierVersionsHint")} onClick={() => onOpen("history")} />
-          </Card>
-        </>
-      );
-    case "approvals":
-      return (
-        <>
-          <PermissionsSection bot={bot} derived={derived} parts={["approval", "outbound"]} />
-          <Card>
-            <NavRow
-              data-panel-page="always"
-              icon={Check}
-              title={t(PAGES.always.title)}
-              hint={t("botPanel.alwaysHint")}
-              value={bot.alwaysAllow?.length || t("botPanel.none")}
-              onClick={() => onOpen("always")}
-            />
-          </Card>
-        </>
-      );
-    case "always":
-      return <AccessSection bot={bot} derived={derived} parts={["always"]} />;
-    case "routines":
-      return <RoutinesSection bot={bot} routines={derived.botRoutines} runs={state.routineRuns} />;
     case "apps":
-      return <AccessSection bot={bot} derived={derived} parts={["apps"]} />;
+      return <AppsPage {...context} />;
+    case "routines":
+      return <RoutinesPage {...context} />;
     case "memory":
-      return null;
+      return <MemoryPage {...context} />;
     case "skills":
-      return <SkillsSection bot={bot} />;
-    case "browser":
-      return <BrowserPage bot={bot} derived={derived} />;
+      return <SkillsPage {...context} />;
     case "folder":
-      return <FolderPage bot={bot} derived={derived} />;
-    case "android":
-      return <AndroidPage />;
-    case "voice":
-      return <VoiceSection bot={bot} derived={derived} />;
-    case "blurb":
-      return (
-        <IdentitySection
-          bot={bot}
-          patch={derived.patch}
-          activeState={derived.activeState}
-          mascotMotion={derived.mascotMotion}
-          parts={["provenance", "blurb"]}
-        />
-      );
-    case "team":
-      return <TeamPage bot={bot} />;
-    case "chiefteams":
-      return <ChiefTeamsPage bot={bot} derived={derived} />;
-    case "mcp":
-      return <AccessSection bot={bot} derived={derived} parts={["mcp"]} />;
-    case "tools":
-      return <AccessSection bot={bot} derived={derived} parts={["tools"]} />;
-    case "webhooks":
-      return <AccessSection bot={bot} derived={derived} parts={["webhooks"]} />;
-    case "visibility":
-      return <VisibilitySection bot={bot} />;
-    case "slack":
-      return slackUrl ? <SlackSection managementUrl={slackUrl} /> : <NoteRow>{t("botPanel.slackUnavailable")}</NoteRow>;
-    case "overview":
-      return overview.overview === null && overview.overviewError ? (
-        <NoteRow>{t("botPanel.overviewError")}</NoteRow>
-      ) : (
-        <OverviewSection
-          overview={overview.overview}
-          refreshError={overview.overview !== null && overview.overviewError}
-          prompt={overview.prompt}
-          promptError={overview.promptError}
-          onOpen={openSection}
-          onSetup={derived.canCoordinate && !bot.busy ? () => {
-            dispatch({ type: "toggleSettings", open: false });
-            dispatch({ type: "send", botId: bot.id, text: "/setup", threadId: bot.threadId });
-          } : undefined}
-        />
-      );
-    case "prompt":
-      return <PromptPage overview={overview} />;
-    case "history":
-      return history.rows === null && history.error ? (
-        <NoteRow>{t("botPanel.historyError")}</NoteRow>
-      ) : (
-        <HistorySection
-          bot={bot}
-          rows={history.rows}
-          refreshError={history.rows !== null && history.error}
-          onRollback={history.requestRollback}
-          rollingBack={history.rollingBack || !history.revision}
-        />
-      );
+      return <FolderPage {...context} />;
+    case "browser":
+      return <BrowserPage {...context} />;
   }
 }

@@ -76,7 +76,7 @@ describe("app, role and key lists", () => {
     const rows = {
       composio: "composio", box: "boat", opencodeGo: "opencode_go", anthropic: "anthropic", openai: "openai",
       openrouter: "openrouter", openaiCompat: "openai_compat", xai: "xai", mistral: "mistral", cerebras: "cerebras",
-      groq: "groq", meta: "meta",
+      groq: "groq", meta: "meta", treg: "treg", deepseek: "deepseek",
     } satisfies Record<ConfigSection, string>;
     for (const [section, provider] of Object.entries(rows)) {
       expect(SECTION_PROVIDER[section as ConfigSection]).toBe(provider);
@@ -88,6 +88,7 @@ describe("app, role and key lists", () => {
     const expected = {
       boxToken: "boat", xaiApiKey: "xai", opencodeGoApiKey: "opencode_go", ttsKey: "elevenlabs", fishAudioKey: "fish_audio",
       openaiImageApiKey: "openai_image",
+      onePasswordToken: "onepassword",
     };
     expect(Object.keys(expected).sort()).toEqual(Object.keys(CREDENTIAL_TARGETS).sort());
     for (const [target, provider] of Object.entries(expected)) expect(credentialProvider(target)).toBe(provider);

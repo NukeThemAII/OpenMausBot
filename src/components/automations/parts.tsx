@@ -1,14 +1,15 @@
-import { TriangleAlert } from "lucide-react";
+import { Check, TriangleAlert } from "lucide-react";
 
 import { AUTOMATION_FIX_LABEL, type Automation, type AutomationStatus } from "@/lib/automations";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 import { useStore } from "@/state/store";
-import type { useAutomationActions } from "./actions";
+import type { useAllAutomationActions } from "./app-actions";
 
-/** A coloured dot for Working and Paused; a warning sign for Needs you. */
+/** A coloured dot for Working and Paused; a warning sign for Needs you; a quiet check for Done. */
 export function StatusMark({ status, className }: { status: AutomationStatus; className?: string }) {
   if (status.state === "needs-you") return <TriangleAlert size={15} aria-hidden="true" className={cn("shrink-0 text-warning", className)} />;
+  if (status.state === "done") return <Check size={14} aria-hidden="true" className={cn("shrink-0 text-ink-tertiary", className)} />;
   return <span aria-hidden="true" className={cn("size-2.5 shrink-0 rounded-full", status.state === "working" ? "bg-success" : "bg-ink-tertiary/60", className)} />;
 }
 
@@ -16,7 +17,7 @@ export function StatusMark({ status, className }: { status: AutomationStatus; cl
 export function FixButton({ automation, status, actions, onEdit, className }: {
   automation: Automation;
   status: AutomationStatus;
-  actions: ReturnType<typeof useAutomationActions>;
+  actions: ReturnType<typeof useAllAutomationActions>;
   onEdit: () => void;
   className?: string;
 }) {
@@ -27,6 +28,7 @@ export function FixButton({ automation, status, actions, onEdit, className }: {
     if (fix === "answer" || fix === "sign-in") actions.openRun(automation, automation.runs.find((run) => run.status !== "queued"));
     else if (fix === "usage") dispatch({ type: "toggleAppSettings", open: true, section: "usage" });
     else if (fix === "edit") onEdit();
+    else if (fix === "reconnect") dispatch({ type: "togglePlugins", open: true, surface: "apps" });
     else void actions.runNow(automation);
   };
   return (

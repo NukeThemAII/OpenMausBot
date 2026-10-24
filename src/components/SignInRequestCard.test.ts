@@ -79,8 +79,8 @@ describe("SignInRequestCard while it waits", () => {
   });
 
   it.each([
-    ["vm", "the Local VM Pepper works on"],
-    ["cloud", "the cloud computer Pepper works on"],
+    ["vm", "the private desktop Pepper works on"],
+    ["cloud", "the cloud desktop Pepper works on"],
     ["local", "on this computer, in the browser Pepper is using"],
   ])("names the place for %s", (place, words) => {
     expect(view({ place })).toContain(words);

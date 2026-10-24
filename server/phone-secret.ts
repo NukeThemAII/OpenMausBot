@@ -137,6 +137,10 @@ export function assertPhoneSecretRequestMatches(
   authenticatedDeviceId: string,
   expected: { target: string; requestKey: string },
 ): void {
+  // Phone entry hands a key to the desktop's settings; the 1Password token goes to Logins, which a phone cannot reach.
+  if (expected.target === "onePasswordToken") {
+    throw new PhoneSecretError("Paste the 1Password token in OpenMausBot on your computer, or in My Cloud: a phone cannot save it yet.", 409);
+  }
   if (
     context.deviceId !== authenticatedDeviceId ||
     context.target !== expected.target ||

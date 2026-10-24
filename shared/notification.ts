@@ -21,7 +21,10 @@ export type NotifyKind =
   | "mention"
   /** The workspace crossed its monthly spend warning or reached its cap.
    * Sent to admins only, at most once per month for each. */
-  | "spend";
+  | "spend"
+  /** The main agent's brief has something new that needs the person, or a
+   * meeting prep or reminder it posted with no AI turn. Personal installs only. */
+  | "brief";
 
 export interface Notification {
   kind: NotifyKind;

@@ -30,22 +30,45 @@ run in the Windows Vitest/Electron jobs.
 ## Vitest shards
 
 The suite runs one file at a time, so a shard takes as long as its files added
-up. Vitest's own `--shard` deals out equal numbers of files, and in October
-2026 that put three of the four slowest e2e files in one shard: about 24
-minutes of tests on Windows against 13 to 16 for the others, and every PR
-waited for it. `scripts/testing/duration-sequencer.ts` deals the files out by
-recorded time instead, slowest first, each to the shard with the least time so
-far. The times are `scripts/testing/vitest-shard-weights.json`: each file's
-median seconds on the Windows runners, for every file over five seconds and
-every e2e file. A file not in it counts one second, or the median e2e time if
-it is an e2e file. Every file still runs exactly once, and each shard job logs
-a `duration-sequencer:` line with its share.
+up, and the slowest shard sets how long a PR and a release wait. Linux and
+Windows run eight shards each, macOS four (main, merge groups and manual runs
+only); `scripts/ci-scope.mjs` builds the matrix.
 
-Refresh the times from a few recent green runs when shards drift apart:
+**Which files run where.** Linux runs every file. Most e2e files drive
+OMB's own logic through a real server and fake engines, which is the same on
+every OS, and they were 70% of a Windows shard's time, so only Linux runs
+them: the Windows and macOS shards set `OMB_VITEST_E2E=host`, and
+`vite.config.ts` then leaves out every e2e file not listed in
+`scripts/testing/host-e2e.ts`. The list keeps an e2e file on every host when
+it has a test that never runs on Linux (Auto on the person's own desktop, the
+built-in Mac voices) or depends on the OS (PowerShell and Windows process
+trees, junctions, a running process's folder, Windows paths, Chrome behind the
+egress gate). Every unit and API test file runs on every host. A new e2e file
+with a test Linux skips fails `scripts/testing/host-e2e.test.ts` until it is
+listed. The packaged-server, Windows CUA host, browser identity and browser
+driver jobs are separate and unchanged.
+
+**Balance.** Vitest's own `--shard` deals out equal numbers of files, and in
+October 2026 that put three of the four slowest e2e files in one shard.
+`scripts/testing/duration-sequencer.ts` deals the files out by recorded time
+instead, slowest first, each to the shard with the least time so far. The
+times are `scripts/testing/vitest-shard-weights.json`: for each platform
+(`linux`, `win32`, `darwin`), each file's median seconds on that platform's
+runners, for every file over five seconds and every e2e file. A file not in it
+counts one second, or the median e2e time if it is an e2e file. Every file
+still runs exactly once, and each shard job logs a `duration-sequencer:` line
+with its share.
+
+Refresh the times from a few recent main runs (they have all three platforms)
+when shards drift apart:
 
 ```sh
 node scripts/testing/update-shard-weights.mjs --run <run id> --run <run id> --run <run id>
 ```
+
+To run one CI shard locally, use the same OS, `--shard` and `OMB_VITEST_E2E`:
+`OMB_VITEST_E2E=host pnpm exec vitest run --shard=3/8` is Windows shard 3 on a
+Windows machine.
 
 Deleting or renaming a test file in the weights fails
 `scripts/testing/duration-sequencer.test.ts` until its entry is removed or
@@ -60,8 +83,8 @@ simulator suite). With 25 open PRs the macOS jobs waited a median of six and a
 half hours. Now:
 
 - A PR runs the Vitest shards on Ubuntu and Windows; main pushes, merge groups
-  and manual runs add the macOS shards. Only a couple of test blocks are
-  macOS-only.
+  and manual runs add four macOS shards, which run the host e2e files only.
+  Only a couple of test blocks are macOS-only.
 - Every PR's macOS checks are one job: the packaged-server smoke and the
   Electron smokes.
 - `ci-stop-closed.yml` cancels a PR's CI run when the PR is merged or closed. PR runs share a group named by the PR number (`ci-pr-<n>`), never by `github.ref`: a merged PR's closed event reports the base branch as `github.ref`, which made every merge cancel main's CI (fixed Oct 3 2026).
@@ -89,7 +112,15 @@ HTTP sign-in, a person's hold, restart and idle close) and
 `server/browser/viewers/viewers.e2e.test.ts` (the page filling the viewer
 at the screen's device scale, resizes, presets, acknowledged frames, a
 scroll ending on a sharp frame, and the phone's v1 live view against its
-golden from agent-browser).
+golden from agent-browser), `server/browser/passkey-wall.e2e.test.ts` (a
+sign-in shaped like Google's that stops at a passkey or a security key: the
+bot's notice, the request ending at once as unavailable, Try another way, the
+options and a code, and no passkey registered) and
+`server/browser/viewers/stream-v2.e2e.test.ts`
+(the panel's WebSocket stream through its routes: a 1600x1000 panel getting a
+1600x1000 page and 3200x2000 frames on a 2x screen, the page's file picker
+answered by an upload, a dropdown list drawn by the viewer, a download served
+to it, the page's cursor and copied text).
 
 - The job uses the runner's installed Google Chrome (`OMB_CDP_E2E=1`) on the
   same platforms as the vitest shards: Linux and Windows on PRs, plus macOS
@@ -100,11 +131,25 @@ golden from agent-browser).
   Testing, with `OMB_BROWSER_SANDBOX=0` because the image has no setuid
   sandbox helper yet.
 - It is advisory, outside the `CI` gate, until it has run green for a while.
+- The latency targets hold wherever Chrome itself can meet them. The suite
+  also times Chrome alone in the same run (the same binary started bare and
+  showing a page; a frame and the same mouse events with none of the driver's
+  checks), and where Chrome alone is slower, as on GitHub's macOS VM (0.7-1.5
+  s to start, 60-75 ms to click, against 0.3 s and 33 ms on a Mac), the driver
+  may add only its budget to that.
+- On macOS the job locks the runner's Google Chrome app before the suites and
+  fails if its version changed: the image's Chrome is older than Google's
+  release, and the GoogleUpdater it starts swaps the new version into the app
+  about a minute and a half after Chrome first runs, in the middle of the
+  suites.
 - Locally: `OMB_CDP_CHROME=<chrome executable> pnpm exec vitest run
-  server/browser/cdp/s4- server/browser/checklist.e2e
-  server/browser/viewers/viewers.e2e` (or `OMB_CDP_E2E=1` for the installed
-  Google Chrome). Without either the suites skip. `OMB_CDP_TEST_TMP` moves the
-  throwaway profiles.
+  server/browser/cdp/s4- server/browser/checklist.e2e server/browser/passkey-wall.e2e
+  server/browser/viewers/viewers.e2e server/browser/viewers/stream-v2.e2e` (or
+  `OMB_CDP_E2E=1` for the installed Google Chrome). Without either the suites
+  skip. `OMB_CDP_TEST_TMP` moves the throwaway profiles.
+- `pnpm bench:browser-stream` measures the panel's stream on the installed
+  Google Chrome with this computer's display: frame and page sizes, input to
+  photon, frame rate, bytes and CPU. It is not part of CI.
 
 ## Main and releases
 

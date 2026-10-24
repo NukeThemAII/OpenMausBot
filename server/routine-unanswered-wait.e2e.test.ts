@@ -101,9 +101,11 @@ it("starts the next scheduled run of a routine whose sign-in nobody answered, an
   expect((await messages(threadId)).find((message) => message.kind === "signin")?.signIn).toMatchObject({ stopped: true });
   const late = await raw("POST", `/api/bots/${bot.id}/sign-in-cards/${asked.body.messageId}/done`, { threadId });
   expect(late.body).toMatchObject({ resumed: false });
-  // Where the routine reports, its old run's card says why it stopped.
-  const card = (await messages(old.resultsThreadId)).find((message) => message.routineRun?.runId === first.id);
-  expect(card?.routineRun).toMatchObject({ status: "cancelled", error: ROUTINE_SUPERSEDED });
+  // Where the routine reports, the line that named the sign-in no longer says it needs the person.
+  const named = (await messages(old.resultsThreadId)).find((message) => message.automation?.runId === first.id);
+  expect(named).toMatchObject({ kind: "text", text: "I need you to sign in to example.com.", automation: { copyOf: asked.body.messageId } });
+  await expect.poll(async () => (await messages(old.resultsThreadId)).find((message) => message.id === named.id)?.automation?.needsYou, { timeout: 15_000 })
+    .toBeUndefined();
 
   writeFileSync(join(dataDir, `${next.threadId}.gate`), "finish");
   await expect.poll(async () => (await runs()).find((run) => run.id === next.id)?.status, { timeout: 15_000 }).toBe("completed");

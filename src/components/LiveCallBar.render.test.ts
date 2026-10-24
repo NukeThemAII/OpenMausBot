@@ -8,6 +8,7 @@ import { configureLiveMedia, resetLiveMedia, startLiveCall } from "@/lib/live-ca
 import { LiveCallBar } from "./LiveCallBar";
 import { LiveCallSettings } from "./LiveCallSettings";
 import { LiveKeySetup } from "./LiveKeySetup";
+import type { LiveSettings } from "../../shared/wire";
 
 const bot: Bot = {
   id: "atlas",
@@ -29,7 +30,7 @@ const renderOnCloud = (element: ReturnType<typeof createElement>) => {
   const value = { state: { ...initialState, config }, dispatch: vi.fn(), flushBotPatches: async () => null, refreshInstances: async () => {}, refreshModels: async () => {} };
   return renderToStaticMarkup(createElement(BotEditorStore, { value, children: element }));
 };
-const CLOUD_DISCLOSURE = `A Live call sends your voice to OpenAI, along with the chat&#x27;s recent messages, the bot&#x27;s answers and the details of any approval it asks for. The OpenAI key stays on My Cloud.`;
+const CLOUD_DISCLOSURE = `A Live call sends your voice to OpenAI, along with the chat&#x27;s recent messages, the bot&#x27;s answers and the details of any approval it asks for. The OpenAI key stays in the Cloud.`;
 
 afterEach(() => {
   resetLiveMedia();
@@ -127,6 +128,23 @@ describe("LiveCallSettings", () => {
     expect(markup).toContain("Change key");
     expect(markup).not.toContain("Remove key");
     expect(markup).toMatch(/role="dialog" tabindex="-1"/);
+  });
+
+  it("says which key Live calls use, and removes only a separate Live key", () => {
+    const withLive = (live: LiveSettings) => {
+      const value = { state: { ...initialState, config: { live } as AppState["config"] }, dispatch: vi.fn(), flushBotPatches: async () => null, refreshInstances: async () => {}, refreshModels: async () => {} };
+      return renderToStaticMarkup(createElement(BotEditorStore, { value, children: createElement(LiveCallSettings, { onClose: vi.fn() }) }));
+    };
+    const base = { voice: "marin", readTypedReplies: true, idleMinutes: 5 };
+    const fromApiKeys = withLive({ ...base, configured: true, keySource: "openai" });
+    expect(fromApiKeys).toContain("Uses your OpenAI API key from Settings → API keys.");
+    expect(fromApiKeys).not.toContain("Remove key");
+    const own = withLive({ ...base, configured: true, keySource: "live" });
+    expect(own).toContain("Remove key");
+    expect(own).not.toContain("Settings → API keys");
+    const none = withLive({ ...base, configured: false });
+    expect(none).toContain("Live calls use your own OpenAI key. Add it in Settings → API keys.");
+    expect(none).not.toContain("Remove key");
   });
 
   it("says the key stays on the Cloud when the chat is on the person's Cloud", () => {

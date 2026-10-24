@@ -152,7 +152,7 @@ export function createToolBridge(tools: readonly BridgeTool[]): ToolBridge {
     ...hot,
     {
       name: FIND_TOOL,
-      description: `Find an OpenMausBot tool that is not in your tool list. Say what you want to do in a few words, or give the tool's name. Each match comes back with its description and exact input schema; run one with ${USE_TOOL}. A tool in your tool list is called directly, not found here. Tools reached this way: ${namesList(hidden.map((tool) => tool.name), BRIDGE_NAMES_MAX_CHARS)}`,
+      description: `Find an OpenMausBot tool that is not in your tool list. Say what you want to do in a few words, or give the tool's name. Each match comes back with its description and exact input schema; run one with ${USE_TOOL}. Tools reached this way: ${namesList(hidden.map((tool) => tool.name), BRIDGE_NAMES_MAX_CHARS)}`,
       inputSchema: {
         type: "object",
         additionalProperties: false,

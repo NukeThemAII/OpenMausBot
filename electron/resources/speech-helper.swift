@@ -181,7 +181,15 @@ SFSpeechRecognizer.requestAuthorization { status in
     if let result = result {
       let text = result.bestTranscription.formattedString
       endpointer?.saw(text)
-      emit(["partial": !result.isFinal, "text": text])
+      var line: [String: Any] = ["partial": !result.isFinal, "text": text]
+      // Apple's on-device recognizer can end an utterance without isFinal,
+      // then return only the next utterance: developer.apple.com/forums/thread/762952
+      if let metadata = result.speechRecognitionMetadata, metadata.speechDuration > 0 {
+        line["utteranceFinal"] = true
+        line["speechStart"] = metadata.speechStartTimestamp
+        line["speechDuration"] = metadata.speechDuration
+      }
+      emit(line)
       if result.isFinal { exit(0) }
     }
     if let error {

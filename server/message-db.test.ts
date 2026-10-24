@@ -11,11 +11,13 @@ import { closeMessageDb,
   indexedMemoryFiles,
   insertMessage,
   insertNotificationLog,
+  lastRowAt,
   latestPersonLineAts,
   logNotification,
   latestSaidByBot,
   markAllNotificationLogRead,
   markNotificationLogRead,
+  markThreadNotificationLogRead,
   readMessageText,
   recentMessages,
   recentNotificationLog,
@@ -353,6 +355,24 @@ describe("message-db", () => {
     expect(existsSync(legacy("tail-legacy"))).toBe(false);
   });
 
+  it("lastRowAt reads the time on the row the Store holds last, without loading the conversation", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    const lastAt = () => store.messagesFor(bot.threadId).at(-1)?.at;
+    expect(lastRowAt("never-written")).toBeUndefined();
+    const first = store.appendMessage(bot.threadId, { role: "user", kind: "text", text: "first", at: 5_000 });
+    expect(lastRowAt(bot.threadId)).toBe(lastAt());
+    store.appendMessage(bot.threadId, { role: "bot", kind: "text", text: "earlier clock", at: 1_000 });
+    expect(lastRowAt(bot.threadId)).toBe(1_000);
+    expect(lastRowAt(bot.threadId)).toBe(lastAt());
+    store.insertMessageAfter(bot.threadId, first.id, { role: "bot", kind: "text", text: "inserted" });
+    expect(lastRowAt(bot.threadId)).toBe(lastAt());
+    store.patchMessage(bot.threadId, store.messagesFor(bot.threadId).at(-1)!.id, { at: 7_000 });
+    expect(lastRowAt(bot.threadId)).toBe(7_000);
+    store.branchMessage(bot.threadId, first.id, "edited");
+    expect(lastRowAt(bot.threadId)).toBe(lastAt());
+  });
+
   it("Store round-trips branching through the DB across a restart", () => {
     const store = new Store(selection);
     const bot = store.createBot();
@@ -506,6 +526,17 @@ describe("notification_log", () => {
     rows = recentNotificationLog();
     expect(rows).toHaveLength(2);
     expect(rows.every((r) => r.read)).toBe(true);
+  });
+
+  it("reading a conversation reads only its own notifications, a pending question's included", () => {
+    insertNotificationLog(entry("n1", 1000));
+    insertNotificationLog(entry("n2", 2000, { kind: "question" }));
+    insertNotificationLog(entry("n3", 3000, { threadId: "thread-2" }));
+    expect(markThreadNotificationLogRead("thread-1").sort()).toEqual(["n1", "n2"]);
+    const rows = recentNotificationLog();
+    expect(rows.filter((r) => r.read).map((r) => r.id).sort()).toEqual(["n1", "n2"]);
+    expect(rows.find((r) => r.id === "n3")?.read).toBe(false);
+    expect(markThreadNotificationLogRead("thread-1")).toEqual([]);
   });
 
   it("keeps only the newest 500 rows, FIFO", () => {

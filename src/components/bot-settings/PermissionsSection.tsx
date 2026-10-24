@@ -32,6 +32,7 @@ export function PermissionsSection({
   const { state, dispatch } = useStore();
   const ownerOrAdmin = useOwnerOrAdmin();
   const { draft } = useBotEditor();
+  const displaySectionName = sectionName === "General" ? t("botAccess.teams.general") : sectionName;
   const [localAutoWarning, setLocalAutoWarning] = useState<string | null>(null);
   const [commandAllowlistTarget, setCommandAllowlistTarget] = useState<{ botId: string; botName: string } | null>(null);
   const shows = (part: PermissionsPart) => !parts || parts.includes(part);
@@ -68,28 +69,28 @@ export function PermissionsSection({
             <Crown size={17} />
           </span>
           <div className="min-w-0 flex-1">
-            <div className="text-[15px] font-medium text-ink">Chief of Staff</div>
-            <div className="text-[11.5px] text-ink-secondary">One for {sectionName}</div>
+            <div className="text-[15px] font-medium text-ink">{t("permissions.chief.title")}</div>
+            <div className="text-[11.5px] text-ink-secondary">{t("permissions.chief.oneFor", { section: displaySectionName })}</div>
           </div>
           <Switch
             checked={Boolean(bot.chiefOfStaff)}
-            aria-label="Chief of Staff"
+            aria-label={t("permissions.chief.title")}
             disabled={!bot.chiefOfStaff && !canCoordinate}
             onClick={() => patch({ chiefOfStaff: !bot.chiefOfStaff })}
-            title={!bot.chiefOfStaff && !canCoordinate ? "This model cannot contact other bots" : undefined}
+            title={!bot.chiefOfStaff && !canCoordinate ? t("permissions.cannotCoordinate") : undefined}
             className="disabled:cursor-not-allowed"
           />
         </div>
         <div className="mt-3 text-[13px] leading-relaxed text-ink-secondary">
           {bot.chiefOfStaff && !canCoordinate
-            ? "This bot still holds the role, but its current provider cannot contact teammates. Choose a provider that supports bot coordination."
+            ? t("permissions.chief.unsupportedCurrent")
             : bot.chiefOfStaff
-              ? `This is the primary contact for ${sectionName}. It can create and coordinate specialists in this team, then combine their work into one answer.`
+              ? t("permissions.chief.active", { section: displaySectionName })
               : !canCoordinate
-                ? "Choose a provider that supports bot coordination."
+                ? t("permissions.chief.unsupported")
                 : currentChief
-                  ? `Make this bot the ${sectionName} Chief and hand the role over from ${currentChief.name}.`
-                  : `Make this bot the primary contact for the ${sectionName} team.`}
+                  ? t("permissions.chief.replace", { section: displaySectionName, current: currentChief.name })
+                  : t("permissions.chief.make", { section: displaySectionName })}
         </div>
         <ProposalStatus bot={bot} kind="chief" />
         {bot.chiefOfStaff && <ManagedTeamsSettings
@@ -104,28 +105,28 @@ export function PermissionsSection({
 
       {shows("peers") && <div className="flex items-center justify-between gap-4 rounded-xl bg-card p-4">
         <div>
-          <div className="text-[15px] font-medium text-ink">Ask me before contacting other bots</div>
+          <div className="text-[15px] font-medium text-ink">{t("permissions.peers.title")}</div>
           <div className="mt-0.5 text-[13px] text-ink-secondary">
             {bot.approvePeerComms
-              ? "This bot will stop and ask before it reaches out to another bot."
-              : "Let this bot talk to teammates on its own, without a confirmation step."}
+              ? t("permissions.peers.on")
+              : t("permissions.peers.off")}
           </div>
           <ProposalStatus bot={bot} kind="owner" />
         </div>
         <Switch
           checked={Boolean(bot.approvePeerComms)}
-          aria-label="Ask me before contacting other bots"
+          aria-label={t("permissions.peers.title")}
           disabled={!bot.approvePeerComms && !canCoordinate}
           onClick={() => patch({ approvePeerComms: !bot.approvePeerComms })}
-          title={!bot.approvePeerComms && !canCoordinate ? "This model cannot contact other bots" : undefined}
+          title={!bot.approvePeerComms && !canCoordinate ? t("permissions.cannotCoordinate") : undefined}
           className="disabled:cursor-not-allowed"
         />
       </div>}
 
       {shows("approval") && <div className="rounded-xl bg-card p-4">
-        <div className="text-[15px] font-medium text-ink">Approval level</div>
+        <div className="text-[15px] font-medium text-ink">{t("permissions.approval.title")}</div>
         <div className="mt-0.5 text-[13px] text-ink-secondary">
-          {draft ? "Default for the new bot's threads, routines and delegated work." : "Default for new threads, routines and delegated work. Full access also applies at once to every existing thread. Use Refresh permissions on a thread to apply the current level to that conversation."}
+          {draft ? t("permissions.approval.draft") : t("permissions.approval.help")}
         </div>
         <ProposalStatus bot={bot} kind="owner" />
         <div className="mt-3">
@@ -146,7 +147,7 @@ export function PermissionsSection({
           type="button" disabled={Boolean(bot.busy)}
           className="mt-3 text-[13px] text-accent hover:underline disabled:opacity-40"
           onClick={applyFullEverywhere}
-        >Apply Full access to all threads</button>}
+        >{t("permissions.approval.applyFull")}</button>}
         {!draft && ownerOrAdmin === true && <button
           type="button"
           className="mt-3 block text-[13px] text-accent hover:underline"
@@ -207,16 +208,15 @@ function OutboundControl({ bot, onChange }: { bot: Bot; onChange: (policy: Outbo
 
   return (
     <div className="rounded-xl bg-card p-4">
-      <div className="text-[15px] font-medium text-ink">Sending on your behalf</div>
+      <div className="text-[15px] font-medium text-ink">{t("permissions.outbound.title")}</div>
       <div className="mt-0.5 text-[13px] text-ink-secondary">
-        Emails, messages, posts, invites, and payments through connected apps. Reading and drafting never count.
-        Full access sends without asking.
+        {t("permissions.outbound.help")}
       </div>
       <div className="mt-3 flex gap-1 rounded-lg bg-inset p-0.5">
         {(
           [
-            ["ask", "Ask every time", "Every send waits for your tap."],
-            ["allow", "Allow a daily amount", "Sends go out on their own, up to the cap below."],
+            ["ask", t("permissions.outbound.ask"), t("permissions.outbound.askHint")],
+            ["allow", t("permissions.outbound.allow"), t("permissions.outbound.allowHint")],
           ] as const
         ).map(([value, label, hint]) => (
           <button
@@ -239,7 +239,7 @@ function OutboundControl({ bot, onChange }: { bot: Bot; onChange: (policy: Outbo
       {policy.policy === "allow" && (
         <div className="mt-3 flex flex-wrap items-center gap-3 text-[13px] text-ink-secondary">
           <label className="flex items-center gap-2">
-            Up to
+            {t("permissions.outbound.upTo")}
             <input
               type="number"
               min={1}
@@ -250,13 +250,13 @@ function OutboundControl({ bot, onChange }: { bot: Bot; onChange: (policy: Outbo
               onKeyDown={(event) => {
                 if (event.key === "Enter") (event.target as HTMLInputElement).blur();
               }}
-              aria-label="Daily outbound limit"
+              aria-label={t("permissions.outbound.dailyLimit")}
               className="w-20 rounded-md bg-inset px-2 py-1 text-[13px] text-ink tabular-nums outline-none focus:ring-1 focus:ring-accent"
             />
-            a day
+            {t("permissions.outbound.perDay")}
           </label>
           <span className="tabular-nums">
-            {today === null ? "" : `${today} of ${policy.dailyCap} used today`}
+            {today === null ? "" : t("permissions.outbound.usedToday", { today, cap: policy.dailyCap })}
           </span>
         </div>
       )}

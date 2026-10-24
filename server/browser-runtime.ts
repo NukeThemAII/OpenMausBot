@@ -16,7 +16,7 @@ export const BROWSER_CONTROL_REFUSAL = "Browser tools are paused while a person 
 export const BROWSER_RESTART_TOOL = "restart_browser";
 const BROWSER_RESTART_TOOL_SPEC = {
   name: BROWSER_RESTART_TOOL,
-  description: "Close and restart your browser. Use this only when a browser tool says the browser must be restarted, or it stays busy after a call that did not answer. Every open tab is closed and page state such as form input and sign-ins is lost; afterwards open the page you need again and check whether the interrupted action already happened before repeating it.",
+  description: "Close and restart your browser. Use this only when a browser tool says the browser must be restarted, or it stays busy after a call that did not answer. Every open tab is closed and unsaved page state such as form input is lost; sign-ins stay unless it is a temporary browser. Afterwards open the page you need again and check whether the interrupted action already happened before repeating it.",
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
 };
 export const BROWSER_UPLOAD_TOOL = "agent_browser_upload";
@@ -51,7 +51,7 @@ const PERSON_RESTARTED = "The person restarted your browser from the Browser pan
 const LANE_BUSY = "Your previous browser call is still running; wait for it to finish, then call again.";
 /** One bot call, lane wait included, answers within `callBudgetMs`; the engine's action keeps `followUpReserveMs` of it for the reads after. */
 export const BROWSER_CALL_DEFAULTS = { requestTimeoutMs: 120_000, laneWaitMs: 30_000, callBudgetMs: HARNESS_CALL_BUDGET_MS, followUpReserveMs: 15_000 } as const;
-const RESTART_COST = "a restart closes every tab and loses page state such as form input and sign-ins";
+const RESTART_COST = "a restart closes every tab and loses page state such as form input";
 const LATE = Symbol("late");
 const PAGE_ACTIONS: ReadonlySet<string> = new Set([
   "agent_browser_click", "agent_browser_fill", "agent_browser_type", "agent_browser_press",
@@ -336,6 +336,7 @@ export class BrowserRuntime {
   private clients = new Map<string, ClientEntry>();
   private recoveries = new Map<string, Promise<string | null>>();
   private toolLists = new Map<string, unknown>();
+  private idleCloseListeners = new Set<(session: string) => void>();
   private options: { requestTimeoutMs: number; takeoverTimeoutMs: number; idleMs: number; maxPending: number; resultBudget: number; recoveryCheckMs: number; laneWaitMs: number; callBudgetMs: number; followUpReserveMs: number };
   private closeBrowser: CloseBrowser;
   private applyViewport?: ApplyViewport;
@@ -813,21 +814,24 @@ export class BrowserRuntime {
     finally { gate.humans--; gate.lastUsed = Date.now(); this.changed(gate); }
   }
 
-  /** Keeps the browser open while watched; call the returned function when the view closes. */
+  /** A person opened a view, which counts as use; call the returned function when it closes. */
   watch(session: string, spec: { command: string; args?: readonly string[]; env?: Record<string, string | undefined> }): () => void {
     const gate = this.gate(session);
     gate.watchers++;
+    gate.lastUsed = Date.now();
     gate.spec = { command: spec.command, args: [...spec.args ?? []], env: { ...spec.env } };
     let watching = true;
     return () => {
       if (!watching) return;
       watching = false;
       gate.watchers--;
-      gate.lastUsed = Date.now();
     };
   }
 
   async settled(session: string): Promise<void> { await this.gates.get(session)?.idleClose; }
+
+  /** Told just before an idle close stops a session's browser. */
+  onIdleClose(listener: (session: string) => void): void { this.idleCloseListeners.add(listener); }
 
   launchReady(spec: LaunchSpec): Promise<void> { return this.launch?.ready(spec) ?? Promise.resolve(); }
 
@@ -840,13 +844,14 @@ export class BrowserRuntime {
     if (gate && !gate.spec && spec) gate.spec = { command: spec.command, args: [...spec.args ?? []], env: { ...spec.env } };
     const launch = gate?.spec;
     if (!gate || !launch || attachesToChrome(launch.env) || !(idleMs > 0) || Date.now() - gate.lastUsed < idleMs) return false;
-    if (gate.calls || gate.agents || gate.humans || gate.owner !== null || gate.closing || gate.releasing || gate.watchers || this.lanes.held(session)) return false;
+    if (gate.calls || gate.agents || gate.humans || gate.owner !== null || gate.closing || gate.releasing || this.lanes.held(session)) return false;
     gate.closing = true;
     gate.ready = false;
     let finished!: () => void;
     gate.idleClose = new Promise((resolve) => { finished = resolve; });
     this.changed(gate);
     try {
+      for (const listener of this.idleCloseListeners) listener(session);
       if (!await this.closeBrowser(session, launch)) return false;
       this.steps?.forget(session);
       this.launch?.stopped(session);

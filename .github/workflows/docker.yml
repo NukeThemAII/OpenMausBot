@@ -185,7 +185,8 @@ jobs:
           if timeout 60 docker run --name home-bad -e OMB_CLOUD_ROLE=home omb-cloud-home:ci; then echo "an incomplete contract served"; exit 1; fi
           grep -q "Cloud home configuration is invalid" <<<"$(docker logs home-bad 2>&1)"
           docker rm -f home-bad >/dev/null
-          docker run -d --name home -p 127.0.0.1:18080:8080 -v omb-home-ci:/data "${contract[@]}" omb-cloud-home:ci
+          # A Fly Machine runs the launcher as root with every capability; Docker's defaults leave out the one that lowers an OOM score.
+          docker run -d --name home --cap-add SYS_RESOURCE -p 127.0.0.1:18080:8080 -v omb-home-ci:/data "${contract[@]}" omb-cloud-home:ci
           E=http://127.0.0.1:18080
           healthy() {
             for i in $(seq 1 45); do
@@ -214,12 +215,18 @@ jobs:
           spid=$(docker exec home sh -c 'for p in /proc/[0-9]*; do case "$(tr "\0" " " < "$p/cmdline" 2>/dev/null)" in *"dist-server/in""dex.js"*) echo "${p#/proc/}";; esac; done')
           test -n "$spid"
           docker exec -u maus home grep -qaF OMB_CLOUD_ROLE=home "/proc/$spid/environ"         # the probe reads it
+          # Out of memory, the kernel takes the engines first and the server and the edge (the health check) last.
+          test "$(docker exec home cat "/proc/$spid/oom_score_adj")" = -800
+          epid=$(docker exec home sh -c 'for p in /proc/[0-9]*; do case "$(tr "\0" " " < "$p/cmdline" 2>/dev/null)" in *"caddy r""un"*) echo "${p#/proc/}";; esac; done')
+          test "$(docker exec home cat "/proc/$epid/oom_score_adj")" = -900
           for value in "$secret" "box_omb_$relay"; do
             if docker exec -u maus home grep -qaF -- "$value" "/proc/$spid/environ"; then echo "a secret is in the server's environment"; exit 1; fi
           done
           # The root launcher runs only code maus cannot change; maus owns only the volume.
           docker exec -u maus home sh -c 'for f in /app /app/dist-server /app/dist-server/index.js /app/dist-server/cloud-home-start.js /app/cloud/Caddyfile /usr/local/bin/caddy; do if test -w "$f"; then echo "maus can write $f"; exit 1; fi; done; test -w /data'
           test "$(docker exec home stat -c %U /app/dist-server/index.js)" = root
+          # The shell tools bots use on a Cloud, as the user their engines run as.
+          docker exec -u maus home sh -c 'python3 -c "import json, sqlite3, zipfile, csv" && pdftotext -v 2>&1 | grep -q pdftotext && unzip -v | grep -q UnZip'
           code() { curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$@"; }
           H=(-H "Host: $host")
           test "$(code "${H[@]}" $E/api/bots)" = 403                       # through the edge: never the owner

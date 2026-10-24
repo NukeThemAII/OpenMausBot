@@ -22,6 +22,15 @@ describe("thread resource ownership", () => {
     expect(leases.owns("computer:host", b)).toBe(true);
   });
 
+  it("names the turn holding a resource, and nobody once it is released", () => {
+    const leases = new TurnResources();
+    expect(leases.holder("browser:one")).toBeUndefined();
+    leases.claim("browser:one", a);
+    expect(leases.holder("browser:one")).toEqual(a);
+    leases.release(a);
+    expect(leases.holder("browser:one")).toBeUndefined();
+  });
+
   it("does not release a replacement generation", () => {
     const leases = new TurnResources();
     const next = { ...a, generation: "next" };

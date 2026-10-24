@@ -82,6 +82,8 @@ describe("guided tour", () => {
       expect(simpleStep.skipIfMissing, id).toBe(true);
       expect((en as Record<string, string>)[simpleStep.copy!], id).toBeTruthy();
     }
+    const simpleModel = (en as Record<string, string>)[simple.find((s) => s.id === "tour.model")!.copy!]!;
+    expect(simpleModel, "Simple mode picks no model, so its tour never points at one").not.toMatch(/\bmodel\b/i);
     // The computer step still opens the Computer panel for the next step, as its Advanced button did.
     expect(simple.find((s) => s.id === "tour.computer")!.onExit).toBe("openComputer");
     expect(simple.find((s) => s.id === "tour.computer-browser")!.onEnter).toBe("openComputer");

@@ -183,6 +183,9 @@ jobs:
           rm "$RUNNER_TEMP/cert.p12"
 
       - name: Package both architectures
+        # macos-14 runners have 7 GB, so Node's default heap stops near 2 GB; the server typecheck now needs a little more.
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm package:mac
 
       - name: "Gate: both packaged apps use the canonical updater feed"

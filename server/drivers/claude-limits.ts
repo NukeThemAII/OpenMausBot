@@ -8,6 +8,9 @@ export interface ClaudeLimit {
   window: string | null;
   /** epoch seconds */
   resetsAt: number | null;
+  /** The plan still had room: this model runs on extra usage and its credits are used up, so `resetsAt` is the
+   * billing period's reset and other models on the same account keep working. */
+  credits?: true;
 }
 
 /** The window refusing this account per the CLI's `rate_limit_info` ("allowed", "allowed_warning",
@@ -15,11 +18,12 @@ export interface ClaudeLimit {
  * 2.1.295), or null. A rejected window with extra usage in use still runs the turn on credits. */
 export function claudeLimitRefusal(info: unknown): ClaudeLimit | null {
   if (!info || typeof info !== "object") return null;
-  const { status, rateLimitType, resetsAt, isUsingOverage } = info as Record<string, unknown>;
+  const { status, rateLimitType, resetsAt, isUsingOverage, errorCode, overageDisabledReason } = info as Record<string, unknown>;
   if (status !== "rejected" || isUsingOverage === true) return null;
   return {
     window: typeof rateLimitType === "string" ? rateLimitType : null,
     resetsAt: typeof resetsAt === "number" && Number.isFinite(resetsAt) && resetsAt > 0 ? resetsAt : null,
+    ...(errorCode === "credits_required" || overageDisabledReason === "out_of_credits" ? { credits: true as const } : {}),
   };
 }
 
@@ -43,9 +47,23 @@ const CLAUDE_LIMIT_NAMES: Record<string, string> = {
   seven_day_sonnet: "weekly Sonnet limit",
 };
 
+/** A weekly window for one model family (seven_day_opus, seven_day_sonnet…), not the overage windows. */
+const modelWindow = (window: string | null | undefined): boolean => /^seven_day_(?!overage)[a-z]+$/.test(window ?? "");
+
+/** The reset to hold the whole engine until: only a window every model shares refuses the account, so a credits refusal
+ * or one model's weekly window leaves the engine free for its other models. */
+export function claudeEngineReset(limit: ClaudeLimit | null | undefined): { limitResetsAt: number } | undefined {
+  if (!limit?.resetsAt || limit.credits || modelWindow(limit.window)) return undefined;
+  return { limitResetsAt: limit.resetsAt * 1000 };
+}
+
 export function claudeLimitMessage(limit: ClaudeLimit | null, said?: string, now = Date.now(), timeZone = hostTimeZone()): string {
+  if (limit?.credits) {
+    return "Claude refused this turn because this model runs on extra usage for your account, and those credits are used up. " +
+      "Your plan's own usage is not affected: switch this bot to a model your plan includes, or add extra usage in your Claude account.";
+  }
   const name = limit?.window && Object.hasOwn(CLAUDE_LIMIT_NAMES, limit.window) ? CLAUDE_LIMIT_NAMES[limit.window] : "usage limit";
-  const meanwhile = /^seven_day_(?:opus|sonnet)$/.test(limit?.window ?? "") ? "choose another model for this bot" : "switch this bot to another engine or Claude account";
+  const meanwhile = modelWindow(limit?.window) ? "choose another model for this bot" : "switch this bot to another AI or Claude account";
   if (limit?.resetsAt && limit.resetsAt * 1000 > now) {
     let resets: string;
     try {

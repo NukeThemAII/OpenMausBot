@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import {
   ACCOUNT_ID,
+  actingUser,
   composioRequest,
   eventLimits,
   json,
@@ -178,7 +179,7 @@ export async function listTriggerTypes(url: URL, installation: EventInstallation
     toolkits = [...new Set(requested.split(",").map((slug) => slug.trim().toLowerCase()).filter(Boolean))];
     if (toolkits.length > MAX_TYPE_TOOLKITS) return json({ error: `at most ${MAX_TYPE_TOOLKITS} toolkits per request` }, 400);
   } else {
-    const accounts = await listConnectedAccounts(env, installation.composio_user_id, []);
+    const accounts = await listConnectedAccounts(env, actingUser(installation), []);
     toolkits = [...new Set(accounts
       .filter((account) => /^active$/i.test(account.status ?? ""))
       .map((account) => account.toolkit?.slug?.toLowerCase() ?? "")
@@ -255,8 +256,8 @@ async function binding(env: Env, installationId: string, triggerId: string) {
   ).bind(installationId, triggerId).first<BindingRow>();
 }
 
-/** Bindings other installations hold on the same instance. Installations have different Composio users, so this is
- *  zero in practice; the remote instance is still only changed for the last one. */
+/** Bindings other installations hold on the same instance: a desktop and its Cloud that act as one Composio user may
+ *  both listen to it. The remote instance is changed only for the last one. */
 async function otherBindings(env: Env, installationId: string, triggerId: string, enabledOnly: boolean) {
   const row = await env.DB.prepare(
     `SELECT COUNT(*) AS n FROM trigger_bindings WHERE composio_trigger_id = ? AND installation_id != ?${enabledOnly ? " AND disabled_at IS NULL" : ""}`,
@@ -272,7 +273,7 @@ export async function createTrigger(request: Request, installation: EventInstall
   if (!parsed.success) return json({ error: "slug, connectedAccountId and config (an object) are required" }, 400);
   const { slug, connectedAccountId, config } = parsed.data;
   // Ownership before anything else reaches Composio's trigger API.
-  const accounts = await listConnectedAccounts(env, installation.composio_user_id, []);
+  const accounts = await listConnectedAccounts(env, actingUser(installation), []);
   const account = accounts.find((candidate) => candidate.id === connectedAccountId);
   const toolkit = account?.toolkit?.slug?.toLowerCase();
   if (!account || !toolkit) return json({ error: "that connected account does not belong to this installation" }, 403);
@@ -283,7 +284,7 @@ export async function createTrigger(request: Request, installation: EventInstall
     method: "POST",
     body: JSON.stringify({
       connected_account_id: connectedAccountId,
-      user_id: installation.composio_user_id,
+      user_id: actingUser(installation),
       trigger_config: config,
       toolkit_versions: "latest",
     }),
@@ -323,12 +324,13 @@ export async function updateTrigger(request: Request, triggerId: string, install
 }
 
 /** Leaves this installation with no trigger `triggerId`: its binding, queued events and drop counts go, and the
- *  Composio instance goes once nothing else binds it. An instance of this installation's Composio user with no
- *  binding (an upsert whose binding was never saved) is deleted too. */
+ *  Composio instance goes once nothing else binds it. An instance of this installation's Composio user that no
+ *  installation binds (an upsert whose binding was never saved) is deleted too. */
 export async function deleteTrigger(triggerId: string, installation: EventInstallation, env: Env) {
   const bound = await binding(env, installation.id, triggerId);
   if (!bound) {
-    const remote = await listRemoteInstances(env, installation.composio_user_id);
+    if ((await otherBindings(env, installation.id, triggerId, false)) > 0) return json({ removed: 0 });
+    const remote = await listRemoteInstances(env, actingUser(installation));
     if (!remote.some((instance) => instance.id === triggerId)) return json({ removed: 0 });
     const result = await deleteRemote(env, triggerId);
     return typeof result === "object" ? json({ error: result.error }, 502) : json({ removed: 1 });
@@ -346,8 +348,8 @@ export async function deleteTrigger(triggerId: string, installation: EventInstal
 }
 
 /** This installation's bindings beside Composio's view of them, for the OMB server's reconciliation: a local trigger
- *  whose `remote.state` is "missing" is created again, an `unbound` instance is deleted, and an `enabled` that
- *  differs from `remote.state` is patched. */
+ *  whose `remote.state` is "missing" is created again, an `unbound` instance (one no installation binds) is deleted,
+ *  and an `enabled` that differs from `remote.state` is patched. */
 export async function listTriggers(installation: EventInstallation, env: Env, now = Date.now()) {
   const [bindings, drops, usage] = await Promise.all([
     env.DB.prepare(
@@ -366,12 +368,15 @@ export async function listTriggers(installation: EventInstallation, env: Env, no
   let remote: RemoteInstance[] | null = null;
   let remoteError: string | undefined;
   try {
-    remote = await listRemoteInstances(env, installation.composio_user_id);
+    remote = await listRemoteInstances(env, actingUser(installation));
   } catch (error) {
     remoteError = error instanceof Error ? error.message : String(error);
   }
   const remoteById = new Map((remote ?? []).map((instance) => [instance.id, instance]));
   const bound = new Set(bindings.results.map((row) => row.composio_trigger_id));
+  for (const instance of remote ?? []) {
+    if (!bound.has(instance.id) && (await otherBindings(env, installation.id, instance.id, false)) > 0) bound.add(instance.id);
+  }
   const triggers = bindings.results.map((row) => {
     const instance = remoteById.get(row.composio_trigger_id);
     const dropped = Object.fromEntries(drops.results

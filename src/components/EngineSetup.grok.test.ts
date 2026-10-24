@@ -9,7 +9,7 @@ import { BotEditorStore, type InstanceInfo, type useStore } from "@/state/store"
 import { EngineSetup, grokKeyInstead } from "./EngineSetup";
 
 const CURL = "curl -fsSL https://x.ai/cli/install.sh | bash";
-const NOT_INSTALLED = "Grok with your grok.com subscription isn't installed on this server. Use an xAI API key instead.";
+const NOT_INSTALLED = "Grok with your grok.com subscription isn't installed here. Use an xAI API key instead.";
 const grok = (snapshot: InstanceInfo["snapshot"]): InstanceInfo => ({
   instanceId: "grok", driverKind: "grokAgent", displayName: "Grok",
   models: { default: "grok-4.7", options: [] }, snapshot,
@@ -49,7 +49,7 @@ describe("signed out: the in-app code", () => {
   it("signs in with xAI's code on a server's page, with no terminal command", () => {
     const html = render(signedOut, undefined);
     expect(html).toContain('data-device-sign-in="grok"');
-    expect(html).toContain("Sign in with your grok.com account so Grok runs on this server");
+    expect(html).toContain("Sign in with your grok.com account so your bots can use Grok");
     expect(html).toContain("Sign in to Grok");
     expect(html).not.toContain("grok login");
     expect(html).not.toContain("Prefer a terminal?");

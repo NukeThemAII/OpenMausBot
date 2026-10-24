@@ -23,7 +23,7 @@ import { SidebarPopoverMenu, type SidebarMenuItem } from "./SidebarPopoverMenu";
 import { ShortcutHint } from "./ShortcutHint";
 import { useSidebarPhoneStatus } from "./SidebarPhoneButton";
 import { api, useStore, type Action } from "@/state/store";
-import { serverUpdateRow, type ServerUpdateCheck, type ServerUpdatePhase } from "@/lib/server-update";
+import { serverCheckPhase, serverUpdateRow, type ServerUpdateCheck, type ServerUpdatePhase } from "@/lib/server-update";
 import type { CloudAccountBridge, CloudAccountState } from "../../electron/cloud-account.mjs";
 import { useUpdaterState, type UpdaterState } from "@/lib/updater";
 import { brand } from "../lib/brand";
@@ -64,7 +64,9 @@ export type UpdatePhase =
   | UpdaterState["status"]
   | "up-to-date"
   // only a self-hosted server's check reports a release it cannot install itself
-  | "available";
+  | "available"
+  // or that it already runs a newer version than this page
+  | "reload";
 
 export function updatePhase(state: UpdaterState | null, upToDate: boolean): UpdatePhase {
   const status = state?.status ?? "idle";
@@ -200,15 +202,16 @@ function useServerUpdateItem(enabled: boolean): UpdateEntry | null {
       icon: <UpdateIcon phase={phase} pending={false} />,
       disabled: phase === "checking",
       keepOpen: true,
-      attention: phase === "available" || phase === "error",
+      attention: phase === "available" || phase === "reload" || phase === "error",
       attentionTone: phase === "error" ? "danger" : "accent",
       onSelect: () => {
         if (phase === "available" && check?.releaseUrl) return void openExternalLink(check.releaseUrl);
+        if (phase === "reload") return window.location.reload();
         setPhase("checking");
         void api<ServerUpdateCheck>("/api/updates/check", { timeoutMs: 20_000 })
           .then((next) => {
             setCheck(next);
-            setPhase(next.available ? "available" : "up-to-date");
+            setPhase(serverCheckPhase(next));
           })
           .catch(() => setPhase("error"));
       },
@@ -268,7 +271,7 @@ export function phoneMenuItems({
     ...destinations.map((destination) => ({
       key: destination.id === "cloud" ? "connect-phone-cloud" : "connect-phone",
       label: t("sidebar.menu.connectPhone"),
-      subtitle: t(destination.subtitleKey),
+      subtitle: destination.team ? t("sidebar.menu.connectPhone.team", { team: destination.team }) : t(destination.subtitleKey),
       ...(destination.noteKey ? { note: t(destination.noteKey) } : {}),
       icon: <Smartphone size={18} />,
       trailing:
@@ -393,7 +396,7 @@ export function SidebarProfileMenu({ iconOnly = false, rail = false }: { iconOnl
               open ? "bg-raised" : "hover:bg-raised/50",
             )}
           >
-            <InitialsAvatar initials={profileInitials(profile)} size={rail ? 30 : 28} />
+            <InitialsAvatar initials={profileInitials(profile)} avatarUrl={profile?.avatarUrl} size={rail ? 30 : 28} />
             {noteworthy && (
               <span
                 aria-hidden
@@ -412,7 +415,7 @@ export function SidebarProfileMenu({ iconOnly = false, rail = false }: { iconOnl
               open ? "bg-raised" : "hover:bg-raised/50",
             )}
           >
-            <InitialsAvatar initials={profileInitials(profile)} size={28} />
+            <InitialsAvatar initials={profileInitials(profile)} avatarUrl={profile?.avatarUrl} size={28} />
             <span className="min-w-0 flex-1 truncate text-[14px] font-medium leading-5 text-ink">{name}</span>
             {noteworthy && (
               <span
@@ -435,7 +438,7 @@ export function SidebarProfileMenu({ iconOnly = false, rail = false }: { iconOnl
         onClose={() => setPhoneAppOpen(false)}
         connect={destinations.map((destination) => ({
           key: destination.id,
-          subtitle: t(destination.subtitleKey),
+          subtitle: destination.team ? t("sidebar.menu.connectPhone.team", { team: destination.team }) : t(destination.subtitleKey),
           onSelect: () => connectTo(destination),
         }))}
       />

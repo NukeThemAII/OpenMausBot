@@ -188,3 +188,229 @@ describe("external voice claims", () => {
     expect(pause).not.toHaveBeenCalled();
   });
 });
+
+function deferredResponse(): { promise: Promise<Response>; resolve: (response: Response) => void } {
+  let resolve!: (response: Response) => void;
+  const promise = new Promise<Response>((settled) => {
+    resolve = settled;
+  });
+  return { promise, resolve };
+}
+
+interface SynthGate {
+  settled: boolean;
+  signal: AbortSignal | undefined;
+  respond: (response: Response) => void;
+}
+
+describe("prefetch window", () => {
+  let gates: SynthGate[] = [];
+  let synthOrder: string[] = [];
+  let playedUrls: string[] = [];
+  let peakSynthesis = 0;
+
+  const clip = () => new Response(new Blob(["mp3"]), { status: 200 });
+
+  beforeEach(() => {
+    FakeAudio.latest = null;
+    gates = [];
+    synthOrder = [];
+    playedUrls = [];
+    peakSynthesis = 0;
+    vi.restoreAllMocks();
+    vi.stubGlobal("Audio", FakeAudio);
+    let urlCount = 0;
+    vi.spyOn(URL, "createObjectURL").mockImplementation(() => {
+      urlCount += 1;
+      const url = `blob:block-${urlCount}`;
+      playedUrls.push(url);
+      return url;
+    });
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+  });
+
+  function installTts(utterances: string[]): void {
+    let synthesizing = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: string | URL | Request, init?: RequestInit) => {
+        if (String(input).endsWith("/prepare")) {
+          return Promise.resolve(json({ ready: true, utterances }));
+        }
+        // The Speaker serializes { text, voiceId } itself; the cast reads back what it sent.
+        const body = JSON.parse(String(init?.body)) as { text: string };
+        synthOrder.push(body.text);
+        synthesizing += 1;
+        peakSynthesis = Math.max(peakSynthesis, synthesizing);
+        const deferred = deferredResponse();
+        const gate: SynthGate = {
+          settled: false,
+          signal: init?.signal ?? undefined,
+          respond: (response: Response) => {
+            gate.settled = true;
+            synthesizing -= 1;
+            deferred.resolve(response);
+          },
+        };
+        gates.push(gate);
+        return deferred.promise;
+      }),
+    );
+  }
+
+  it("keeps at most three blocks in flight, starting block j+3 only after block j has played", async () => {
+    installTts(["B0", "B1", "B2", "B3", "B4"]);
+    const speaker = new Speaker();
+    const speaking = speaker.speak("five blocks");
+    await vi.waitFor(() => expect(synthOrder).toEqual(["B0", "B1", "B2"]));
+
+    gates[0]!.respond(clip());
+    await vi.waitFor(() => expect(playedUrls).toEqual(["blob:block-1"]));
+    expect(synthOrder).toEqual(["B0", "B1", "B2"]);
+
+    FakeAudio.latest!.onended?.();
+    await vi.waitFor(() => expect(synthOrder).toEqual(["B0", "B1", "B2", "B3"]));
+
+    gates[1]!.respond(clip());
+    await vi.waitFor(() => expect(playedUrls).toEqual(["blob:block-1", "blob:block-2"]));
+    FakeAudio.latest!.onended?.();
+    await vi.waitFor(() => expect(synthOrder).toEqual(["B0", "B1", "B2", "B3", "B4"]));
+
+    gates[2]!.respond(clip());
+    await vi.waitFor(() => expect(playedUrls).toHaveLength(3));
+    FakeAudio.latest!.onended?.();
+    gates[3]!.respond(clip());
+    await vi.waitFor(() => expect(playedUrls).toHaveLength(4));
+    FakeAudio.latest!.onended?.();
+    gates[4]!.respond(clip());
+    await vi.waitFor(() => expect(playedUrls).toHaveLength(5));
+    FakeAudio.latest!.onended?.();
+    await speaking;
+
+    expect(peakSynthesis).toBe(3);
+    expect(playedUrls).toEqual([
+      "blob:block-1",
+      "blob:block-2",
+      "blob:block-3",
+      "blob:block-4",
+      "blob:block-5",
+    ]);
+    expect(speaker.state).toEqual({ status: "idle" });
+  });
+
+  it("synthesizes blocks j+1 and j+2 while block j is still playing", async () => {
+    installTts(["B0", "B1", "B2", "B3"]);
+    const speaker = new Speaker();
+    const speaking = speaker.speak("four blocks");
+    await vi.waitFor(() => expect(synthOrder).toEqual(["B0", "B1", "B2"]));
+
+    gates[0]!.respond(clip());
+    await vi.waitFor(() => expect(playedUrls).toEqual(["blob:block-1"]));
+    FakeAudio.latest!.onended?.();
+    await vi.waitFor(() => expect(synthOrder).toEqual(["B0", "B1", "B2", "B3"]));
+    gates[1]!.respond(clip());
+    await vi.waitFor(() => expect(playedUrls).toEqual(["blob:block-1", "blob:block-2"]));
+
+    expect(gates[2]!.settled).toBe(false);
+    expect(gates[3]!.settled).toBe(false);
+
+    gates[2]!.respond(clip());
+    gates[3]!.respond(clip());
+    FakeAudio.latest!.onended?.();
+    await vi.waitFor(() => expect(playedUrls).toHaveLength(3));
+    FakeAudio.latest!.onended?.();
+    await vi.waitFor(() => expect(playedUrls).toHaveLength(4));
+    FakeAudio.latest!.onended?.();
+    await speaking;
+
+    expect(speaker.state).toEqual({ status: "idle" });
+    expect(playedUrls).toEqual(["blob:block-1", "blob:block-2", "blob:block-3", "blob:block-4"]);
+  });
+
+  it("plays prefetched blocks in order even when synthesis completes out of order", async () => {
+    installTts(["B0", "B1", "B2"]);
+    const speaker = new Speaker();
+    const captions: string[] = [];
+    speaker.subscribe((snapshot) => {
+      if (snapshot.caption) captions.push(snapshot.caption);
+    });
+    const speaking = speaker.speak("three blocks");
+    await vi.waitFor(() => expect(synthOrder).toEqual(["B0", "B1", "B2"]));
+
+    gates[2]!.respond(clip());
+    gates[1]!.respond(clip());
+    expect(playedUrls).toEqual([]);
+
+    gates[0]!.respond(clip());
+    await vi.waitFor(() => expect(playedUrls).toEqual(["blob:block-1"]));
+    FakeAudio.latest!.onended?.();
+    await vi.waitFor(() => expect(playedUrls).toEqual(["blob:block-1", "blob:block-2"]));
+    FakeAudio.latest!.onended?.();
+    await vi.waitFor(() => expect(playedUrls).toEqual(["blob:block-1", "blob:block-2", "blob:block-3"]));
+    FakeAudio.latest!.onended?.();
+    await speaking;
+
+    expect(captions).toEqual(["B0", "B1", "B2"]);
+    expect(speaker.state).toEqual({ status: "idle" });
+  });
+
+  it("surfaces a prefetched block's error only after earlier blocks finish playing", async () => {
+    installTts(["B0", "B1", "B2"]);
+    const speaker = new Speaker();
+    const speaking = speaker.speak("fails midway");
+    await vi.waitFor(() => expect(synthOrder).toEqual(["B0", "B1", "B2"]));
+
+    gates[0]!.respond(clip());
+    gates[1]!.respond(
+      new Response(JSON.stringify({ error: "voice exploded" }), {
+        status: 500,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    gates[2]!.respond(clip());
+    await vi.waitFor(() => expect(playedUrls).toEqual(["blob:block-1"]));
+    expect(speaker.state).toEqual({ status: "speaking", caption: "B0" });
+
+    FakeAudio.latest!.onended?.();
+    await expect(speaking).resolves.toBeUndefined();
+    expect(speaker.state).toEqual({ status: "idle", error: "voice exploded" });
+    expect(playedUrls).toEqual(["blob:block-1"]);
+  });
+
+  it("aborts the prefetched syntheses left in flight when a block fails to render", async () => {
+    installTts(["B0", "B1", "B2"]);
+    const speaker = new Speaker();
+    const speaking = speaker.speak("fails on the first block");
+    await vi.waitFor(() => expect(synthOrder).toEqual(["B0", "B1", "B2"]));
+
+    gates[0]!.respond(
+      new Response(JSON.stringify({ error: "voice exploded" }), {
+        status: 500,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    await expect(speaking).resolves.toBeUndefined();
+
+    expect(speaker.state).toEqual({ status: "idle", error: "voice exploded" });
+    expect(gates[1]!.signal?.aborted).toBe(true);
+    expect(gates[2]!.signal?.aborted).toBe(true);
+    expect(playedUrls).toEqual([]);
+  });
+
+  it("aborts the prefetched syntheses left in flight when playback fails", async () => {
+    installTts(["B0", "B1", "B2"]);
+    const speaker = new Speaker();
+    const speaking = speaker.speak("fails to play");
+    await vi.waitFor(() => expect(synthOrder).toEqual(["B0", "B1", "B2"]));
+
+    gates[0]!.respond(clip());
+    await vi.waitFor(() => expect(playedUrls).toEqual(["blob:block-1"]));
+    FakeAudio.latest!.onerror?.();
+    await expect(speaking).resolves.toBeUndefined();
+
+    expect(speaker.state).toEqual({ status: "idle", error: "The generated voice clip couldn't be played." });
+    expect(gates[1]!.signal?.aborted).toBe(true);
+    expect(gates[2]!.signal?.aborted).toBe(true);
+    expect(playedUrls).toEqual(["blob:block-1"]);
+  });
+});

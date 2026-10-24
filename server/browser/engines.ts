@@ -8,16 +8,18 @@ import type { BrowserLive } from "../browser-live.ts";
 import type { BrowserRuntime, BrowserSpawnSpec } from "../browser-runtime.ts";
 import type { StepContext } from "../browser-steps.ts";
 import type { FillLoginDeps } from "../login-fill.ts";
-import { acceptLanguageFor, LocalBackend } from "./backends.ts";
+import { LocalBackend } from "./backends.ts";
 import { sandboxDisabled } from "./chrome/host-setup.ts";
 import type { HostKind } from "./chrome/flags.ts";
 import { ChromeLauncher } from "./chrome/launcher.ts";
 import { ProcessRegistry, sweep } from "./chrome/processes.ts";
 import { browserRoot } from "./chrome/profile.ts";
-import { browserLanguage, browserTimeZone } from "./chrome/wrapper.ts";
+import { browserLanguage, browserTimeZone, languageList } from "./chrome/wrapper.ts";
 import { displayScreen } from "./display.ts";
+import type { Download } from "./cdp/downloads.ts";
 import { BrowserService, type BrowserTarget } from "./service.ts";
 import { LiveV1 } from "./viewers/live-v1.ts";
+import { StreamV2, type StreamRequest } from "./viewers/stream-v2.ts";
 
 /** A spec's command when the new engine runs the session; its one argument is the profile key. */
 export const CHROME_ENGINE = "omb-cdp";
@@ -49,15 +51,17 @@ export interface ChromeEngineOptions {
   log?: (line: string) => void;
 }
 
-/** The new engine: one Chrome launcher (no agent-browser wrapper), the browser service, its v1 live view and its sweep. */
+/** The new engine: one Chrome launcher (no agent-browser wrapper), the browser service, its live views and its sweep. */
 export class ChromeEngine {
   readonly launcher: ChromeLauncher;
   readonly service: BrowserService;
   readonly live: LiveV1;
+  readonly stream: StreamV2;
   readonly #targets = new Map<string, string>();
   readonly #registry: ProcessRegistry;
   readonly #options: ChromeEngineOptions;
   #timer: ReturnType<typeof setInterval> | null = null;
+  #inUse = false;
   #cleared = false;
 
   constructor(options: ChromeEngineOptions) {
@@ -79,7 +83,7 @@ export class ChromeEngine {
       },
       screen: () => (screen ??= displayScreen(options.host, { platform, env })),
       locale: () => locale,
-      acceptLanguages: () => (locale ? acceptLanguageFor(locale).replace(/;q=[\d.]+/gu, "") : "en-US,en"),
+      acceptLanguages: () => languageList(locale ?? undefined),
       timezone: () => browserTimeZone(env, platform) ?? null,
       egressPort: (key) => options.egressPort(key),
       registry: this.#registry,
@@ -96,6 +100,7 @@ export class ChromeEngine {
       ...(options.log ? { log: options.log } : {}),
     });
     this.live = new LiveV1({ service: this.service, target: (session) => this.target(session) });
+    this.stream = new StreamV2({ service: this.service });
   }
 
   /** The spec a session gets on the new engine, remembered so its live view finds the profile. */
@@ -110,29 +115,28 @@ export class ChromeEngine {
   }
 
   /**
-   * In use, it prepares Chrome before a bot needs it and closes idle browsers and stray processes every minute. Not in
-   * use, it only clears, once, what an earlier run of the engine left behind, so a server that never turned it on
-   * lists no processes.
+   * In use, it prepares Chrome before a bot needs it. In use, or while a Chrome it started still runs, it closes idle
+   * browsers and stray processes every minute. Otherwise it only clears, once, what an earlier run of the engine left
+   * behind, so a server that never turned it on lists no processes.
    */
   start({ inUse, prepare }: { inUse: boolean; prepare: boolean }): void {
-    const root = browserRoot(this.#options.dataDir);
-    const tick = () => {
-      void this.service.closeIdle().catch(() => undefined);
-      void sweep({ root, registry: this.#registry }).catch(() => undefined);
-    };
-    if (!inUse) {
-      if (this.#timer) clearInterval(this.#timer);
-      this.#timer = null;
-      if (!this.#cleared && this.#everUsed()) tick();
-      this.#cleared = true;
-      return;
-    }
+    const starting = inUse && !this.#inUse;
+    this.#inUse = inUse;
+    if (!inUse && !this.#cleared && this.#everUsed()) this.#tick();
     this.#cleared = true;
-    if (prepare && this.launcher.plan().kind !== "legacy") void this.launcher.prepare();
-    if (this.#timer) return;
-    tick();
-    this.#timer = setInterval(tick, SWEEP_MS);
+    if (inUse && prepare && this.launcher.plan().kind !== "legacy") void this.launcher.prepare();
+    if (starting) this.#tick();
+    this.#timer ??= setInterval(() => { if (this.#inUse || this.#running()) this.#tick(); }, SWEEP_MS);
     this.#timer.unref?.();
+  }
+
+  #tick(): void {
+    void this.service.closeIdle().catch(() => undefined);
+    void sweep({ root: browserRoot(this.#options.dataDir), registry: this.#registry }).catch(() => undefined);
+  }
+
+  #running(): boolean {
+    return this.service.profiles().some((profile) => profile.run || profile.starting) || this.#registry.list().length > 0;
   }
 
   /** Whether this engine ever made a profile in this data folder. */
@@ -145,6 +149,7 @@ export class ChromeEngine {
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = null;
     this.live.closeAll();
+    this.stream.closeAll();
     await this.service.closeAll();
   }
 
@@ -178,6 +183,8 @@ export class ChromeEngine {
 export interface RuntimeRouterOptions {
   /** What a tool call is told instead of reaching either engine, or null to run it. */
   refusal?(spec: BrowserSpawnSpec, params: unknown): string | null;
+  /** A tool call's answer as the bot gets it, from either engine. */
+  annotate?(spec: BrowserSpawnSpec, result: unknown): unknown;
 }
 
 /** BrowserRuntime's API, each call going to the engine its session runs on. */
@@ -185,18 +192,21 @@ export class RuntimeRouter {
   readonly #old: BrowserRuntime;
   readonly #chrome: ChromeEngine;
   readonly #refusal: RuntimeRouterOptions["refusal"];
+  readonly #annotate: RuntimeRouterOptions["annotate"];
 
   constructor(old: BrowserRuntime, chrome: ChromeEngine, options: RuntimeRouterOptions = {}) {
     this.#old = old;
     this.#chrome = chrome;
     this.#refusal = options.refusal;
+    this.#annotate = options.annotate;
   }
 
-  agentRpc(session: string, spec: BrowserSpawnSpec, method: "tools/list" | "tools/call", params: unknown, beforeDispatch?: () => void, ctx?: StepContext): Promise<unknown> {
+  async agentRpc(session: string, spec: BrowserSpawnSpec, method: "tools/list" | "tools/call", params: unknown, beforeDispatch?: () => void, ctx?: StepContext): Promise<unknown> {
     const refusal = method === "tools/call" ? this.#refusal?.(spec, params) : null;
-    if (refusal) return Promise.resolve({ isError: true, content: [{ type: "text", text: refusal }] });
+    if (refusal) return { isError: true, content: [{ type: "text", text: refusal }] };
     const target = chromeTarget(session, spec);
-    return target ? this.#chrome.service.agentRpc(target, method, params, beforeDispatch) : this.#old.agentRpc(session, spec, method, params, beforeDispatch, ctx);
+    const result = await (target ? this.#chrome.service.agentRpc(target, method, params, beforeDispatch) : this.#old.agentRpc(session, spec, method, params, beforeDispatch, ctx));
+    return method === "tools/call" && this.#annotate ? this.#annotate(spec, result) : result;
   }
 
   previewFrame<T>(session: string, capture: () => Promise<T>, spec: { command: string; args?: readonly string[] }): Promise<T | { png: string; format: "jpeg" }> {
@@ -226,6 +236,12 @@ export class RuntimeRouter {
     return this.#old.closeIfIdle(session, idleMs, spec ? { command: spec.command, args: spec.args ?? [], env: spec.env } : undefined);
   }
 
+  /** Closes a session's browser now unless a call, an agent or a person is using it. */
+  closeUnused(session: string, spec: Spec & { args?: readonly string[] }): Promise<boolean> {
+    if (chromeTarget(session, spec)) return this.#chrome.service.closeUnused(session);
+    return this.#old.closeIfIdle(session, 1, { command: spec.command, args: spec.args ?? [], env: spec.env });
+  }
+
   async close(session: string): Promise<void> {
     await Promise.all([this.#chrome.service.close(session), this.#old.close(session)]);
   }
@@ -236,8 +252,12 @@ export class RuntimeRouter {
 }
 
 type OpenOptions = Parameters<BrowserLive["open"]>[0];
+type SessionSpec = { session: string; spec: { command: string; args?: readonly string[] } };
 
-/** BrowserLive's API: a viewer of a new-engine session gets the v1 adapter, every other the agent-browser one. */
+/**
+ * BrowserLive's API: a viewer of a new-engine session gets the v1 adapter, every other the agent-browser one. The v2
+ * stream, its file pickers and its downloads exist on the new engine only.
+ */
 export class LiveRouter {
   readonly #old: BrowserLive;
   readonly #chrome: ChromeEngine;
@@ -259,9 +279,31 @@ export class LiveRouter {
     return this.#chrome.live.has(options.viewerId) ? this.#chrome.live.action(options) : this.#old.action(options);
   }
 
+  /** False when the session runs on agent-browser, whose only view is v1. */
+  stream({ session, spec, ...request }: SessionSpec & Omit<StreamRequest, "target">): boolean {
+    const target = chromeTarget(session, spec);
+    if (!target) return false;
+    this.#chrome.stream.open({ ...request, target });
+    return true;
+  }
+
+  fileChooserOffered({ session, spec }: SessionSpec, owner: string, chooserId: string): boolean {
+    return chromeTarget(session, spec) ? this.#chrome.service.fileChooserOffered(session, owner, chooserId) : false;
+  }
+
+  answerFileChooser({ session, spec }: SessionSpec, owner: string, chooserId: string, paths: readonly string[]): Promise<boolean> {
+    return chromeTarget(session, spec) ? this.#chrome.service.answerFileChooser(session, owner, chooserId, paths) : Promise.resolve(false);
+  }
+
+  download({ session, spec }: SessionSpec, id: string): Download | undefined {
+    return chromeTarget(session, spec) ? this.#chrome.service.download(session, id) : undefined;
+  }
+
   handBack(session: string): void { this.#chrome.live.handBack(session); this.#old.handBack(session); }
-  closeForSession(session: string): void { this.#chrome.live.closeForSession(session); this.#old.closeForSession(session); }
-  closeForOwner(owner: string): void { this.#chrome.live.closeForOwner(owner); this.#old.closeForOwner(owner); }
-  closeForBot(botId: string): void { this.#chrome.live.closeForBot(botId); this.#old.closeForBot(botId); }
-  closeAll(): void { this.#chrome.live.closeAll(); this.#old.closeAll(); }
+  closeForSession(session: string): void { this.#chrome.live.closeForSession(session); this.#chrome.stream.closeForSession(session); this.#old.closeForSession(session); }
+  closeForOwner(owner: string): void { this.#chrome.live.closeForOwner(owner); this.#chrome.stream.closeForOwner(owner); this.#old.closeForOwner(owner); }
+  closeForBot(botId: string): void { this.#chrome.live.closeForBot(botId); this.#chrome.stream.closeForBot(botId); this.#old.closeForBot(botId); }
+  closeAll(): void { this.#chrome.live.closeAll(); this.#chrome.stream.closeAll(); this.#old.closeAll(); }
+  /** Who may see what changed: every v2 view that no longer shows its browser to a person allowed to see it closes now. */
+  recheck(): void { this.#chrome.stream.recheck(); }
 }

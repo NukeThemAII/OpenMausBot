@@ -36,9 +36,9 @@ describe("Share as preset", () => {
     const words = text(renderToStaticMarkup(createElement(SharePresetContents, { preview, localSkips: [] })));
     for (const line of [
       "Skills · arrive switched off 1 · objection-handling", "Starter notes None", "Pictures None",
-      "Never included: model choices, folders, computers, approval levels, connected apps, MCP servers and routines.",
+      "Never included: model choices, folders, where bots work, approval levels, connected apps, MCP servers and routines.",
       "Removed what looked like a key or password from: Support agent · standing instructions",
-      "Support agent · skill · follow-up — a bot in the team has a different skill with this name",
+      "Support agent · skill · follow-up — a bot in the department has a different skill with this name",
     ]) expect(words).toContain(line);
   });
 

@@ -15,7 +15,8 @@ vi.mock("@/lib/sidebar-preferences", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/sidebar-preferences")>(),
   useSidebarToolsLayout: () => fixture.toolsLayout,
 }));
-import { SidebarAppsButton, SidebarFooterNav } from "./SidebarFooterNav";
+vi.mock("./UpdateIndicator", () => ({ UpdateIndicator: () => null }));
+import { SidebarAppsButton, SidebarBottomButtons, SidebarFooterNav } from "./SidebarFooterNav";
 
 type Props = { children?: ReactNode; [key: string]: unknown };
 function nodes(value: ReactNode): ReactElement<Props>[] {
@@ -55,24 +56,21 @@ describe("sidebar footer places", () => {
     expect(html).not.toContain('data-sidebar-nav="apps"');
   });
 
-  it.each(["comfortable", "compact"] as const)("keeps Automations in Simple mode, as the only place and with no Tools header (%s)", (density) => {
-    const { html } = render(density);
-    expect(html.match(/data-sidebar-nav="/g)).toHaveLength(1);
-    expect(html).toMatch(/data-tour="nav-automations" data-sidebar-nav="automations"/);
-    expect(html).toContain(">Automations</span>");
-    expect(html).not.toContain(">Tools<");
+  it.each(["comfortable", "compact"] as const)("leaves no places in Simple mode's sidebar while Files is off: Automations and Team map are in the bottom bar (%s)", (density) => {
+    expect(render(density).html).toBe("");
   });
 
-  it.each([false, true])("puts Automations on the avatars-only rail ahead of Apps (advanced: %s)", (advanced) => {
+  it.each([false, true])("puts Automations on the avatars-only rail ahead of Apps, with Team map (advanced: %s)", (advanced) => {
     fixture.advanced = advanced;
     for (const html of [render("icons").html, renderToStaticMarkup(createElement(() => SidebarFooterNav({ density: "icons", rail: true })))]) {
       expect(html).toContain('aria-label="Automations" title="Automations"');
+      expect(html).toContain('aria-label="Team map" title="Team map"');
       expect(html.indexOf('data-sidebar-nav="automations"')).toBeLessThan(html.indexOf('data-sidebar-nav="apps"'));
     }
   });
 
-  it.each([false, true])("opens the Automations page through the store, and marks it current while open (advanced: %s)", (advanced) => {
-    fixture.advanced = advanced;
+  it("opens the Automations page through the store, and marks it current while open", () => {
+    fixture.advanced = true;
     const { nodes: tree } = render("comfortable");
     (tree.find((node) => node.props.id === "automations" && typeof node.props.onClick === "function")!.props.onClick as () => void)();
     expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "showRoutines", view: "list" });
@@ -87,8 +85,8 @@ describe("sidebar footer places", () => {
     expect(html).toMatch(/data-tour="nav-automations" data-sidebar-nav="automations"/);
   });
 
-  it.each([false, true])("carries the dot for an unseen failed run on Automations, and clears it once seen (advanced: %s)", (advanced) => {
-    fixture.advanced = advanced;
+  it("carries the dot for an unseen failed run on Automations, and clears it once seen", () => {
+    fixture.advanced = true;
     fixture.state.routineRuns = [{ id: "r", status: "failed", scheduledFor: 1 }];
     const html = render("comfortable").html;
     expect(html.indexOf('data-testid="routines-attention"')).toBeGreaterThan(html.indexOf('data-sidebar-nav="automations"'));
@@ -173,6 +171,51 @@ describe("Tools header", () => {
   });
 });
 
+function renderBottom() {
+  let tree!: ReturnType<typeof SidebarBottomButtons>;
+  function Capture() { tree = SidebarBottomButtons(); return tree; }
+  const html = renderToStaticMarkup(createElement(Capture));
+  return { html, nodes: nodes(tree) };
+}
+const press = (tree: ReactElement<Props>[], id: string) =>
+  (tree.find((node) => node.props.id === id && typeof node.props.onClick === "function")!.props.onClick as () => void)();
+
+describe("the bottom bar beside the profile", () => {
+  it("carries Automations and Team map as icons with tooltips in Simple mode, ahead of Apps", () => {
+    const { html } = renderBottom();
+    for (const label of ["Automations", "Team map"]) {
+      expect(html).toContain(`aria-label="${label}" title="${label}"`);
+      expect(html).not.toContain(`>${label}</span>`);
+    }
+    const order = ["automations", "team-map", "apps"].map((id) => html.indexOf(`data-sidebar-nav="${id}"`));
+    expect(order.every((index) => index >= 0)).toBe(true);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    expect(html).toMatch(/data-tour="nav-automations" data-sidebar-nav="automations"/);
+  });
+
+  it("leaves Automations and Team map to the Tools rows in Advanced mode", () => {
+    fixture.advanced = true;
+    const { html } = renderBottom();
+    expect(html).not.toContain('data-sidebar-nav="automations"');
+    expect(html).not.toContain('data-sidebar-nav="team-map"');
+    expect(html).toContain('data-sidebar-nav="apps"');
+  });
+
+  it("opens Automations and Team map, marks the open one, and carries the failed-run dot on Automations", () => {
+    press(renderBottom().nodes, "automations");
+    expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "showRoutines", view: "list" });
+    press(renderBottom().nodes, "team-map");
+    expect(fixture.dispatch).toHaveBeenLastCalledWith({ type: "showTeamMap" });
+    fixture.state.activeView = "team-map";
+    expect(renderBottom().html).toMatch(/data-sidebar-nav="team-map"[^>]*aria-current="page"/);
+    fixture.state.routineRuns = [{ id: "r", status: "failed", scheduledFor: 1 }];
+    const html = renderBottom().html;
+    const dot = html.indexOf('data-testid="routines-attention"');
+    expect(dot).toBeGreaterThan(html.indexOf('data-sidebar-nav="automations"'));
+    expect(dot).toBeLessThan(html.indexOf('data-sidebar-nav="team-map"'));
+  });
+});
+
 describe("Apps beside the profile", () => {
   it.each([false, true])("is one icon button that opens Apps and carries the tour's Apps anchor (advanced: %s)", (advanced) => {
     fixture.advanced = advanced;
@@ -222,13 +265,11 @@ describe("toolbar tools layout", () => {
     expect(render("comfortable", { toolsLayout: "toolbar" }).html).not.toContain('data-testid="routines-attention"');
   });
 
-  it("toolbar shows Team map only in Advanced mode, and Simple mode keeps its Automations row", () => {
+  it("toolbar applies to Advanced mode's two places; Simple mode keeps them in the bottom bar instead", () => {
     fixture.advanced = true;
     expect(render("comfortable", { toolsLayout: "toolbar" }).html.match(/data-sidebar-nav="/g)).toHaveLength(2);
     fixture.advanced = false;
-    const simple = render("comfortable", { toolsLayout: "toolbar" }).html;
-    expect(simple.match(/data-sidebar-nav="/g)).toHaveLength(1);
-    expect(simple).toContain(">Automations</span>");
+    expect(render("comfortable", { toolsLayout: "toolbar" }).html).toBe("");
   });
 
   it("icons density ignores the tools layout", () => {

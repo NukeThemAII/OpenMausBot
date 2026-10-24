@@ -2,13 +2,17 @@
 import { CREDENTIAL_TARGETS } from "../../shared/credential-request.ts";
 import { OPTIONS_CARD_LIMITS, WATCHER_OPTIONS_CARD_BOT_ID } from "../../shared/options-card.ts";
 import { agentToolAnnotations } from "../agent-tool-policy.ts";
-import { WIDGET_TOOL_DEFINITIONS } from "./agents-widget-tools.ts";
+import { CHAT_CARD_TOOL_DEFINITIONS } from "./agents-chat-card-tools.ts";
+import { HELPER_TOOL_DEFINITIONS } from "./agents-helper-tools.ts";
+import { RESEARCH_TOOL_DEFINITIONS, RESEARCH_TOOL_NAMES } from "./agents-research-tools.ts";
 
 /** Which tools a turn is shown. Presentation only: the server still authenticates and scopes every call. */
 export interface CatalogProfile {
   skillAuthoring: boolean;
   sharedComputers: boolean;
   voiceNotes: boolean;
+  /** A treg key or a Cloud plan's research credential is held and this bot's research switch is on. Absent means off. */
+  xResearch?: boolean;
   cloudHome: boolean;
   memoryEnabled?: boolean;
   /** The section's Chief of Staff; the server refuses Chief-only tools to every other bot. */
@@ -25,6 +29,7 @@ export function catalogProfileFromEnv(env: NodeJS.ProcessEnv): CatalogProfile {
     skillAuthoring: env.OMB_SKILL_AUTHORING_ENABLED === "1",
     sharedComputers: env.OMB_SHARED_COMPUTERS_ENABLED === "1",
     voiceNotes: env.OMB_VOICE_NOTES === "1",
+    xResearch: env.OMB_X_RESEARCH === "1",
     cloudHome: env.OMB_CLOUD_HOME === "1",
     memoryEnabled: env.OMB_MEMORY_ENABLED !== "0",
     chief: env.OMB_CHIEF_OF_STAFF === "1",
@@ -49,7 +54,7 @@ const ROUTINE_SCHEDULE_SCHEMA = {
   type: "object",
   additionalProperties: false,
   description:
-    'Use {"type":"cron","expression":"0 9 1 * *","timeZone":"Asia/Kolkata"} for 09:00 on the first of each month, once with at for one future run, weekly with time + weekdays, daily with time, or interval with every_minutes for elapsed-time repetition. Intervals can optionally be limited with weekdays, window_start + window_end, and ends_at.',
+    'Use {"type":"cron","expression":"0 9 1 * *","timeZone":"Asia/Kolkata"} for 09:00 on the first of each month, once with at for one future run, weekly with time + weekdays, daily with time, or interval with every_minutes for elapsed-time repetition.',
   properties: {
     type: {
       type: "string",
@@ -64,7 +69,7 @@ const ROUTINE_SCHEDULE_SCHEMA = {
     timeZone: {
       type: "string",
       maxLength: 128,
-      description: "Required for cron: explicit IANA timezone, for example Asia/Kolkata, America/New_York, or UTC. Use the user's requested zone; resolve ambiguity before proposing. Do not send a numeric offset or local-time abbreviation.",
+      description: "Required for cron: the person's IANA timezone, such as Asia/Kolkata or UTC; never a numeric offset or an abbreviation.",
     },
     at: {
       type: "string",
@@ -90,7 +95,7 @@ const ROUTINE_SCHEDULE_SCHEMA = {
     starts_at: {
       type: "string",
       description:
-        "Optional for type interval: RFC3339 date-time with an explicit timezone offset that anchors the cadence. Omit to start one interval after the routine is applied.",
+        "Optional for type interval: RFC3339 date-time with an explicit offset that anchors the cadence; omit to start one interval after the routine applies.",
     },
     window_start: {
       type: "string",
@@ -100,7 +105,7 @@ const ROUTINE_SCHEDULE_SCHEMA = {
     window_end: {
       type: "string",
       description:
-        "Optional for type interval, together with window_start: local 24-hour HH:MM when the allowed window ends, exclusive. It must be later on the same day.",
+        "Optional for type interval, together with window_start: local 24-hour HH:MM when the allowed window ends, exclusive, later the same day.",
     },
     ends_at: {
       type: "string",
@@ -125,12 +130,12 @@ const ROUTINE_SCHEDULE_SCHEMA = {
 
 // Written out in full on each tool: $ref/$defs do not survive provider conversions.
 const TRIGGER_FIELDS_SCHEMA = {
-  name: { type: "string", minLength: 1, maxLength: 80, description: "Short name shown on the automation's card and the Automations page." },
+  name: { type: "string", minLength: 1, maxLength: 80, description: "Short name shown on the automation's card." },
   instructions: {
     type: "string",
     minLength: 1,
     maxLength: 20_000,
-    description: "Complete steps for each run, which does NOT see this conversation. Put judgement here, e.g. \"if it is not about an order, stop\".",
+    description: "Complete steps for each run, which does NOT see this conversation, in the person's plain words (\"draft a reply\"), never \"event data\", \"payload\", \"webhook\" or \"trigger\". Put judgement here, e.g. \"if it is not about an order, stop\".",
   },
   schedule: { ...ROUTINE_SCHEDULE_SCHEMA, description: `Only for when=schedule. ${ROUTINE_SCHEDULE_SCHEMA.description}` },
   webhook_event_types: {
@@ -139,11 +144,26 @@ const TRIGGER_FIELDS_SCHEMA = {
     items: { type: "string", maxLength: 200 },
     description: "Only for when=webhook: optional event names to accept (from the caller's event-type header, e.g. push). Omit to accept every call.",
   },
+  filter: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      from: { type: "string", maxLength: 200 },
+      subject_contains: { type: "string", maxLength: 200 },
+      label: { type: "string", maxLength: 200 },
+      contains: { type: "string", maxLength: 200 },
+    },
+    description: "app_event only: plain words, all must match. Gmail filters at the source.",
+  },
+  event_config: {
+    type: "object",
+    description: "app_event only: settings from list_trigger_events config_fields.",
+  },
   run_on: {
     type: "string",
     // "box" is Boat's historical run_on destination id (agents wire contract).
     enum: ["maus", "box"],
-    description: "Default maus keeps the bot's selected model and configured computer, INCLUDING a self-hosted VPS. Omit this field normally. box runs on the bot's cloud computer, same model; it needs cloud computers set up and is not the generic cloud/VPS option. Legacy cloud values from list_triggers mean box, not VPS.",
+    description: "Omit normally: maus (default) keeps the bot's model and configured computer, INCLUDING a self-hosted VPS. box runs on the bot's cloud computer, same model, once cloud computers are set up; a legacy cloud value from list_triggers means box.",
   },
   timeout_minutes: {
     type: "integer",
@@ -158,16 +178,16 @@ const TRIGGER_FIELDS_SCHEMA = {
   },
   continuity: {
     type: "boolean",
-    description: "Schedules only: opt in to using the latest completed run's bounded report as historical context. Use it for recurring work that builds on last time, such as QA passes, monitoring or follow-ups. Defaults to false; set false in an update to start fresh again.",
+    description: "Schedules only: give each run the last completed run's report, for work that builds on last time (QA passes, monitoring, follow-ups). Default false; false in an update starts fresh.",
   },
   overlap: {
     type: "string",
     enum: ["skip", "queue"],
-    description: "Schedules only: while a run is still working, skip scheduled occurrences (default) or queue at most one run. Queue skips further occurrences until the pending run starts; it never builds an unlimited backlog.",
+    description: "Schedules only: while a run is still working, skip new occurrences (default) or queue at most one run.",
   },
   run_on_startup: {
     type: "boolean",
-    description: "Repeating schedules only: also run once each time OpenMausBot starts, besides the schedule, for a computer often off when it is due. Defaults to false.",
+    description: "Repeating schedules only: also run once whenever OpenMausBot starts, for a computer often off when it is due.",
   },
 } as const;
 
@@ -217,7 +237,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "shared_computer",
-    description: "Use a desktop explicitly shared by the user. Discover computer_id and folder_id with list_shared_computers. list_files/read_file/write_file are confined to chosen folders; paths are relative. read_file returns sha256; overwriting requires expected_sha256. Binary files support base64 encoding. run_command requires a SEPARATE unrestricted terminal grant. computer_tools lists the native computer-control tools; computer_call invokes one with arguments and needs a SEPARATE computer-control grant. Never substitute the server's filesystem when this desktop is offline. Actions are not retried automatically; inspect an uncertain outcome before retrying.",
+    description: "Use a desktop explicitly shared by the user. Discover computer_id and folder_id with list_shared_computers. list_files/read_file/write_file are confined to chosen folders; paths are relative. read_file returns sha256; overwriting requires expected_sha256. Binary files support base64 encoding. run_command requires a SEPARATE unrestricted terminal grant. computer_tools lists the native computer-control tools; computer_call invokes one with arguments and needs a SEPARATE computer-control grant. To browse there, open pages with launch_app urls (the person's own browser) and use get_window_state, click and type_text: the browser_* tools need a DevTools endpoint most browsers lack. Never substitute the server's filesystem when this desktop is offline. Actions are not retried automatically; inspect an uncertain outcome before retrying.",
     inputSchema: { type: "object", additionalProperties: false, properties: {
       computer_id: { type: "string" }, action: { type: "string", enum: ["list_files", "read_file", "write_file", "run_command", "computer_tools", "computer_call"] },
       folder_id: { type: "string" }, path: { type: "string" }, content: { type: "string" }, encoding: { type: "string", enum: ["utf8", "base64"] }, expected_sha256: { type: "string" },
@@ -342,7 +362,7 @@ const TOOL_DEFINITIONS = [
       required: ["path"],
     },
   },
-  ...WIDGET_TOOL_DEFINITIONS,
+  ...CHAT_CARD_TOOL_DEFINITIONS,
   {
     name: "post_to_room",
     description:
@@ -361,7 +381,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "create_bot",
     description:
-      "Create a specialist bot in your section. Chief of Staff only. It is created immediately and the person can undo it. instructions become its soul. Omit modelSelection to use the workspace default, or choose exact IDs from list_team_setup. Connected apps start disabled and the bot runs at the workspace's default access level. Assign work through coordinate_bots. Maximum four new bots per turn.",
+      "Chief of Staff only: add a specialist to your section now; the person can undo it. instructions become its soul. Omit modelSelection for the workspace default, or use exact IDs from list_team_setup. It starts with connected apps off, at the default access level. Assign work with coordinate_bots. At most four per turn.",
     inputSchema: {
       type: "object",
       properties: {
@@ -377,7 +397,6 @@ const TOOL_DEFINITIONS = [
           maxLength: 1024,
           description: "Absolute path of the folder this specialist's tools read and write in (for example /Users/me/Projects/site). It must already exist. Leave it out for the specialist's private workspace.",
         },
-        suggestion: { type: "boolean", description: "True if the user did not ask for this bot." },
       },
       required: ["name", "role", "instructions"],
     },
@@ -385,6 +404,11 @@ const TOOL_DEFINITIONS = [
   {
     name: "list_team_setup",
     description: "Chief of Staff only: list authorized teams, teammate IDs, and exact engine/model choices for team setup. Call before proposing configuration; never invent model IDs. Existing thread models are independent of bot defaults.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {} },
+  },
+  {
+    name: "list_team_library",
+    description: "Chief of Staff only: ready-made teams, each with a summary and roles (lead = the team's Chief). Create roles with create_bot.",
     inputSchema: { type: "object", additionalProperties: false, properties: {} },
   },
   {
@@ -476,7 +500,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "request_credential",
     description:
-      "Ask the user for a supported API key through OpenMausBot's secure credential flow. The desktop app and a freshly QR-paired mobile app show a secure entry card; older mobile pairings show how to pair again or finish on the computer. Never claim a secure field opened unless this request succeeds, and never ask the user to paste a secret into chat. The secret is saved by the desktop app and is never returned to you. After calling this tool, end the turn; OpenMausBot resumes the task after the user saves or declines.",
+      "Ask for a supported API key or a 1Password service account token (onePasswordToken) through OpenMausBot's secure credential flow: the app shows a secure entry card, as does a freshly QR-paired phone; older pairings show how to pair again. Never claim a secure field opened unless this request succeeds, and never ask the user to paste a secret into chat. OpenMausBot saves it and never returns it to you. After calling this tool, end the turn; OpenMausBot resumes the task after the user saves or declines.",
     inputSchema: {
       type: "object",
       properties: {
@@ -496,7 +520,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "request_sign_in",
     description:
-      "Ask the person to sign in to a website themselves, in the browser or on the computer you are using now. Use it when a page needs a login you do not have, or a one-time code, CAPTCHA or other step only they can do. They get a card and a notification, sign in where you work, and press Done. Never ask for a password or code in chat. After calling it, end your turn; OpenMausBot resumes you when they finish or decline, and then check you are signed in.",
+      "Ask the person to sign in to a website themselves, in the browser or on the computer you are using now. Use it when a page needs a login you do not have, or a CAPTCHA, passkey or other step only they can do, or a one-time code you cannot read. A code the site sends to the person's own email or messages for a sign-in they asked for is not one: read it there and type it in yourself. They get a card and a notification, sign in where you work, and press Done. Never ask for a password or code in chat. After calling it, end your turn; OpenMausBot resumes you when they finish or decline, and then check you are signed in.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -510,7 +534,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "fill_login",
     description:
-      "Sign in with a login the person saved in OpenMausBot. Call it on the login page open in your browser: OpenMausBot types the username, password and any one-time code itself, submits each step, and says where the page went; you never see the password. A login fills on its own site, such as any page of example.com. With no saved login for the site, call request_sign_in.",
+      "Sign in with a login the person saved in OpenMausBot. Call it on the login page open in your browser: OpenMausBot types the username, password and any one-time code itself, submits each step, and says where the page went; you never see the password. A login fills on its own site, such as any page of example.com. With no saved login for the site, sign in another way the person allowed (a code sent to their own email, which you read and type in, is one), or call request_sign_in.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -523,7 +547,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "send_voice_note",
     description:
-      "Send the user a voice note: a short spoken message synthesized with your configured voice, stored as audio, and attached to your reply when the turn ends. Write the note as speakable words, exactly as it should be said — no lists, links or markdown meant for screens. The same text becomes the note's visible caption and transcript, so the person can read or listen. Use it for warmth, tone or emphasis a written line cannot carry; use ordinary text otherwise.",
+      "Send the user a voice note: a short spoken message synthesized with your configured voice, stored as audio, and attached to your reply when the turn ends. Write the note as speakable words, exactly as it should be said — no lists, links or markdown meant for screens. The words are kept as the note's transcript, which the person can open to read instead of listening; they are not repeated in your reply, so do not write them out again. Use it for warmth, tone or emphasis a written line cannot carry; use ordinary text otherwise.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -538,6 +562,7 @@ const TOOL_DEFINITIONS = [
       required: ["text"],
     },
   },
+  ...RESEARCH_TOOL_DEFINITIONS, ...HELPER_TOOL_DEFINITIONS,
   {
     name: "memory_update",
     description:
@@ -625,30 +650,49 @@ const TOOL_DEFINITIONS = [
   {
     name: "list_triggers",
     description:
-      "List this bot's triggers, its routines (schedules) and webhooks: ids, when they fire, on or paused, next run or last fire. trigger_id: one trigger with its last 10 fires. Includes the computer's authoritative current time and timezone.",
+      "List this bot's triggers, its routines (schedules), app events and webhooks: ids, when they fire, on or paused, next run or last fire, problems. trigger_id: one trigger with its last 10 fires; with include_address, a webhook's private address, to paste into the setup of the app that sends to it. Includes the computer's authoritative current time and timezone.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
         trigger_id: { type: "string", description: "Optional: one trigger's details and recent fires." },
+        include_address: { type: "boolean", description: "With a webhook's trigger_id: also its private address. For the bot that owns it, or a Chief of Staff." },
         for_bot_id: { type: "string", description: "Only for ANOTHER bot in your section, from list_bots: list that bot's triggers." },
+      },
+    },
+  },
+  {
+    name: "list_trigger_events",
+    description:
+      "Before create_trigger with when=app_event: the connected apps you may use, with their accounts and events (slug, delivery, config_fields, filter_fields), and popular apps not connected yet.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        app: { type: "string", description: "Optional app slug, e.g. gmail." },
+        search: { type: "string", maxLength: 100, description: "Optional words in event names." },
       },
     },
   },
   {
     name: "create_trigger",
     description:
-      "Set up work that happens on its own: when <something happens>, a bot does <instructions>. Call it in this turn whenever the person describes recurring or event-based work (\"every morning send me…\", \"when another app calls…\"); never ask for confirmation first. It applies at once and the person sees a card with Edit, Pause and Undo. when=schedule runs on a time rule (call list_triggers first for relative dates: it has the authoritative time and timezone); when=webhook gives an address another app sends to (the person copies it from the card; you never see its secret). To the person these are automations. Something to do once, now, is not a trigger. for_bot_id: a trigger for ANOTHER bot in your section, which keeps that bot's engine and permissions.",
+      "Set up work that happens on its own: when <something happens>, a bot does <instructions>. Call it in this turn whenever the person describes recurring or event-based work (\"every morning send me…\", \"whenever I get an email from…\", \"when another app calls…\"); never ask for confirmation first. It applies at once and the person sees a card with Edit, Pause and Undo. when=schedule runs on a time rule, cron included (call list_triggers first for relative dates: it has the authoritative time and timezone); when=app_event runs when something happens in a connected app (list_trigger_events first; prefer it to a schedule that keeps checking); when=webhook gives an address another app sends to: the result carries its private address, so you can paste it into that app's setup yourself (never anywhere else). when=limit_reset runs when an AI's usage limit resets (\"run this when my limit resets\", or to finish work your own limit stopped). To the person these are automations: write name and instructions as they would say them. Something to do once, now, is not a trigger. for_bot_id: a trigger for ANOTHER bot in your section, which keeps that bot's engine and permissions.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
         when: {
           type: "string",
-          enum: ["schedule", "webhook"],
-          description: "schedule = on a time rule (give schedule); webhook = when another app calls a link.",
+          enum: ["schedule", "app_event", "webhook", "limit_reset"],
+          description: "schedule = on a time rule (give schedule); app_event = something happens in a connected app (give app and event); webhook = when another app calls a link; limit_reset = when an AI engine's usage limit resets.",
         },
         ...TRIGGER_FIELDS_SCHEMA,
+        app: { type: "string", description: "app_event: app slug from list_trigger_events." },
+        event: { type: "string", description: "app_event: event slug from list_trigger_events." },
+        account: { type: "string", description: "app_event: account id or alias, only when the app has several." },
+        engine: { type: "string", description: "limit_reset: the engine id whose limit to wait for, e.g. claude or codex. Omit for your own engine." },
+        repeat: { type: "string", enum: ["once", "every_reset"], description: "limit_reset: once (default) or every_reset." },
         for_bot_id: {
           type: "string",
           description:
@@ -661,7 +705,7 @@ const TOOL_DEFINITIONS = [
   {
     name: "manage_trigger",
     description:
-      "Change one of this bot's triggers, its routines or webhooks: update, pause, resume, run once now (a webhook gets a test call) or delete. Get the id from list_triggers. It applies at once, with an Undo where possible. for_bot_id: ANOTHER bot's trigger in your section.",
+      "Change one of this bot's triggers (schedules, app events or webhooks): update, pause, resume, run once now (an app event or webhook gets a test event) or delete. Get the id from list_triggers. It applies at once, with an Undo where possible. for_bot_id: ANOTHER bot's trigger in your section.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -903,7 +947,7 @@ const SKILL_TOOL_NAMES = new Set(["skills_list", "skill_manage"]);
 export const SHARED_COMPUTER_TOOL_NAMES = new Set(["list_shared_computers", "shared_computer"]);
 const VOICE_TOOL_NAMES = new Set(["send_voice_note"]);
 const CHIEF_ONLY_TOOL_NAMES = new Set([
-  "create_bot", "list_team_setup", "propose_team_setup", "propose_bot_deletion", "create_room", "manage_room", "retry_thread",
+  "create_bot", "list_team_setup", "list_team_library", "propose_team_setup", "propose_bot_deletion", "create_room", "manage_room", "retry_thread",
 ]);
 const CHIEF_TARGET_TOOL_NAMES = new Set(["propose_profile", "propose_model"]);
 const WATCHER_TOOL_NAMES = new Set(["create_options_card"]);
@@ -937,9 +981,12 @@ function catalogTools(profile: CatalogProfile) {
   const VOICE_READY_TOOLS = profile.voiceNotes
     ? SHAREABLE_TOOLS
     : SHAREABLE_TOOLS.filter((tool) => !VOICE_TOOL_NAMES.has(tool.name));
-  const ROLE_TOOLS = profile.chief
+  const RESEARCH_READY_TOOLS = profile.xResearch === true
     ? VOICE_READY_TOOLS
-    : VOICE_READY_TOOLS.filter((tool) => !CHIEF_ONLY_TOOL_NAMES.has(tool.name)).map((tool) => {
+    : VOICE_READY_TOOLS.filter((tool) => !RESEARCH_TOOL_NAMES.has(tool.name));
+  const ROLE_TOOLS = profile.chief
+    ? RESEARCH_READY_TOOLS
+    : RESEARCH_READY_TOOLS.filter((tool) => !CHIEF_ONLY_TOOL_NAMES.has(tool.name)).map((tool) => {
       if (!CHIEF_TARGET_TOOL_NAMES.has(tool.name)) return tool;
       const properties = Object.fromEntries(Object.entries(tool.inputSchema.properties).filter(([key]) => key !== "for_bot_id"));
       return { ...tool, description: tool.description.replace(CHIEF_PROFILE_TARGET, ""), inputSchema: { ...tool.inputSchema, properties } };

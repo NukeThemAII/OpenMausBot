@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { CalendarClock, Send, Share2, X } from "lucide-react";
+import { AppWindow, CalendarClock, Send, Share2, X } from "lucide-react";
 
 import { useModalDialog } from "@/hooks/use-modal-dialog";
 import { cn } from "@/lib/cn";
@@ -7,7 +7,7 @@ import { t } from "@/lib/i18n";
 import { useStore, type Bot } from "@/state/store";
 import { Select } from "../Select";
 
-export type SetUpKind = "schedule" | "webhook";
+export type SetUpKind = "schedule" | "webhook" | "app";
 
 /** The bot "+ New" talks to: the one open now, else the one most recently talked to. */
 export function defaultBot(bots: readonly Bot[], selectedId: string): Bot | undefined {
@@ -21,7 +21,8 @@ export function defaultBot(bots: readonly Bot[], selectedId: string): Bot | unde
 export function NewAutomation({ initialText = "", onClose, onSetUpYourself }: {
   initialText?: string;
   onClose: () => void;
-  onSetUpYourself: (kind: SetUpKind) => void;
+  /** The bot this box would have asked, so the editor starts with it chosen. */
+  onSetUpYourself: (kind: SetUpKind, botId: string) => void;
 }) {
   const { state, dispatch } = useStore();
   const bots = state.bots.filter((bot) => !bot.hidden);
@@ -59,11 +60,12 @@ export function NewAutomation({ initialText = "", onClose, onSetUpYourself }: {
           <>
             <div role="radiogroup" aria-label={t("automations.newBox.when")} className="mt-4 space-y-2">
               {choice("schedule", t("automations.newBox.onSchedule"), CalendarClock)}
+              {choice("app", t("automations.newBox.whenAppEvent"), AppWindow)}
               {choice("webhook", t("automations.newBox.whenApp"), Share2)}
             </div>
             <div className="mt-5 flex items-center justify-between gap-2">
               <button type="button" onClick={() => setYourself(false)} className="rounded-lg px-2 py-1.5 text-[12.5px] text-ink-secondary hover:bg-raised hover:text-ink">{t("automations.newBox.back")}</button>
-              <button type="button" onClick={() => onSetUpYourself(kind)} className="rounded-xl bg-accent px-4 py-2 text-[13px] font-medium text-accent-ink hover:brightness-110">{t("automations.newBox.continue")}</button>
+              <button type="button" onClick={() => onSetUpYourself(kind, bot?.id ?? "")} className="rounded-xl bg-accent px-4 py-2 text-[13px] font-medium text-accent-ink hover:brightness-110">{t("automations.newBox.continue")}</button>
             </div>
           </>
         ) : (

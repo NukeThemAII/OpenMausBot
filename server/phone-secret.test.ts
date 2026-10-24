@@ -260,6 +260,13 @@ describe("phoneSecretAAD", () => {
     }
   });
 
+  // The desktop's phone bridge saves settings keys; the 1Password token belongs to Logins, so a phone is told where to paste it.
+  it("refuses a 1Password token from a phone, saying where to paste it", () => {
+    const context = { ...baseContext("AAAAAAAAAAAAAAAAAAAAAA"), target: "onePasswordToken" };
+    expect(() => assertPhoneSecretRequestMatches(context, "paired-device-1", { target: "onePasswordToken", requestKey: "credential-request-1" }))
+      .toThrow(expect.objectContaining({ status: 409, message: expect.stringMatching(/^Paste the 1Password token in OpenMausBot on your computer, or in My Cloud/u) }));
+  });
+
   it("gives an exact encrypted retry one stable desktop operation id", async () => {
     const material = await keyMaterial();
     const envelope = await seal(baseContext(material.keyId), material.publicKey);

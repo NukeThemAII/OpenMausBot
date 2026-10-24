@@ -62,8 +62,8 @@ export interface DecisionRow {
   /** the turn ran with nobody at the keyboard when this was decided */
   unattended?: boolean;
   actor?: DecisionActor;
-  /** "call": that person answered by voice on a Live call, not with a tap */
-  via?: "call";
+  /** How that person answered when it was not a tap: by voice on a Live call, or a 👍 or 👎 on the card */
+  via?: DecisionVia;
   origin?: "output";
 }
 
@@ -94,9 +94,10 @@ export function decisionRetentionDays(configured: number | undefined, env: NodeJ
   return DEFAULT_DECISION_RETENTION_DAYS;
 }
 
-const actorScope = new AsyncLocalStorage<{ actor: DecisionActor; via?: "call" }>();
+export type DecisionVia = "call" | "reaction";
+const actorScope = new AsyncLocalStorage<{ actor: DecisionActor; via?: DecisionVia }>();
 
-export function withDecisionActor<T>(actor: DecisionActor, work: () => T, via?: "call"): T {
+export function withDecisionActor<T>(actor: DecisionActor, work: () => T, via?: DecisionVia): T {
   return actorScope.run(via ? { actor, via } : { actor }, work);
 }
 
@@ -259,7 +260,7 @@ export function decisionsCsv(rows: DecisionRow[]): string {
       row.summary ?? "",
       row.rule ?? "",
       row.unattended ? "yes" : "",
-      row.via === "call" ? `${actorLabel(row.actor)} (by voice)` : actorLabel(row.actor),
+      row.via ? `${actorLabel(row.actor)} (${row.via === "call" ? "by voice" : "by reaction"})` : actorLabel(row.actor),
       row.threadId,
       row.requestId ?? "",
     ].map(csvCell).join(","));

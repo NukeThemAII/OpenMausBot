@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { ExternalLink, KeyRound, Loader2, LockKeyhole, RefreshCw, X } from "lucide-react";
 
-import { credentialConfigPatch, credentialResumeOutcome } from "../../shared/credential-request";
+import { credentialResumeOutcome, credentialSaveRequest, isConfigCredentialTarget } from "../../shared/credential-request";
 import { credentialProvider } from "@/lib/analytics-allowlist";
 import { cn } from "@/lib/cn";
 import { keySaved, keySaveFailure, savedKeyResult } from "@/lib/product-events";
@@ -89,15 +89,17 @@ export function SecretRequestCard({
     try {
       if (!savedLocally) {
         const next = value.trim();
-        const status: ConfigStatus = window.ogb?.setCredential
-          ? await window.ogb.setCredential(secret.target, next)
-          : await api("/api/config", {
-              method: "PUT",
-              body: JSON.stringify(credentialConfigPatch(secret.target, next)),
-            });
+        const target = secret.target;
+        // The 1Password token goes to this server's Logins, which checks it with 1Password first, never the settings file.
+        const request = credentialSaveRequest(target, next);
+        if (isConfigCredentialTarget(target)) {
+          const status: ConfigStatus = window.ogb?.setCredential
+            ? await window.ogb.setCredential(target, next)
+            : await api(request.path, { method: request.method, body: JSON.stringify(request.body) });
+          dispatch({ type: "configStatus", config: status });
+        } else await api(request.path, { method: request.method, body: JSON.stringify(request.body) });
         saved = true;
         keySaved(provider, "chat_request", savedKeyResult(provider));
-        dispatch({ type: "configStatus", config: status });
         setValue("");
         setSavedLocally(true);
       }

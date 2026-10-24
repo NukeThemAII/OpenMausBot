@@ -22,7 +22,7 @@ vi.mock("./DesktopCapabilities", async (importOriginal) => ({
 }));
 vi.mock("@/lib/analytics", () => ({ track: vi.fn() }));
 vi.mock("@/lib/interface-mode", () => ({ useAdvancedMode: () => true, setAdvancedMode: vi.fn() }));
-vi.mock("@/lib/cloud-guest", () => ({ useCanWriteIn: () => null }));
+vi.mock("@/lib/cloud-guest", () => ({ useCanWriteIn: () => null, useReactor: () => "user" }));
 vi.mock("./CitationUI", async (importOriginal) => ({
   ...await importOriginal<typeof import("./CitationUI")>(),
   CitationSelectionToolbar: () => createElement("span"),
@@ -167,7 +167,7 @@ describe.each(SEND_KEYS)("in %s mode", (mode) => {
   it("the Cloud's first job starts on the same key", () => {
     setPendingIntent("Watch my inbox");
     render(createElement(CloudIntent));
-    const job = () => textarea('textarea[aria-label="What should My Cloud do while you\'re away?"]');
+    const job = () => textarea('textarea[aria-label="What should the Cloud do while you\'re away?"]');
     expect(job().value).toBe("Watch my inbox");
     const given = () => vi.mocked(api).mock.calls.filter(([, init]) => String(init?.body).includes("cloud-intent-given")).length;
     expectSendKey(mode, job, given);

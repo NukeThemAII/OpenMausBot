@@ -634,7 +634,7 @@ describe("server-owned browser MCP runtime", () => {
     expect(next.content[0].text).not.toMatch(/are kept/);
   });
 
-  it("never closes a browser in use: a bot's call, a person's hold or input, an open live view", async () => {
+  it("never closes a browser in use: a bot's call, a person's hold or input", async () => {
     const closeBrowser = vi.fn(async () => true);
     const value = runtime({ closeBrowser });
     await value.agentRpc("s", spec(), "tools/list", {});
@@ -656,12 +656,31 @@ describe("server-owned browser MCP runtime", () => {
     expect(await idle()).toBe(false);
     typed.resolve();
     await human;
-    const unwatch = value.watch("s", spec());
-    expect(await idle()).toBe(false);
-    unwatch();
     expect(await value.closeIfIdle("s", 10)).toBe(false);
     expect(closeBrowser).not.toHaveBeenCalled();
     expect(await idle()).toBe(true);
+  });
+
+  it("closes a browser people only watch once it sat unused since the view opened, telling its views first, and never the person's own Chrome", async () => {
+    const order: string[] = [];
+    const closeBrowser = vi.fn(async (session: string) => { order.push(`close ${session}`); return true; });
+    const value = runtime({ closeBrowser });
+    value.onIdleClose((session) => order.push(`views ${session}`));
+    await value.agentRpc("s", spec(), "tools/call", { name: "echo" });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    const unwatch = value.watch("s", spec());
+    expect(await value.closeIfIdle("s", 10)).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    expect(await value.closeIfIdle("s", 10)).toBe(true);
+    expect(order).toEqual(["views s", "close s"]);
+    unwatch();
+    const mine = { ...spec(), env: { ...spec().env, AGENT_BROWSER_CDP: "9333" } };
+    await value.agentRpc("mine", mine, "tools/call", { name: "echo" });
+    const unwatchMine = value.watch("mine", mine);
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    expect(await value.closeIfIdle("mine", 10, mine)).toBe(false);
+    unwatchMine();
+    expect(order).toEqual(["views s", "close s"]);
   });
 
   it("makes a call that arrives while its idle browser closes wait, then open it again", async () => {

@@ -1,14 +1,16 @@
-// The trigger tools a bot uses from chat: list_triggers, create_trigger and manage_trigger. Every change applies at
-// once (no confirmation card); the harness records it on the automation's card with Pause, Edit and Undo.
+// The trigger tools a bot uses from chat: list_triggers, list_trigger_events, create_trigger and manage_trigger. Every
+// change applies at once (no confirmation card); the harness records it on the automation's card with Pause, Edit and Undo.
 import { normalizeCronSchedule } from "../../shared/routine-schedule.ts";
 
 import type { ToolCallContext, ToolCallResult } from "./agents-call.ts";
 import { WEEKDAYS } from "./agents-catalog.ts";
 import type { Json } from "./agents-client.ts";
 
-export const TRIGGER_TOOL_NAMES: ReadonlySet<string> = new Set(["list_triggers", "create_trigger", "manage_trigger"]);
+export const TRIGGER_TOOL_NAMES: ReadonlySet<string> = new Set(["list_triggers", "list_trigger_events", "create_trigger", "manage_trigger"]);
 
 const LIST_ROUTE = "/api/internal/triggers";
+const EVENTS_ROUTE = "/api/internal/trigger-events";
+const APP_ONLY = ["app", "event", "account"] as const;
 const REQUEST_ROUTE = "/api/internal/trigger-requests";
 const SCHEDULE_ONLY = ["schedule", "timeout_minutes", "timeoutMinutes", "clear_timeout", "continuity", "overlap", "run_on_startup", "runOnStartup"] as const;
 
@@ -60,7 +62,9 @@ function normalizeScheduleInput(args: Json): NormalizedSchedule {
         ? ["type", "every_minutes", "everyMinutes", "starts_at", "anchorAt", "weekdays", "every_day", "window_start", "window_end", "window", "all_day", "ends_at", "endsAt", "never_ends"]
         : type === "cron"
           ? ["type", "expression", "timeZone"]
-          : null;
+          : type === "limit_reset"
+            ? ["type", "engine", "repeat"]
+            : null;
   // Providers may send unused optional fields as null; any other unknown field refuses the call.
   const unsupported = fields && Object.keys(raw).find((key) => raw[key] != null && !fields.includes(key));
   if (unsupported) {
@@ -73,6 +77,7 @@ function normalizeScheduleInput(args: Json): NormalizedSchedule {
       return { error: `${error instanceof Error ? error.message : "Invalid cron schedule"}. ${SUPPORTED_SCHEDULES}` };
     }
   }
+  if (type === "limit_reset") return limitResetSchedule(raw.engine, raw.repeat);
   if (type === "once") {
     if (typeof raw.at !== "string" || !raw.at.trim()) {
       return { error: `A once schedule needs "at": a future RFC3339 date-time with an explicit offset, for example 2026-09-01T09:00:00+05:30.` };
@@ -190,6 +195,13 @@ function normalizeScheduleInput(args: Json): NormalizedSchedule {
   return { error: `Unknown schedule type "${type || "(missing)"}". ${SUPPORTED_SCHEDULES}` };
 }
 
+/** No engine means the bot's own, which the harness knows. */
+function limitResetSchedule(engine: unknown, repeat: unknown): NormalizedSchedule {
+  if (engine != null && (typeof engine !== "string" || !engine.trim())) return { error: 'engine must be an engine id such as "claude" or "codex"; omit it for your own engine.' };
+  if (repeat != null && repeat !== "once" && repeat !== "every_reset") return { error: 'repeat must be "once" or "every_reset".' };
+  return { schedule: { type: "limit_reset", ...(typeof engine === "string" ? { engine: engine.trim() } : {}), repeat: repeat === "every_reset" ? "every_reset" : "once" } };
+}
+
 type RoutineAction = "update" | "pause" | "resume" | "run_now" | "delete";
 
 function routineAction(value: unknown): RoutineAction | null {
@@ -253,10 +265,35 @@ function routineFields(args: Json): { fields: Json; error?: string } {
 }
 
 
-/** Schedule fields plus the webhook's event types, normalized once; which apply is checked against the trigger's kind. */
+const FILTER_KEYS = { from: "from", subject_contains: "subject", label: "label", contains: "text" } as const;
+
+/** The plain filter in its stored words; Gmail turns it into its own search, other apps match it on arrival. */
+function appFilter(raw: unknown): { filter?: Json; error?: string } {
+  if (raw === undefined || raw === null) return {};
+  if (!jsonRecord(raw)) return { error: 'filter must be an object such as {"from":"acme.com","subject_contains":"order"}.' };
+  const filter: Json = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const stored = FILTER_KEYS[key as keyof typeof FILTER_KEYS];
+    if (!stored) return { error: `filter takes from, subject_contains, label and contains; not ${key}.` };
+    if (value === null || value === undefined || value === "") continue;
+    if (typeof value !== "string" || value.length > 200) return { error: `filter.${key} must be text of at most 200 characters.` };
+    filter[stored] = value.trim();
+  }
+  return { filter };
+}
+
+/** Schedule fields plus the webhook's event types and the app event's filter and settings, normalized once; which apply
+ *  is checked against the trigger's kind. */
 function triggerFields(args: Json): { fields: Json; error?: string } {
   const { fields, error } = routineFields(args);
   if (error) return { fields, error };
+  const { filter, error: filterError } = appFilter(args.filter);
+  if (filterError) return { fields, error: filterError };
+  if (filter) fields.filter = filter;
+  if (args.event_config !== undefined && args.event_config !== null) {
+    if (!jsonRecord(args.event_config)) return { fields, error: 'event_config must be an object of the event\'s settings from list_trigger_events, e.g. {"channel_id":"C0123"}.' };
+    fields.config = args.event_config;
+  }
   const eventTypes = args.webhook_event_types;
   if (eventTypes !== undefined && eventTypes !== null) {
     if (!Array.isArray(eventTypes) || eventTypes.some((value) => typeof value !== "string")) {
@@ -267,6 +304,14 @@ function triggerFields(args: Json): { fields: Json; error?: string } {
   return { fields };
 }
 
+/** A webhook's address as the bot reads it: what to paste, or why this turn does not get it. */
+function addressText(r: Json): string {
+  if (typeof r.addressRefused === "string") return `\n\nIts address: ${r.addressRefused}`;
+  if (!jsonRecord(r.address)) return "";
+  if (typeof r.address.unavailable === "string") return `\n\nIts address: ${r.address.unavailable}`;
+  return `\n\nIts private address: ${JSON.stringify(r.address, null, 2)}`;
+}
+
 function appliedText(r: Json, done: string): ToolCallResult {
   const summary = typeof r.summary === "string" && r.summary.trim() ? `\n\n${r.summary.trim()}` : "";
   const detail = typeof r.detail === "string" && r.detail.trim() ? `\n\n${r.detail.trim()}` : "";
@@ -274,7 +319,7 @@ function appliedText(r: Json, done: string): ToolCallResult {
   const attention = r.settlementPending && typeof r.message === "string" ? `\n\nNeeds attention: ${r.message}`
     : jsonRecord(r.result) && typeof r.result.message === "string" ? `\n\nNeeds attention: ${r.result.message}` : "";
   return {
-    text: `${done}${id ? ` (trigger id ${id})` : ""}. It applied at once; the person sees it on a card with Edit, Pause and Undo.${summary}${detail}${attention}\n\nDo not ask for confirmation. Tell the person in one sentence what will happen.`,
+    text: `${done}${id ? ` (trigger id ${id})` : ""}. It applied at once; the person sees it on a card with Edit, Pause and Undo.${summary}${detail}${attention}${addressText(r)}\n\nDo not ask for confirmation. Tell the person in one sentence what will happen.`,
   };
 }
 
@@ -295,6 +340,10 @@ export async function callTriggerTool(name: string, args: Json, context: ToolCal
   if (name === "list_triggers") {
     const query = new URLSearchParams({ fromBotId: context.botId, fromThreadId: context.threadId });
     if (typeof args.trigger_id === "string" && args.trigger_id.trim()) query.set("triggerId", args.trigger_id.trim());
+    if (args.include_address === true) {
+      if (!query.has("triggerId")) return { text: "include_address needs trigger_id: the webhook automation whose address you want, from list_triggers.", isError: true };
+      query.set("includeAddress", "1");
+    }
     if (forBotId) query.set("forBotId", forBotId);
     const r = await context.client.api(`${LIST_ROUTE}?${query.toString()}`);
     const now = typeof r.now === "string" ? r.now : new Date().toISOString();
@@ -306,12 +355,59 @@ export async function callTriggerTool(name: string, args: Json, context: ToolCal
     if (!triggers.length) return { text: `This bot has no triggers. Current time: ${now}. Timezone: ${timeZone}.` };
     return { text: `This bot's triggers (${clock}):\n${JSON.stringify(triggers, null, 2)}` };
   }
+  if (name === "list_trigger_events") {
+    const query = new URLSearchParams({ fromBotId: context.botId, fromThreadId: context.threadId });
+    if (typeof args.app === "string" && args.app.trim()) query.set("app", args.app.trim().toLowerCase());
+    if (typeof args.search === "string" && args.search.trim()) query.set("search", args.search.trim().slice(0, 100));
+    const r = await context.client.api(`${EVENTS_ROUTE}?${query.toString()}`);
+    if (typeof r.error === "string") return { text: r.error, isError: true };
+    if (typeof r.unavailable === "string") return { text: r.unavailable };
+    const apps = Array.isArray(r.apps) ? r.apps : [];
+    const notConnected = Array.isArray(r.notConnected) ? r.notConnected : [];
+    const connect = notConnected.length
+      ? `\n\nNot connected yet: ${notConnected.map((app) => jsonRecord(app) ? String(app.name) : "").filter(Boolean).join(", ")}. If the person wants one of these, ask them to connect it (call COMPOSIO_MANAGE_CONNECTIONS for that app if you have it; otherwise they connect it under Connected apps), then call list_trigger_events again and create the trigger.`
+      : "";
+    if (!apps.length) return { text: `No connected app this bot may use offers events.${connect}` };
+    return {
+      text: `Events you can watch (delivery "poll" checks every 15 minutes; "instant" arrives at once). Filter at the source with filter for Gmail; put other required settings in event_config:\n${JSON.stringify(apps, null, 2)}${connect}`,
+    };
+  }
   if (name === "create_trigger") {
     const when = args.when;
-    if (when !== "schedule" && when !== "webhook") return { text: 'create_trigger needs when: "schedule" or "webhook".', isError: true };
+    if (when !== "schedule" && when !== "webhook" && when !== "app_event" && when !== "limit_reset") return { text: 'create_trigger needs when: "schedule", "app_event", "webhook" or "limit_reset".', isError: true };
+    if (when !== "limit_reset") {
+      const limitOnly = ["engine", "repeat"].find((key) => args[key] !== undefined && args[key] !== null);
+      if (limitOnly) return { text: `${limitOnly} applies only to when=limit_reset.`, isError: true };
+    }
     const { fields, error } = triggerFields(args);
     if (error) return { text: error, isError: true };
     if (!fields.name || !fields.instructions) return { text: "create_trigger needs name and instructions.", isError: true };
+    if (when !== "app_event") {
+      const appOnly = [...APP_ONLY, "filter", "event_config"].find((key) => args[key] !== undefined && args[key] !== null);
+      if (appOnly) return { text: `${appOnly} applies only to when=app_event.`, isError: true };
+    }
+    if (when === "app_event") {
+      const misplaced = [...SCHEDULE_ONLY, "webhook_event_types"].find((key) => args[key] !== undefined && args[key] !== null);
+      if (misplaced) return { text: `An app-event trigger fires when the app's event happens, so it takes no ${misplaced}.`, isError: true };
+      const app = typeof args.app === "string" ? args.app.trim().toLowerCase() : "";
+      const event = typeof args.event === "string" ? args.event.trim() : "";
+      if (!app || !event) return { text: "An app_event trigger needs app and event from list_trigger_events. Call list_trigger_events first.", isError: true };
+      const trigger = {
+        name: fields.name, instructions: fields.instructions, app, event,
+        ...(typeof args.account === "string" && args.account.trim() ? { account: args.account.trim() } : {}),
+        ...(fields.filter ? { filter: fields.filter } : {}), ...(fields.config ? { config: fields.config } : {}), ...(fields.runOn ? { runOn: fields.runOn } : {}),
+      };
+      return request({ action: "create", kind: "app", trigger, ...(forBotId ? { forBotId } : {}) }, context, `Created the app-event trigger “${String(fields.name)}”`);
+    }
+    if (when === "limit_reset") {
+      const misplaced = ["schedule", "webhook_event_types", "run_on_startup", "runOnStartup"].find((key) => args[key] !== undefined && args[key] !== null);
+      if (misplaced) return { text: `A limit-reset trigger runs when the engine's limit resets, so it takes no ${misplaced}.`, isError: true };
+      const timing = limitResetSchedule(args.engine, args.repeat);
+      if (timing.error) return { text: timing.error, isError: true };
+      const { eventTypes: _unused, ...routine } = fields;
+      return request({ action: "create", kind: "schedule", routine: { ...routine, schedule: timing.schedule }, ...(forBotId ? { forBotId } : {}) }, context,
+        `Created the trigger “${String(fields.name)}” for when the limit resets`);
+    }
     const label = `the ${when === "webhook" ? "webhook" : "schedule"} trigger “${String(fields.name)}”`;
     if (when === "schedule") {
       if (!fields.schedule) return { text: "A schedule trigger needs schedule.", isError: true };

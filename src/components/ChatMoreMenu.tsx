@@ -13,15 +13,13 @@ import {
 } from "@/lib/export-transcript";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
+import { localizedTaskTitle } from "@/lib/task-title";
 import { ShortcutHint } from "./ShortcutHint";
 import { SidebarPopoverMenu, type SidebarMenuItem } from "./SidebarPopoverMenu";
 import { orderedThreadList } from "./SidebarThreadRow";
 import { openBotSettings } from "./bot-panel/panel-link";
 
-// A submenu cannot scroll, so it lists the most recent threads and the row says how many there are.
-const THREADS_LISTED = 12;
-
-/** One item list for the chat's ⋯ menu wherever it sits; Simple mode adds the threads it otherwise hides. */
+/** One item list for the chat's ⋯ menu wherever it sits; it lists the threads whenever the sidebar hides them. */
 function useChatMoreItems(profile: Bot): { items: SidebarMenuItem[]; on: boolean } {
   const bot = useMemo(() => currentTaskBot(profile), [profile]);
   const messages = useMemo(() => visibleMessages(bot), [bot]);
@@ -34,7 +32,7 @@ function useChatMoreItems(profile: Bot): { items: SidebarMenuItem[]; on: boolean
   const usage = usageSummary(bot, state.instances);
   const hasMessages = messages.length > 0;
   const transcript = () => formatTranscriptMarkdown({ title: bot.name, messages, botName: bot.name, isGroup: false });
-  const threads = advanced ? [] : orderedThreadList((profile.tasks ?? []).filter((task) => !task.routineRunId));
+  const threads = showThreads ? [] : orderedThreadList((profile.tasks ?? []).filter((task) => !task.routineRunId));
   const items: SidebarMenuItem[] = [
     {
       key: "find",
@@ -44,7 +42,7 @@ function useChatMoreItems(profile: Bot): { items: SidebarMenuItem[]; on: boolean
       trailing: <ShortcutHint id="find-conversation" />,
       onSelect: () => requestChatFind(bot.threadId),
     },
-    ...(advanced ? [] : [{
+    ...(showThreads ? [] : [{
       key: "new-thread",
       heading: t("task.list"),
       separatorBefore: true,
@@ -58,9 +56,9 @@ function useChatMoreItems(profile: Bot): { items: SidebarMenuItem[]; on: boolean
       label: t("task.switch"),
       icon: <MessagesSquare size={16} />,
       value: String(threads.length),
-      submenu: threads.slice(0, THREADS_LISTED).map((task) => ({
+      submenu: threads.map((task) => ({
         key: `thread:${task.threadId}`,
-        label: task.title || t("task.newShort"),
+      label: localizedTaskTitle(task.title || t("task.newShort")),
         active: task.threadId === bot.threadId,
         onSelect: () => openBotThread(dispatch, profile, task.threadId, showThreads),
       })),
@@ -94,7 +92,7 @@ function useChatMoreItems(profile: Bot): { items: SidebarMenuItem[]; on: boolean
     } satisfies SidebarMenuItem] : []),
     ...(remoteClient ? [] : [{
       key: "activity",
-      label: "Activity",
+      label: t("activity.panel.title"),
       icon: <ListChecks size={16} />,
       active: state.activityOpen,
       separatorBefore: !usage,
@@ -137,7 +135,7 @@ function RoundChatMoreMenu({ bot }: { bot: Bot }) {
 
 /**
  * The chat's ⋯ menu as a round button, for a spot outside the chat such as the bot panel's top bar: find in
- * conversation (opens the chat's find bar), threads in Simple mode, share, usage, activity and the inspector.
+ * conversation (opens the chat's find bar), threads the sidebar hides, share, usage, activity and the inspector.
  */
 export function ChatMoreMenu({ bot }: { bot: Bot }): JSX.Element {
   // Keyed by thread so a "Copied" note never follows the panel into another conversation.

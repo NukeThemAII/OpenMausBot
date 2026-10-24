@@ -243,25 +243,4 @@ describe("Settings full backups", () => {
     expect(storage.get("omb-drafts")).toBe("keep"); expect(storage.get("omb-pending-workspace-restore")).toBe("stage-id");
     expect(window.location.reload).not.toHaveBeenCalled();
   });
-
-  it("on a server open in the desktop app, offers Import from this computer beside the file import: the same copy as the server's own offer", async () => {
-    const move = { state: vi.fn().mockResolvedValue({ phase: "idle", local: { bots: 4, rooms: 1, chats: 37, bytes: 1024 ** 3, files: 9 }, cloud: { contents: { bots: 1, rooms: 0, chats: 0 }, empty: true, freeBytes: 1024 ** 4, previous: null, heldBytes: 0 },
-      suggest: false, destination: { id: "vps", name: "bots.example.test", origin: "https://bots.example.test", kind: "server" }, blocked: null }),
-      start: vi.fn(), cancel: vi.fn(), restorePrevious: vi.fn(), dismiss: vi.fn(), onState: vi.fn(() => () => {}) };
-    vi.stubGlobal("window", { location: { reload: vi.fn() }, ogb: { cloudMove: move } });
-    await ready();
-    render();
-    for (const effect of fixture.effects.slice(1)) effect();
-    await flush();
-    const html = render().html;
-    expect(move.state.mock.calls).toEqual([[undefined]]);
-    expect(html).toContain("Import from this computer");
-    expect(html).toContain("no file or password");
-    expect(html).toContain("bots.example.test is empty. Copy 4 bots and 37 chats here");
-    expect(html.indexOf("Import from this computer")).toBeLessThan(html.indexOf("Import backup"));
-    vi.stubGlobal("window", { location: { reload: vi.fn() } });
-    fixture.values = [];
-    await ready();
-    expect(render().html).not.toContain("Import from this computer");
-  });
 });

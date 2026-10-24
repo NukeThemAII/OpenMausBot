@@ -45,7 +45,7 @@
     },
     {
       "name": "shared_computer",
-      "description": "Use a desktop explicitly shared by the user. Discover computer_id and folder_id with list_shared_computers. list_files/read_file/write_file are confined to chosen folders; paths are relative. read_file returns sha256; overwriting requires expected_sha256. Binary files support base64 encoding. run_command requires a SEPARATE unrestricted terminal grant. computer_tools lists the native computer-control tools; computer_call invokes one with arguments and needs a SEPARATE computer-control grant. Never substitute the server's filesystem when this desktop is offline. Actions are not retried automatically; inspect an uncertain outcome before retrying.",
+      "description": "Use a desktop explicitly shared by the user. Discover computer_id and folder_id with list_shared_computers. list_files/read_file/write_file are confined to chosen folders; paths are relative. read_file returns sha256; overwriting requires expected_sha256. Binary files support base64 encoding. run_command requires a SEPARATE unrestricted terminal grant. computer_tools lists the native computer-control tools; computer_call invokes one with arguments and needs a SEPARATE computer-control grant. To browse there, open pages with launch_app urls (the person's own browser) and use get_window_state, click and type_text: the browser_* tools need a DevTools endpoint most browsers lack. Never substitute the server's filesystem when this desktop is offline. Actions are not retried automatically; inspect an uncertain outcome before retrying.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -386,7 +386,7 @@
     },
     {
       "name": "show_widget",
-      "description": "Show an interactive widget in this chat. Reach for it yourself, without being asked, whenever you need details from the person or are offering a choice: never ask them to type a date, a time, a length or one of a few options, in follow-ups too. To change something that exists, prefill its current values (defaultValue). \"Help me book a call\" gets a Card with a DatePicker, a TimePicker, a Select for the length and a Textarea for an optional note; \"remind me every weekday\" gets a TimePicker and a DayPicker. Also good for a confirmation, a live status or a short pick-one list. Data, comparisons and results go in a markdown table in your message instead, which the chat can copy and export. `widget` is one JSON tree. The root is {type:\"Card\"|\"ListView\", title?, caption?, children:[...], confirm?:{label,action}, cancel?:{label,action}}. Nodes: Row, Col, Box, Spacer, Divider, Text, Title, Caption, Markdown, Badge{label,color}, Icon{name}, Image{src}, Progress{value 0-1, or value and max}, Chart{data,series:[{type,dataKey}],xAxis}, Button{label,onClickAction}, Form{onSubmitAction,children}. Fields, each with a name and a short label: Select|RadioGroup{options:[{label,value}]}, DatePicker{min?,max?} (YYYY-MM-DD), TimePicker{min?,max?,step?} (HH:MM, 24-hour), DayPicker (days of the week, sent as \"mon,wed,fri\"), Checkbox, Input, Textarea. A ListView holds ListViewItem{children}; to have the person choose one row, give the ListView a name and each row a value, and confirm sends the pick. Select, RadioGroup and such a list also let the person type their own answer instead; set allowOther:false only when nothing but an option will do. An action is {type,payload?}; {type:\"open_url\",payload:{url}} opens a link. Labels are plain words, no emoji. When the person presses confirm, cancel or a button, their answers arrive as their next message, so end your turn after a widget that asks something. Keep it small: one confirm, one cancel, at most 8 rows. Never ask for passwords here. Not available in rooms.",
+      "description": "Show an interactive widget in this chat. Reach for it yourself, without being asked, whenever you need details from the person or are offering a choice: never ask them to type a date, a time, a length or one of a few options, in follow-ups too. To change something that exists, prefill its current values (defaultValue). \"Help me book a call\" gets a Card with a DatePicker, a TimePicker, a Select for the length and a Textarea for an optional note; \"remind me every weekday\" gets a TimePicker and a DayPicker. Also good for a live status or a short pick-one list; a plain yes or no needs none: ask it in your message, and a word or a 👍 or 👎 answers it. Data, comparisons and results go in a markdown table in your message instead, which the chat can copy and export. `widget` is one JSON tree. The root is {type:\"Card\"|\"ListView\", title?, caption?, children:[...], confirm?:{label,action}, cancel?:{label,action}}. Nodes: Row, Col, Box, Spacer, Divider, Text, Title, Caption, Markdown, Badge{label,color}, Icon{name}, Image{src}, Progress{value 0-1, or value and max}, Chart{data,series:[{type,dataKey}],xAxis}, Button{label,onClickAction}, Form{onSubmitAction,children}. Fields, each with a name and a short label: Select|RadioGroup{options:[{label,value}]}, DatePicker{min?,max?} (YYYY-MM-DD), TimePicker{min?,max?,step?} (HH:MM, 24-hour), DayPicker (days of the week, sent as \"mon,wed,fri\"), Checkbox, Input, Textarea. A ListView holds ListViewItem{children}; to have the person choose one row, give the ListView a name and each row a value, and confirm sends the pick. Select, RadioGroup and such a list also let the person type their own answer instead; set allowOther:false only when nothing but an option will do. An action is {type,payload?}; {type:\"open_url\",payload:{url}} opens a link. Labels are plain words, no emoji. When the person presses confirm, cancel or a button, their answers arrive as their next message, so end your turn after a widget that asks something. Keep it small: one confirm, one cancel, at most 8 rows. Never ask for passwords here. Not available in rooms.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -428,6 +428,117 @@
       }
     },
     {
+      "name": "show_html",
+      "description": "Show a small self-contained web page in this chat, where the person watches it appear and can point at a part to change: a mini app, a game, a chart, a calculator, a report. For forms and choices use show_widget instead, and for plain data a markdown table. Send `html`, one HTML document (a fragment is wrapped) with inline style and script, or `jsx`, one React component file with a default export: it can import react, lucide-react icons, echarts, and Chart and useTheme from \"mausbot\", and style with Tailwind classes. Or send `path`, a folder in your working folder with index.html and its files (scripts, data, csv or parquet, images; up to 5 MB). It runs in a locked sandbox: no network requests, cookies, storage, popups or form posts. Scripts, styles and fonts load only from cdnjs.cloudflare.com, cdn.jsdelivr.net, unpkg.com and Google Fonts; images must be data: URLs or come from those CDNs. Embed the data you need. Use the CSS variables --color-text-primary, --color-background-primary, --color-border-primary and --font-sans to match the person's theme. In the page, mausbot.send(text) sends text as the person's next message (only after they click in it), mausbot.open(url) opens a link, and mausbot.setContext(text) tells you what they see, with their next message. At most 256 KB. Never put secrets in it. Not available in rooms. For a data dashboard, follow the data-dashboards skill.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "html": {
+            "type": "string",
+            "description": "One HTML document, or a fragment to wrap."
+          },
+          "jsx": {
+            "type": "string",
+            "description": "Instead of html: a React component file with a default export."
+          },
+          "path": {
+            "type": "string",
+            "description": "Instead of html: a folder with index.html, or an .html file."
+          },
+          "title": {
+            "type": "string",
+            "description": "A one-line title, at most 80 characters."
+          },
+          "height": {
+            "type": "number",
+            "description": "Optional starting height in pixels, 80 to 720."
+          },
+          "fallback_text": {
+            "type": "string",
+            "description": "Optional plain-text version for clients that cannot show pages. Written for you when omitted."
+          }
+        },
+        "required": [
+          "title"
+        ]
+      }
+    },
+    {
+      "name": "update_html",
+      "description": "Replace a page you showed with show_html, in place, with new `html`, `jsx` or `path`. `app_id` is the id show_html returned. The page reloads, so anything the person did in it is lost.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "app_id": {
+            "type": "string"
+          },
+          "html": {
+            "type": "string"
+          },
+          "jsx": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "app_id"
+        ]
+      }
+    },
+    {
+      "name": "publish_page",
+      "description": "Publish a page you made to a public link, only when the person asks to share or publish it: an .html file, or a folder with an index.html (static files, csv and parquet data too, up to 5 MB). Publishing the same path again, or passing page_id, updates the same link. Never publish secrets or personal details the person didn't ask to share. For a data dashboard, follow the data-dashboards skill.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "The file or folder, in your working folder."
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "A short name for the page."
+          },
+          "page_id": {
+            "type": "string",
+            "pattern": "^[a-z0-9]{20,63}$",
+            "description": "The page's id, the first part of its link."
+          }
+        },
+        "required": [
+          "path",
+          "title"
+        ]
+      }
+    },
+    {
+      "name": "unpublish_page",
+      "description": "Take a published page down when the person asks; its link stops working. Pass page_id, or the path it was published from.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "page_id": {
+            "type": "string",
+            "pattern": "^[a-z0-9]{20,63}$",
+            "description": "The page's id, the first part of its link."
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
       "name": "post_to_room",
       "description": "Put one message into a shared room you belong to, for example when the user asks you to tell the team something. Get group_id from list_rooms. This posts and returns: no room member's turn starts, nobody replies, and nothing comes back except confirmation — so never use it to ask a question or hand out work (use coordinate_bots for those). Post once, say it in full, and tell the user what you posted. Set attach_voice_note true to attach this turn's voice note. If a post is refused, do not retry it: say what you wanted to post in your reply instead.",
       "inputSchema": {
@@ -455,7 +566,7 @@
     },
     {
       "name": "create_bot",
-      "description": "Create a specialist bot in your section. Chief of Staff only. It is created immediately and the person can undo it. instructions become its soul. Omit modelSelection to use the workspace default, or choose exact IDs from list_team_setup. Connected apps start disabled and the bot runs at the workspace's default access level. Assign work through coordinate_bots. Maximum four new bots per turn.",
+      "description": "Chief of Staff only: add a specialist to your section now; the person can undo it. instructions become its soul. Omit modelSelection for the workspace default, or use exact IDs from list_team_setup. It starts with connected apps off, at the default access level. Assign work with coordinate_bots. At most four per turn.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -497,10 +608,6 @@
             "type": "string",
             "maxLength": 1024,
             "description": "Absolute path of the folder this specialist's tools read and write in (for example /Users/me/Projects/site). It must already exist. Leave it out for the specialist's private workspace."
-          },
-          "suggestion": {
-            "type": "boolean",
-            "description": "True if the user did not ask for this bot."
           }
         },
         "required": [
@@ -523,6 +630,15 @@
         "destructiveHint": false,
         "idempotentHint": true,
         "openWorldHint": false
+      }
+    },
+    {
+      "name": "list_team_library",
+      "description": "Chief of Staff only: ready-made teams, each with a summary and roles (lead = the team's Chief). Create roles with create_bot.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
       }
     },
     {
@@ -747,7 +863,7 @@
     },
     {
       "name": "request_credential",
-      "description": "Ask the user for a supported API key through OpenMausBot's secure credential flow. The desktop app and a freshly QR-paired mobile app show a secure entry card; older mobile pairings show how to pair again or finish on the computer. Never claim a secure field opened unless this request succeeds, and never ask the user to paste a secret into chat. The secret is saved by the desktop app and is never returned to you. After calling this tool, end the turn; OpenMausBot resumes the task after the user saves or declines.",
+      "description": "Ask for a supported API key or a 1Password service account token (onePasswordToken) through OpenMausBot's secure credential flow: the app shows a secure entry card, as does a freshly QR-paired phone; older pairings show how to pair again. Never claim a secure field opened unless this request succeeds, and never ask the user to paste a secret into chat. OpenMausBot saves it and never returns it to you. After calling this tool, end the turn; OpenMausBot resumes the task after the user saves or declines.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -759,7 +875,8 @@
               "opencodeGoApiKey",
               "ttsKey",
               "fishAudioKey",
-              "openaiImageApiKey"
+              "openaiImageApiKey",
+              "onePasswordToken"
             ],
             "description": "The credential the current task requires."
           },
@@ -775,7 +892,7 @@
     },
     {
       "name": "request_sign_in",
-      "description": "Ask the person to sign in to a website themselves, in the browser or on the computer you are using now. Use it when a page needs a login you do not have, or a one-time code, CAPTCHA or other step only they can do. They get a card and a notification, sign in where you work, and press Done. Never ask for a password or code in chat. After calling it, end your turn; OpenMausBot resumes you when they finish or decline, and then check you are signed in.",
+      "description": "Ask the person to sign in to a website themselves, in the browser or on the computer you are using now. Use it when a page needs a login you do not have, or a CAPTCHA, passkey or other step only they can do, or a one-time code you cannot read. A code the site sends to the person's own email or messages for a sign-in they asked for is not one: read it there and type it in yourself. They get a card and a notification, sign in where you work, and press Done. Never ask for a password or code in chat. After calling it, end your turn; OpenMausBot resumes you when they finish or decline, and then check you are signed in.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -799,7 +916,7 @@
     },
     {
       "name": "fill_login",
-      "description": "Sign in with a login the person saved in OpenMausBot. Call it on the login page open in your browser: OpenMausBot types the username, password and any one-time code itself, submits each step, and says where the page went; you never see the password. A login fills on its own site, such as any page of example.com. With no saved login for the site, call request_sign_in.",
+      "description": "Sign in with a login the person saved in OpenMausBot. Call it on the login page open in your browser: OpenMausBot types the username, password and any one-time code itself, submits each step, and says where the page went; you never see the password. A login fills on its own site, such as any page of example.com. With no saved login for the site, sign in another way the person allowed (a code sent to their own email, which you read and type in, is one), or call request_sign_in.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -818,7 +935,7 @@
     },
     {
       "name": "send_voice_note",
-      "description": "Send the user a voice note: a short spoken message synthesized with your configured voice, stored as audio, and attached to your reply when the turn ends. Write the note as speakable words, exactly as it should be said — no lists, links or markdown meant for screens. The same text becomes the note's visible caption and transcript, so the person can read or listen. Use it for warmth, tone or emphasis a written line cannot carry; use ordinary text otherwise.",
+      "description": "Send the user a voice note: a short spoken message synthesized with your configured voice, stored as audio, and attached to your reply when the turn ends. Write the note as speakable words, exactly as it should be said — no lists, links or markdown meant for screens. The words are kept as the note's transcript, which the person can open to read instead of listening; they are not repeated in your reply, so do not write them out again. Use it for warmth, tone or emphasis a written line cannot carry; use ordinary text otherwise.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -832,6 +949,242 @@
         },
         "required": [
           "text"
+        ]
+      }
+    },
+    {
+      "name": "x_search",
+      "description": "Search posts on X (Twitter) without an X account. Each call is paid (the user's treg balance or Cloud plan), so write one well-filtered query instead of many broad ones. The query takes X operators: from:handle, to:handle, \"exact phrase\", since:YYYY-MM-DD, until:YYYY-MM-DD, min_faves:N, -filter:replies, lang:en, OR. Bare words are all required, so use a short phrase or OR between alternatives. Returns compact posts (link, author, time, text, likes, reposts, replies, quotes, views) and newestId. To monitor X, for example in a routine, keep newestId and pass it back as sinceId next time to get only newer posts. Read-only: you cannot post, like or reply.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "description": "The X search query; operators allowed."
+          },
+          "sort": {
+            "type": "string",
+            "enum": [
+              "latest",
+              "top"
+            ],
+            "description": "latest (default) or top."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "How many posts, 1-50. Default 20."
+          },
+          "sinceId": {
+            "type": "string",
+            "pattern": "^\\d{1,25}$",
+            "description": "Only posts newer than this post id: a newestId from an earlier call."
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    },
+    {
+      "name": "x_user_posts",
+      "description": "Read an X account's recent posts, newest first (a paid call). Returns compact posts and newestId; pass newestId back as sinceId later to get only newer posts. Read-only.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "handle": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The account: @handle, handle, or an x.com profile link."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "How many posts, 1-50. Default 20."
+          },
+          "sinceId": {
+            "type": "string",
+            "pattern": "^\\d{1,25}$",
+            "description": "Only posts newer than this post id."
+          },
+          "includeReplies": {
+            "type": "boolean",
+            "description": "Include the account's replies to others. Default false."
+          }
+        },
+        "required": [
+          "handle"
+        ]
+      }
+    },
+    {
+      "name": "x_post",
+      "description": "Read one X post from its link or id, and optionally the first page of up to 20 replies to it (a paid call). Read-only.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "post": {
+            "type": "string",
+            "minLength": 1,
+            "description": "An x.com or twitter.com post link, or the post id."
+          },
+          "replies": {
+            "type": "boolean",
+            "description": "Also return replies to the post. Default false."
+          }
+        },
+        "required": [
+          "post"
+        ]
+      }
+    },
+    {
+      "name": "x_profile",
+      "description": "Look up an X account's profile: name, bio, followers, following, post count and verified status (a paid call). Read-only.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "handle": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The account: @handle, handle, or an x.com profile link."
+          }
+        },
+        "required": [
+          "handle"
+        ]
+      }
+    },
+    {
+      "name": "research_search",
+      "description": "Find a research endpoint for a job in treg's catalog: companies, people and work emails, funding, news, social and trend data, SEO, search results, scraping, generation and more. Describe the job, not a vendor. Returns endpoints with their params, an example and the estimated cost; then call one with research_call. Searching is free.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "job": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300,
+            "description": "What the research is for, such as \"work email of a person at a company\"."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10,
+            "description": "How many endpoints, 1-10. Default 5."
+          }
+        },
+        "required": [
+          "job"
+        ]
+      }
+    },
+    {
+      "name": "research_endpoint",
+      "description": "Read one research endpoint in full: its params, an example, its cost and how to check on an async task.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "An endpoint id from research_search."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "research_call",
+      "description": "Call a research endpoint by id and get the provider's answer and what it cost (a paid call). params are its query parameters for a GET endpoint, otherwise its JSON body; query adds a query string to a body endpoint. Follow the endpoint's params and example. An async task answers with how to check on it: call that with research_call.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "The endpoint id."
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "The endpoint's parameters."
+          },
+          "query": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Query string for an endpoint that takes a JSON body."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    {
+      "name": "decide",
+      "description": "Ask a decision model typed questions about some state; it answers with probabilities and cannot act.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "state": {
+            "type": "string",
+            "description": "What to judge: text or JSON."
+          },
+          "questions": {
+            "type": "object",
+            "description": "Up to 8. id → {\"type\":\"choice\",\"instructions\":\"…\",\"options\":{\"key\":\"meaning\"}}, {\"type\":\"yesno\",\"instructions\":\"…\"} or {\"type\":\"score\",\"instructions\":\"…\",\"levels\":[\"lowest\",…]}",
+            "additionalProperties": {
+              "type": "object"
+            }
+          }
+        },
+        "required": [
+          "state",
+          "questions"
+        ]
+      }
+    },
+    {
+      "name": "extract",
+      "description": "Read typed values out of text or an image; null where it does not say. Not for long sums or table totals.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "fields": {
+            "type": "object",
+            "description": "Up to 30. name → {\"type\":\"string|number|date|boolean|enum\",\"description\":\"…\",\"options\":[…] for enum}",
+            "additionalProperties": {
+              "type": "object"
+            }
+          },
+          "text": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string",
+            "description": "Or a .png, .jpg, .webp or text file in your working folder."
+          }
+        },
+        "required": [
+          "fields"
         ]
       }
     },
@@ -991,7 +1344,7 @@
     },
     {
       "name": "list_triggers",
-      "description": "List this bot's triggers, its routines (schedules) and webhooks: ids, when they fire, on or paused, next run or last fire. trigger_id: one trigger with its last 10 fires. Includes the computer's authoritative current time and timezone.",
+      "description": "List this bot's triggers, its routines (schedules), app events and webhooks: ids, when they fire, on or paused, next run or last fire, problems. trigger_id: one trigger with its last 10 fires; with include_address, a webhook's private address, to paste into the setup of the app that sends to it. Includes the computer's authoritative current time and timezone.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -999,6 +1352,10 @@
           "trigger_id": {
             "type": "string",
             "description": "Optional: one trigger's details and recent fires."
+          },
+          "include_address": {
+            "type": "boolean",
+            "description": "With a webhook's trigger_id: also its private address. For the bot that owns it, or a Chief of Staff."
           },
           "for_bot_id": {
             "type": "string",
@@ -1014,8 +1371,33 @@
       }
     },
     {
+      "name": "list_trigger_events",
+      "description": "Before create_trigger with when=app_event: the connected apps you may use, with their accounts and events (slug, delivery, config_fields, filter_fields), and popular apps not connected yet.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "app": {
+            "type": "string",
+            "description": "Optional app slug, e.g. gmail."
+          },
+          "search": {
+            "type": "string",
+            "maxLength": 100,
+            "description": "Optional words in event names."
+          }
+        }
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
       "name": "create_trigger",
-      "description": "Set up work that happens on its own: when <something happens>, a bot does <instructions>. Call it in this turn whenever the person describes recurring or event-based work (\"every morning send me…\", \"when another app calls…\"); never ask for confirmation first. It applies at once and the person sees a card with Edit, Pause and Undo. when=schedule runs on a time rule (call list_triggers first for relative dates: it has the authoritative time and timezone); when=webhook gives an address another app sends to (the person copies it from the card; you never see its secret). To the person these are automations. Something to do once, now, is not a trigger. for_bot_id: a trigger for ANOTHER bot in your section, which keeps that bot's engine and permissions.",
+      "description": "Set up work that happens on its own: when <something happens>, a bot does <instructions>. Call it in this turn whenever the person describes recurring or event-based work (\"every morning send me…\", \"whenever I get an email from…\", \"when another app calls…\"); never ask for confirmation first. It applies at once and the person sees a card with Edit, Pause and Undo. when=schedule runs on a time rule, cron included (call list_triggers first for relative dates: it has the authoritative time and timezone); when=app_event runs when something happens in a connected app (list_trigger_events first; prefer it to a schedule that keeps checking); when=webhook gives an address another app sends to: the result carries its private address, so you can paste it into that app's setup yourself (never anywhere else). when=limit_reset runs when an AI's usage limit resets (\"run this when my limit resets\", or to finish work your own limit stopped). To the person these are automations: write name and instructions as they would say them. Something to do once, now, is not a trigger. for_bot_id: a trigger for ANOTHER bot in your section, which keeps that bot's engine and permissions.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -1024,26 +1406,28 @@
             "type": "string",
             "enum": [
               "schedule",
-              "webhook"
+              "app_event",
+              "webhook",
+              "limit_reset"
             ],
-            "description": "schedule = on a time rule (give schedule); webhook = when another app calls a link."
+            "description": "schedule = on a time rule (give schedule); app_event = something happens in a connected app (give app and event); webhook = when another app calls a link; limit_reset = when an AI engine's usage limit resets."
           },
           "name": {
             "type": "string",
             "minLength": 1,
             "maxLength": 80,
-            "description": "Short name shown on the automation's card and the Automations page."
+            "description": "Short name shown on the automation's card."
           },
           "instructions": {
             "type": "string",
             "minLength": 1,
             "maxLength": 20000,
-            "description": "Complete steps for each run, which does NOT see this conversation. Put judgement here, e.g. \"if it is not about an order, stop\"."
+            "description": "Complete steps for each run, which does NOT see this conversation, in the person's plain words (\"draft a reply\"), never \"event data\", \"payload\", \"webhook\" or \"trigger\". Put judgement here, e.g. \"if it is not about an order, stop\"."
           },
           "schedule": {
             "type": "object",
             "additionalProperties": false,
-            "description": "Only for when=schedule. Use {\"type\":\"cron\",\"expression\":\"0 9 1 * *\",\"timeZone\":\"Asia/Kolkata\"} for 09:00 on the first of each month, once with at for one future run, weekly with time + weekdays, daily with time, or interval with every_minutes for elapsed-time repetition. Intervals can optionally be limited with weekdays, window_start + window_end, and ends_at.",
+            "description": "Only for when=schedule. Use {\"type\":\"cron\",\"expression\":\"0 9 1 * *\",\"timeZone\":\"Asia/Kolkata\"} for 09:00 on the first of each month, once with at for one future run, weekly with time + weekdays, daily with time, or interval with every_minutes for elapsed-time repetition.",
             "properties": {
               "type": {
                 "type": "string",
@@ -1064,7 +1448,7 @@
               "timeZone": {
                 "type": "string",
                 "maxLength": 128,
-                "description": "Required for cron: explicit IANA timezone, for example Asia/Kolkata, America/New_York, or UTC. Use the user's requested zone; resolve ambiguity before proposing. Do not send a numeric offset or local-time abbreviation."
+                "description": "Required for cron: the person's IANA timezone, such as Asia/Kolkata or UTC; never a numeric offset or an abbreviation."
               },
               "at": {
                 "type": "string",
@@ -1098,7 +1482,7 @@
               },
               "starts_at": {
                 "type": "string",
-                "description": "Optional for type interval: RFC3339 date-time with an explicit timezone offset that anchors the cadence. Omit to start one interval after the routine is applied."
+                "description": "Optional for type interval: RFC3339 date-time with an explicit offset that anchors the cadence; omit to start one interval after the routine applies."
               },
               "window_start": {
                 "type": "string",
@@ -1106,7 +1490,7 @@
               },
               "window_end": {
                 "type": "string",
-                "description": "Optional for type interval, together with window_start: local 24-hour HH:MM when the allowed window ends, exclusive. It must be later on the same day."
+                "description": "Optional for type interval, together with window_start: local 24-hour HH:MM when the allowed window ends, exclusive, later the same day."
               },
               "ends_at": {
                 "type": "string",
@@ -1138,13 +1522,40 @@
             },
             "description": "Only for when=webhook: optional event names to accept (from the caller's event-type header, e.g. push). Omit to accept every call."
           },
+          "filter": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "from": {
+                "type": "string",
+                "maxLength": 200
+              },
+              "subject_contains": {
+                "type": "string",
+                "maxLength": 200
+              },
+              "label": {
+                "type": "string",
+                "maxLength": 200
+              },
+              "contains": {
+                "type": "string",
+                "maxLength": 200
+              }
+            },
+            "description": "app_event only: plain words, all must match. Gmail filters at the source."
+          },
+          "event_config": {
+            "type": "object",
+            "description": "app_event only: settings from list_trigger_events config_fields."
+          },
           "run_on": {
             "type": "string",
             "enum": [
               "maus",
               "box"
             ],
-            "description": "Default maus keeps the bot's selected model and configured computer, INCLUDING a self-hosted VPS. Omit this field normally. box runs on the bot's cloud computer, same model; it needs cloud computers set up and is not the generic cloud/VPS option. Legacy cloud values from list_triggers mean box, not VPS."
+            "description": "Omit normally: maus (default) keeps the bot's model and configured computer, INCLUDING a self-hosted VPS. box runs on the bot's cloud computer, same model, once cloud computers are set up; a legacy cloud value from list_triggers means box."
           },
           "timeout_minutes": {
             "type": "integer",
@@ -1158,7 +1569,7 @@
           },
           "continuity": {
             "type": "boolean",
-            "description": "Schedules only: opt in to using the latest completed run's bounded report as historical context. Use it for recurring work that builds on last time, such as QA passes, monitoring or follow-ups. Defaults to false; set false in an update to start fresh again."
+            "description": "Schedules only: give each run the last completed run's report, for work that builds on last time (QA passes, monitoring, follow-ups). Default false; false in an update starts fresh."
           },
           "overlap": {
             "type": "string",
@@ -1166,11 +1577,35 @@
               "skip",
               "queue"
             ],
-            "description": "Schedules only: while a run is still working, skip scheduled occurrences (default) or queue at most one run. Queue skips further occurrences until the pending run starts; it never builds an unlimited backlog."
+            "description": "Schedules only: while a run is still working, skip new occurrences (default) or queue at most one run."
           },
           "run_on_startup": {
             "type": "boolean",
-            "description": "Repeating schedules only: also run once each time OpenMausBot starts, besides the schedule, for a computer often off when it is due. Defaults to false."
+            "description": "Repeating schedules only: also run once whenever OpenMausBot starts, for a computer often off when it is due."
+          },
+          "app": {
+            "type": "string",
+            "description": "app_event: app slug from list_trigger_events."
+          },
+          "event": {
+            "type": "string",
+            "description": "app_event: event slug from list_trigger_events."
+          },
+          "account": {
+            "type": "string",
+            "description": "app_event: account id or alias, only when the app has several."
+          },
+          "engine": {
+            "type": "string",
+            "description": "limit_reset: the engine id whose limit to wait for, e.g. claude or codex. Omit for your own engine."
+          },
+          "repeat": {
+            "type": "string",
+            "enum": [
+              "once",
+              "every_reset"
+            ],
+            "description": "limit_reset: once (default) or every_reset."
           },
           "for_bot_id": {
             "type": "string",
@@ -1186,7 +1621,7 @@
     },
     {
       "name": "manage_trigger",
-      "description": "Change one of this bot's triggers, its routines or webhooks: update, pause, resume, run once now (a webhook gets a test call) or delete. Get the id from list_triggers. It applies at once, with an Undo where possible. for_bot_id: ANOTHER bot's trigger in your section.",
+      "description": "Change one of this bot's triggers (schedules, app events or webhooks): update, pause, resume, run once now (an app event or webhook gets a test event) or delete. Get the id from list_triggers. It applies at once, with an Undo where possible. for_bot_id: ANOTHER bot's trigger in your section.",
       "inputSchema": {
         "type": "object",
         "additionalProperties": false,
@@ -1215,18 +1650,18 @@
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 80,
-                "description": "Short name shown on the automation's card and the Automations page."
+                "description": "Short name shown on the automation's card."
               },
               "instructions": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 20000,
-                "description": "Complete steps for each run, which does NOT see this conversation. Put judgement here, e.g. \"if it is not about an order, stop\"."
+                "description": "Complete steps for each run, which does NOT see this conversation, in the person's plain words (\"draft a reply\"), never \"event data\", \"payload\", \"webhook\" or \"trigger\". Put judgement here, e.g. \"if it is not about an order, stop\"."
               },
               "schedule": {
                 "type": "object",
                 "additionalProperties": false,
-                "description": "Only for when=schedule. Use {\"type\":\"cron\",\"expression\":\"0 9 1 * *\",\"timeZone\":\"Asia/Kolkata\"} for 09:00 on the first of each month, once with at for one future run, weekly with time + weekdays, daily with time, or interval with every_minutes for elapsed-time repetition. Intervals can optionally be limited with weekdays, window_start + window_end, and ends_at.",
+                "description": "Only for when=schedule. Use {\"type\":\"cron\",\"expression\":\"0 9 1 * *\",\"timeZone\":\"Asia/Kolkata\"} for 09:00 on the first of each month, once with at for one future run, weekly with time + weekdays, daily with time, or interval with every_minutes for elapsed-time repetition.",
                 "properties": {
                   "type": {
                     "type": "string",
@@ -1247,7 +1682,7 @@
                   "timeZone": {
                     "type": "string",
                     "maxLength": 128,
-                    "description": "Required for cron: explicit IANA timezone, for example Asia/Kolkata, America/New_York, or UTC. Use the user's requested zone; resolve ambiguity before proposing. Do not send a numeric offset or local-time abbreviation."
+                    "description": "Required for cron: the person's IANA timezone, such as Asia/Kolkata or UTC; never a numeric offset or an abbreviation."
                   },
                   "at": {
                     "type": "string",
@@ -1281,7 +1716,7 @@
                   },
                   "starts_at": {
                     "type": "string",
-                    "description": "Optional for type interval: RFC3339 date-time with an explicit timezone offset that anchors the cadence. Omit to start one interval after the routine is applied."
+                    "description": "Optional for type interval: RFC3339 date-time with an explicit offset that anchors the cadence; omit to start one interval after the routine applies."
                   },
                   "window_start": {
                     "type": "string",
@@ -1289,7 +1724,7 @@
                   },
                   "window_end": {
                     "type": "string",
-                    "description": "Optional for type interval, together with window_start: local 24-hour HH:MM when the allowed window ends, exclusive. It must be later on the same day."
+                    "description": "Optional for type interval, together with window_start: local 24-hour HH:MM when the allowed window ends, exclusive, later the same day."
                   },
                   "ends_at": {
                     "type": "string",
@@ -1321,13 +1756,40 @@
                 },
                 "description": "Only for when=webhook: optional event names to accept (from the caller's event-type header, e.g. push). Omit to accept every call."
               },
+              "filter": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "from": {
+                    "type": "string",
+                    "maxLength": 200
+                  },
+                  "subject_contains": {
+                    "type": "string",
+                    "maxLength": 200
+                  },
+                  "label": {
+                    "type": "string",
+                    "maxLength": 200
+                  },
+                  "contains": {
+                    "type": "string",
+                    "maxLength": 200
+                  }
+                },
+                "description": "app_event only: plain words, all must match. Gmail filters at the source."
+              },
+              "event_config": {
+                "type": "object",
+                "description": "app_event only: settings from list_trigger_events config_fields."
+              },
               "run_on": {
                 "type": "string",
                 "enum": [
                   "maus",
                   "box"
                 ],
-                "description": "Default maus keeps the bot's selected model and configured computer, INCLUDING a self-hosted VPS. Omit this field normally. box runs on the bot's cloud computer, same model; it needs cloud computers set up and is not the generic cloud/VPS option. Legacy cloud values from list_triggers mean box, not VPS."
+                "description": "Omit normally: maus (default) keeps the bot's model and configured computer, INCLUDING a self-hosted VPS. box runs on the bot's cloud computer, same model, once cloud computers are set up; a legacy cloud value from list_triggers means box."
               },
               "timeout_minutes": {
                 "type": "integer",
@@ -1341,7 +1803,7 @@
               },
               "continuity": {
                 "type": "boolean",
-                "description": "Schedules only: opt in to using the latest completed run's bounded report as historical context. Use it for recurring work that builds on last time, such as QA passes, monitoring or follow-ups. Defaults to false; set false in an update to start fresh again."
+                "description": "Schedules only: give each run the last completed run's report, for work that builds on last time (QA passes, monitoring, follow-ups). Default false; false in an update starts fresh."
               },
               "overlap": {
                 "type": "string",
@@ -1349,11 +1811,11 @@
                   "skip",
                   "queue"
                 ],
-                "description": "Schedules only: while a run is still working, skip scheduled occurrences (default) or queue at most one run. Queue skips further occurrences until the pending run starts; it never builds an unlimited backlog."
+                "description": "Schedules only: while a run is still working, skip new occurrences (default) or queue at most one run."
               },
               "run_on_startup": {
                 "type": "boolean",
-                "description": "Repeating schedules only: also run once each time OpenMausBot starts, besides the schedule, for a computer often off when it is due. Defaults to false."
+                "description": "Repeating schedules only: also run once whenever OpenMausBot starts, for a computer often off when it is due."
               }
             },
             "description": "Fields to change when action is update. Omit for every other action."

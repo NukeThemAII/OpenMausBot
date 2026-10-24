@@ -262,3 +262,49 @@ describe("propose_team_memory", () => {
     expect(result.text).not.toContain("confirmation card");
   });
 });
+
+describe("X research tools", () => {
+  const ROUTES = { x_search: "search", x_user_posts: "user-posts", x_post: "post", x_profile: "profile" } as const;
+
+  it("sends each tool's arguments to its route and returns the JSON the route gave", async () => {
+    for (const [tool, route] of Object.entries(ROUTES)) {
+      const calls: Array<{ path: string; body: unknown }> = [];
+      const result = await callTool(tool, { query: "maus", handle: "@maus", post: "42" }, context({
+        client: {
+          api: async () => ({}),
+          apiResponse: async (path, init) => {
+            calls.push({ path, body: JSON.parse(String(init?.body)) });
+            return { ok: true, status: 200, body: { posts: [{ id: "1" }], more: false } };
+          },
+        },
+      }));
+      expect(calls).toEqual([{ path: `/api/internal/x/${route}`, body: { query: "maus", handle: "@maus", post: "42" } }]);
+      expect(result.isError).toBeUndefined();
+      expect(JSON.parse(result.text)).toEqual({ posts: [{ id: "1" }], more: false });
+    }
+  });
+
+  it("hands the bot the route's own sentence when it refuses", async () => {
+    const result = await callTool("x_search", { query: "maus" }, context({
+      client: {
+        api: async () => ({}),
+        apiResponse: async () => ({ ok: false, status: 403, body: { error: "X research is off for this bot. Turn it on in this bot's settings under Access." } }),
+      },
+    }));
+    expect(result).toEqual({ text: "X research is off for this bot. Turn it on in this bot's settings under Access.", isError: true });
+  });
+});
+
+describe("page tools", () => {
+  it("send the tool's arguments to their internal routes and hand back the sentence, or the refusal as an error", async () => {
+    const calls: Array<{ path: string; body: unknown }> = [];
+    const answers = [{ ok: true, status: 200, body: { ok: true, text: "Published “Bake sale” at https://abcdefghijklmnopqrstuvwxyz.mausbot.page/" } },
+      { ok: false, status: 402, body: { error: "You’ve used your 5 free pages. MausBot Cloud gives you more, and pages without the badge." } }];
+    const client = { api: async () => ({}), apiResponse: async (path: string, init?: RequestInit) => { calls.push({ path, body: JSON.parse(String(init?.body)) }); return answers.shift()!; } };
+    expect(await callTool("publish_page", { path: "site", title: "Bake sale" }, context({ client }))).toEqual({ text: "Published “Bake sale” at https://abcdefghijklmnopqrstuvwxyz.mausbot.page/" });
+    expect(await callTool("unpublish_page", { page_id: "abcdefghijklmnopqrstuvwxyz" }, context({ client })))
+      .toEqual({ text: "You’ve used your 5 free pages. MausBot Cloud gives you more, and pages without the badge.", isError: true });
+    expect(calls).toEqual([{ path: "/api/internal/pages/publish", body: { path: "site", title: "Bake sale" } },
+      { path: "/api/internal/pages/unpublish", body: { page_id: "abcdefghijklmnopqrstuvwxyz" } }]);
+  });
+});

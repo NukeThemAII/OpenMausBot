@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { BrowserLive } from "../browser-live.ts";
 import { attachesToChrome, type BrowserRuntime } from "../browser-runtime.ts";
@@ -6,7 +9,10 @@ import type { ListenerOwnership } from "./egress/ownership.ts";
 import type { EgressHost } from "./egress/policy.ts";
 import { REDDIT_REFUSAL } from "./egress/reddit.ts";
 import { BrowserEgress, OwnListeners } from "./egress/registry.ts";
-import { CHROME_ENGINE, chromeTarget, LiveRouter, profileKey, RuntimeRouter, type ChromeEngine, type RuntimeRouterOptions } from "./engines.ts";
+import { removeTempDir } from "../testing/cleanup.ts";
+import { ProcessRegistry } from "./chrome/processes.ts";
+import { browserRoot } from "./chrome/profile.ts";
+import { CHROME_ENGINE, ChromeEngine, chromeTarget, LiveRouter, profileKey, RuntimeRouter, type RuntimeRouterOptions } from "./engines.ts";
 
 const AGENT_BROWSER = { command: "/opt/agent-browser", args: ["--session", "s"], env: { AGENT_BROWSER_SESSION: "s" } };
 const CHROME = { command: CHROME_ENGINE, args: ["bot:a"], env: {} };
@@ -33,8 +39,12 @@ function engines(options: RuntimeRouterOptions = {}) {
       interrupted: vi.fn(() => true),
       interruptedCount: vi.fn(() => 2),
       close: vi.fn(async () => undefined),
+      fileChooserOffered: vi.fn(() => true),
+      answerFileChooser: vi.fn(async () => true),
+      download: vi.fn(() => ({ id: "d1" })),
     },
     live: { open: vi.fn(async () => undefined), action: vi.fn(async () => "chrome"), has: vi.fn((viewerId: string) => viewerId === "v-chrome"), handBack: vi.fn(), closeForSession: vi.fn(), closeForOwner: vi.fn(), closeForBot: vi.fn(), closeAll: vi.fn() },
+    stream: { open: vi.fn(), closeForSession: vi.fn(), closeForOwner: vi.fn(), closeForBot: vi.fn(), closeAll: vi.fn(), recheck: vi.fn() },
     close: vi.fn(async () => undefined),
   };
   const runtime = new RuntimeRouter(old as unknown as BrowserRuntime, chrome as unknown as ChromeEngine, options);
@@ -152,13 +162,81 @@ describe("the live view router", () => {
     expect(oldLive.action).toHaveBeenCalledOnce();
   });
 
-  it("closes viewers on both engines", () => {
+  it("closes viewers on both engines, streams included, and streams no longer allowed", () => {
     const { oldLive, chrome, live } = engines();
     live.closeForSession("s");
+    live.closeForOwner("o");
     live.closeAll();
+    live.recheck();
+    expect(chrome.stream.recheck).toHaveBeenCalledOnce();
     expect(chrome.live.closeForSession).toHaveBeenCalledWith("s");
+    expect(chrome.stream.closeForSession).toHaveBeenCalledWith("s");
+    expect(chrome.stream.closeForOwner).toHaveBeenCalledWith("o");
     expect(oldLive.closeForSession).toHaveBeenCalledWith("s");
     expect(chrome.live.closeAll).toHaveBeenCalledOnce();
+    expect(chrome.stream.closeAll).toHaveBeenCalledOnce();
     expect(oldLive.closeAll).toHaveBeenCalledOnce();
+  });
+
+  it("streams, takes uploads for and serves downloads of new-engine sessions only", async () => {
+    const { chrome, live } = engines();
+    const request = { botId: "a", owner: "o", canOperate: true, params: new URLSearchParams(), req: {} as never, socket: {} as never, head: Buffer.alloc(0), isCurrent: () => true, restartRefusal: () => null };
+    expect(live.stream({ session: "s", spec: AGENT_BROWSER, ...request })).toBe(false);
+    expect(chrome.stream.open).not.toHaveBeenCalled();
+    expect(live.stream({ session: "s", spec: CHROME, ...request })).toBe(true);
+    expect(chrome.stream.open).toHaveBeenCalledWith({ ...request, target: { session: "s", key: "bot:a" } });
+    expect(live.fileChooserOffered({ session: "s", spec: AGENT_BROWSER }, "o", "c")).toBe(false);
+    expect(live.fileChooserOffered({ session: "s", spec: CHROME }, "o", "c")).toBe(true);
+    expect(chrome.service.fileChooserOffered).toHaveBeenCalledWith("s", "o", "c");
+    await expect(live.answerFileChooser({ session: "s", spec: AGENT_BROWSER }, "o", "c", [])).resolves.toBe(false);
+    await expect(live.answerFileChooser({ session: "s", spec: CHROME }, "o", "c", ["/f"])).resolves.toBe(true);
+    expect(chrome.service.answerFileChooser).toHaveBeenCalledWith("s", "o", "c", ["/f"]);
+    expect(live.download({ session: "s", spec: AGENT_BROWSER }, "d1")).toBeUndefined();
+    expect(live.download({ session: "s", spec: CHROME }, "d1")).toEqual({ id: "d1" });
+  });
+});
+
+describe("the new engine's minute", () => {
+  const cleanups: Array<() => Promise<void>> = [];
+  afterEach(async () => {
+    vi.useRealTimers();
+    for (const cleanup of cleanups.splice(0)) await cleanup();
+  });
+
+  function engine() {
+    const dataDir = mkdtempSync(join(tmpdir(), "omb-chrome-engine-"));
+    const value = new ChromeEngine({ dataDir, host: "container", env: {}, platform: "linux", egressPort: async () => 0, idleMs: () => 180_000, egressNotice: () => null });
+    cleanups.push(async () => { await value.close(); await removeTempDir(dataDir); });
+    const closeIdle = vi.spyOn(value.service, "closeIdle").mockResolvedValue([]);
+    const registry = new ProcessRegistry(browserRoot(dataDir));
+    const launched = () => registry.add({ pid: process.pid, startTime: null, userDataDir: join(browserRoot(dataDir), "profiles", "p"), ownerPid: process.pid, launchedAt: new Date().toISOString() });
+    return { value, closeIdle, launched, exited: () => registry.remove(process.pid) };
+  }
+
+  it("closes idle browsers every minute while the engine is in use", async () => {
+    vi.useFakeTimers();
+    const { value, closeIdle } = engine();
+    value.start({ inUse: true, prepare: false });
+    expect(closeIdle).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(closeIdle).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps closing idle browsers once switched off while a Chrome it started still runs, and does nothing once none does", async () => {
+    vi.useFakeTimers();
+    const { value, closeIdle, launched, exited } = engine();
+    value.start({ inUse: false, prepare: false });
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(closeIdle).not.toHaveBeenCalled();
+    launched();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(closeIdle).toHaveBeenCalledTimes(1);
+    value.start({ inUse: true, prepare: false });
+    value.start({ inUse: false, prepare: false });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(closeIdle).toHaveBeenCalledTimes(3);
+    exited();
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(closeIdle).toHaveBeenCalledTimes(3);
   });
 });

@@ -18,6 +18,8 @@ export interface RoutineFailureFacts {
   stalled?: boolean;
   trialCredit?: string;
   limitResetsAt?: number;
+  /** A backup engine takes over from one whose usage limit refused the run. */
+  backupReady?: boolean;
 }
 
 export type RoutineFailureClass =
@@ -46,17 +48,17 @@ const BUSY_CODES = new Set(["thread_busy", "thread_limit", "workspace_busy", "se
 const OWNER_CAUSES = new Set<RoutineOwnerCause>(["signed_out", "credits", "usage_limit", "setup"]);
 
 const OWNER_ACTION: Record<Exclude<RoutineOwnerCause, "setup">, string> = {
-  signed_out: "This bot's engine is signed out. Sign in again in Settings → Model providers.",
-  credits: "This bot's engine account is out of credit. Add credit with the provider, or choose another engine for this bot.",
-  usage_limit: "This bot's engine reached its usage limit. Its routines work again once it resets, or choose another engine for this bot now.",
+  signed_out: "This bot's AI is signed out. Sign in again in Settings → Model providers.",
+  credits: "This bot's AI account is out of credit. Add credit with the provider, or choose another AI for this bot.",
+  usage_limit: "This bot's AI reached its usage limit. Its routines work again once it resets, or choose another AI for this bot now.",
 };
 const TRIAL_ACTION = "The trial Claude credit can't run this. Sign in with your own Claude or ChatGPT account, or add an API key.";
 const RETRY_WHY: Record<Exclude<RoutineRetryCause, "usage_limit">, string> = {
-  stalled: "the engine stalled", restarted: "OpenMausBot restarted while it ran", rate_limited: "a rate limit", provider: "a temporary error",
+  stalled: "the AI stalled", restarted: "OpenMausBot restarted while it ran", rate_limited: "a rate limit", provider: "a temporary error",
 };
 const FIRST_START: Record<RoutineRetryCause, string> = {
-  stalled: "stopped when its engine stalled", restarted: "was cut off when OpenMausBot restarted", rate_limited: "was stopped by a rate limit",
-  provider: "failed on a temporary engine error", usage_limit: "was refused by the engine's usage limit",
+  stalled: "stopped when its AI stalled", restarted: "was cut off when OpenMausBot restarted", rate_limited: "was stopped by a rate limit",
+  provider: "failed on a temporary AI error", usage_limit: "was refused by the AI's usage limit",
 };
 
 export function classifyRoutineFailure(failure: string, facts: RoutineFailureFacts = {}): RoutineFailureClass {
@@ -103,7 +105,7 @@ export function requeueOnce(run: RoutineRun, cause: RoutineRetryCause, failure: 
   run.retried = cause;
   run.retryAt = at;
   run.attention = cause === "usage_limit"
-    ? `Waiting for the engine's usage limit to reset; this run starts again at ${when(at)}`
+    ? `Waiting for the AI's usage limit to reset; this run starts again at ${when(at)}`
     : `Starting again shortly after ${RETRY_WHY[cause]}${cause === "restarted" ? "" : `: ${failure}`}`.slice(0, 500);
   delete run.error;
   return true;
@@ -127,7 +129,8 @@ export function recoverRun(run: RoutineRun, failure: string, facts: RoutineFailu
   const again = run.retried ? `Failed after one automatic retry: ${failure}` : failure;
   if (verdict.kind === "busy") {
     run.deferredAt ??= now;
-    if (now - run.deferredAt >= ROUTINE_BUSY_WAIT_MS) return { queued: false, error: `Did not start: still busy after ${ROUTINE_BUSY_WAIT_MS / 60_000} minutes (${failure})` };
+    // A run of checked items waits as long as it takes: its bot is busy with the person, which is not a failure.
+    if (now - run.deferredAt >= ROUTINE_BUSY_WAIT_MS && run.checkKey === undefined) return { queued: false, error: `Did not start: still busy after ${ROUTINE_BUSY_WAIT_MS / 60_000} minutes (${failure})` };
     run.status = "queued";
     run.retryAt = now + ROUTINE_BUSY_RECHECK_MS;
     run.attention = `Waiting to start: ${failure}`.slice(0, 500);
@@ -136,13 +139,17 @@ export function recoverRun(run: RoutineRun, failure: string, facts: RoutineFailu
   }
   if (verdict.kind === "retry") return requeueOnce(run, verdict.cause, failure, now) ? { queued: true } : { queued: false, error: again };
   if (verdict.kind === "final") return { queued: false, error: again };
+  if (verdict.cause === "usage_limit" && facts.backupReady && requeueOnce(run, "usage_limit", failure, now, now + RETRY_MS)) {
+    run.attention = "Starting again on the backup AI: this bot's AI reached its usage limit";
+    return { queued: true };
+  }
   const first = firstNotice(notices, run.botId, verdict.cause, now);
   const reset = verdict.resetsAt;
   if (reset && reset > now && reset - now <= LIMIT_WAIT_MS && requeueOnce(run, "usage_limit", failure, now, reset + AFTER_RESET_MS)) {
-    return { queued: true, ...(first ? { alert: { detail: `This bot's engine reached its usage limit. This run starts again at ${when(reset + AFTER_RESET_MS)}.` } } : {}) };
+    return { queued: true, ...(first ? { alert: { detail: `This bot's AI reached its usage limit. This run starts again at ${when(reset + AFTER_RESET_MS)}.` } } : {}) };
   }
   const action = verdict.cause === "setup" ? failure : verdict.cause === "credits" && facts.trialCredit ? TRIAL_ACTION : OWNER_ACTION[verdict.cause];
-  return { queued: false, error: verdict.cause === "signed_out" ? `${action} The engine said: “${failure}”` : failure, alert: first ? { detail: action } : null };
+  return { queued: false, error: verdict.cause === "signed_out" ? `${action} The AI said: “${failure}”` : failure, alert: first ? { detail: action } : null };
 }
 
 export function loadOwnerNotices(value: unknown): RoutineOwnerNotice[] {

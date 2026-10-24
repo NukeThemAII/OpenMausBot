@@ -6,6 +6,15 @@ export interface RoomAccessDeps {
   store: Store;
 }
 
+/** The one copy of "may this bot speak into this room". Every caller — the bot's post_to_room tool, a
+ *  webhook's room delivery — maps these problems to its own audience's wording; none adds a rule. */
+export type RoomTalksVerdict =
+  | { ok: true }
+  | { ok: false; problem: "dm" }
+  | { ok: false; problem: "not-member" }
+  | { ok: false; problem: "outsider"; name: string }
+  | { ok: false; problem: "setup" };
+
 export function createRoomAccess({ store }: RoomAccessDeps) {
   function roomRootProblem(node: Pick<HandoffView, "groupId" | "threadId" | "botId">): string | undefined {
     const group = node.groupId ? store.group(node.groupId) : undefined;
@@ -51,6 +60,17 @@ export function createRoomAccess({ store }: RoomAccessDeps) {
     return opener?.kind === "work" && opener.roomLane && opener.threadId && store.groupByThread(opener.threadId) ? opener.threadId : undefined;
   }
 
+  function roomTalks(bot: BotRecord, group: GroupRecord): RoomTalksVerdict {
+    if (group.dm) return { ok: false, problem: "dm" };
+    if (!group.memberIds.includes(bot.id)) return { ok: false, problem: "not-member" };
+    const outsider = group.memberIds
+      .map((id) => store.bot(id))
+      .find((member) => member && !canAccessTeam(bot, member.section) && !coordinatorSupervises(member, bot));
+    if (outsider) return { ok: false, problem: "outsider", name: outsider.name };
+    if (roomSetupPending(group)) return { ok: false, problem: "setup" };
+    return { ok: true };
+  }
+
   function roomSetupPending(group: GroupRecord): boolean {
     const hasMarker =
       Object.prototype.hasOwnProperty.call(group, "setupCompletedAt") ||
@@ -64,5 +84,5 @@ export function createRoomAccess({ store }: RoomAccessDeps) {
     );
   }
 
-  return { roomRootProblem, roomHandoffProblem, roomSetupPending, laneRoomThread };
+  return { roomRootProblem, roomHandoffProblem, roomSetupPending, roomTalks, laneRoomThread };
 }

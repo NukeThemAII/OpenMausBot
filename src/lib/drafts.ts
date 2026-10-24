@@ -319,6 +319,11 @@ export function prependComposerDraft(id: string, text: string): void {
   });
 }
 
+/** Leads the draft with `text` once: asking again does not stack it. */
+export function leadComposerDraft(id: string, text: string): void {
+  if (!getDraft(getStore(), id).startsWith(text)) prependComposerDraft(id, text);
+}
+
 export function appendDraftAttachments(id: string, additions: Attachment[]): void {
   if (additions.length === 0) return;
   markDraftEdited(id);

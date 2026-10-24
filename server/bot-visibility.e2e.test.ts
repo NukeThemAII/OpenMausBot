@@ -294,6 +294,36 @@ posixOnly("per-bot visibility on a shared workspace", () => {
     expect(JSON.stringify(map)).not.toContain(ids.hr);
   });
 
+  it("marks as seen only the failed routine runs a member may see", async () => {
+    const failing = async (name: string, people?: string[]) => {
+      const bot = await makeBot(name, "Ops");
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { modelSelection: { instanceId: "missing-instance", model: "fake-model" } }, BOSS)).status).toBe(200);
+      if (people) expect((await api("PATCH", `/api/bots/${bot.id}`, { visibility: { people } }, BOSS)).status).toBe(200);
+      const routine = await api("POST", "/api/routines", { name: `${name} sweep`, botId: bot.id, prompt: `SECRET-${name}`, enabled: false,
+        schedule: { type: "interval", everyMinutes: 60, anchorAt: Date.now() + 86_400_000 } }, BOSS);
+      expect(routine.status, JSON.stringify(routine.body)).toBe(201);
+      const started = await api("POST", `/api/routines/${routine.body.routine.id}/run`, undefined, BOSS);
+      expect(started.status, JSON.stringify(started.body)).toBeLessThan(300);
+      return routine.body.routine.id as string;
+    };
+    const hidden = await failing("Ledger Lynx", [ADA]);
+    const shown = await failing("Lobby Llama");
+    const runOf = async (routineId: string) => (await api("GET", "/api/routines", undefined, BOSS)).body.runs.find((run: any) => run.routineId === routineId);
+    expect(await waitFor(async () => (await runOf(hidden))?.status === "failed" && (await runOf(shown))?.status === "failed"), log.slice(-2_000)).toBe(true);
+
+    const swept = await api("POST", "/api/routine-runs/seen-all", undefined, BOB);
+    expect(swept.status).toBe(200);
+    expect(swept.body.runs.map((run: any) => run.routineId)).toContain(shown);
+    expect(JSON.stringify(swept.body)).not.toContain(hidden);
+    expect(JSON.stringify(swept.body)).not.toContain("SECRET-Ledger Lynx");
+    expect((await runOf(shown)).seenAt).toEqual(expect.any(Number));
+    expect((await runOf(hidden)).seenAt).toBeUndefined();
+
+    const adaSwept = await api("POST", "/api/routine-runs/seen-all", undefined, ADA);
+    expect(adaSwept.body.runs.map((run: any) => run.routineId)).toContain(hidden);
+    expect((await runOf(hidden)).seenAt).toEqual(expect.any(Number));
+  });
+
   it("withdraws real scan results when an audience changes before the response", async () => {
     const hold = join(home, ".openmausbot", "hold-search-result");
     let pending: Promise<{ status: number; body: any }> | undefined;
@@ -555,6 +585,40 @@ posixOnly("per-bot visibility on a shared workspace", () => {
       await api("PATCH", `/api/bots/${ids.board}`, { chiefOfStaff: false, approvalMode: "full" }, BOSS);
     }
   }, 60_000);
+
+  it("keeps each person's reaction their own, sends each as that person's reply, and tells a session which are its", async () => {
+    expect((await api("POST", `/api/bots/${ids.pub}/messages`, { text: "Shall we open the desk early?", threadId: ids.pubThread }, BOSS)).status).toBe(202);
+    const replied = await settledReply(ids.pubThread, "Shall we open the desk early?");
+    expect(replied, log.slice(-2_000)).not.toBeNull();
+    const answer = (replied as Array<{ id: string; role: string; kind: string; text?: string }>)
+      .findLast((message) => message.role === "bot" && message.kind === "text" && message.text)!;
+    const react = (as: string, emoji: string) =>
+      api("POST", `/api/threads/${ids.pubThread}/messages/${answer.id}/reactions`, { emoji, on: true }, as);
+    const ada = await react(ADA, "👍");
+    expect(ada.status, JSON.stringify(ada.body)).toBe(200);
+    expect(ada.body.delivery).toBe("started");
+    const bob = await react(BOB, "👍");
+    expect(bob.status, JSON.stringify(bob.body)).toBe(200);
+    const keyOf = async (as: string) => (await api("GET", "/api/auth/session", undefined, as)).body.reactor as string;
+    const [adaKey, bobKey] = [await keyOf(ADA), await keyOf(BOB)];
+    expect(adaKey).toMatch(/^p_[\w-]{22}$/);
+    expect(bobKey).toMatch(/^p_[\w-]{22}$/);
+    expect(adaKey).not.toBe(bobKey);
+    expect(bob.body.message.reactions).toEqual([
+      { emoji: "👍", by: adaKey, name: ADA, at: expect.any(Number) },
+      { emoji: "👍", by: bobKey, name: BOB, at: expect.any(Number) },
+    ]);
+    const changed = await react(ADA, "👎");
+    expect(changed.body.message.reactions.map((reaction: any) => [reaction.by, reaction.emoji])).toEqual([[bobKey, "👍"], [adaKey, "👎"]]);
+    const lines = await waitFor(async () => {
+      const bot = (await api("GET", "/api/bots?messages=0", undefined, BOSS)).body.bots.find((candidate: any) => candidate.id === ids.pub);
+      const reactions = ((await api("GET", `/api/threads/${ids.pubThread}/messages`, undefined, BOSS)).body.messages as any[])
+        .filter((message) => message.reaction && message.replyToId === answer.id);
+      return !bot.busy && reactions.length === 3 ? reactions : null;
+    });
+    const thread = (await api("GET", `/api/threads/${ids.pubThread}/messages`, undefined, BOSS)).body.messages;
+    expect(lines?.map((line: any) => [line.reaction, line.sender?.name]), JSON.stringify(thread.map((m: any) => [m.role, m.kind, m.text?.slice(0, 60), m.reaction]))).toEqual([["👍", ADA], ["👍", BOB], ["👎", ADA]]);
+  }, 90_000);
 
   it("keeps bots with different audiences from reaching each other", async () => {
     // Payroll (Ada), Benefits (Ada) and Board (admins) share a team. Only the

@@ -44,13 +44,6 @@
       "since": "2026-10-08"
     },
     {
-      "file": "server/cloud-move.e2e.test.ts",
-      "test": "backs up a Cloud that has work before replacing it; swapping back keeps what it replaces, so it can be swapped again",
-      "owner": "milind-soni",
-      "reason": "Failed 11 runs (9 branches, 3 main runs) since Sep 24: Windows 8, Ubuntu 3; same commit later green.",
-      "since": "2026-10-08"
-    },
-    {
       "file": "server/boat-included.test.ts",
       "test": "waking a sleeping computer > forgets a server error once a later resume is accepted",
       "owner": "milind-soni",

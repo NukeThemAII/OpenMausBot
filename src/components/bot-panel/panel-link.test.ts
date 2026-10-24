@@ -20,13 +20,20 @@ describe("named links into a bot's settings", () => {
     expect(Object.keys(dispatch.mock.calls[0]![0])).not.toContain("botId");
   });
 
-  it("lands the access callers on the page that holds what they are about", () => {
-    expect(linkTarget("access", link({ section: "access", page: "apps" }))).toEqual({ tab: "details", page: "apps" });
-    expect(linkTarget("access", link({ section: "access", page: "mcp" }))).toEqual({ tab: "settings", page: "mcp" });
-    expect(linkTarget("access", link({ section: "access", page: "tools" }))).toEqual({ tab: "settings", page: "tools" });
-    expect(linkTarget("access", link({ section: "access", page: "folder" }))).toEqual({ tab: "computer", page: "folder" });
+  it("lands the access callers on the Simple page that holds what they are about, else on the Computer tab", () => {
+    expect(linkTarget("access", link({ section: "access", page: "apps" }))).toEqual({ tab: "bot", page: "apps" });
+    expect(linkTarget("access", link({ section: "access", page: "folder" }))).toEqual({ tab: "bot", page: "folder" });
+    // Simple mode has no MCP or tool-selection page: those links open the Computer tab, where Access lives.
+    expect(linkTarget("access", link({ section: "access", page: "mcp" }))).toEqual({ tab: "computer" });
+    expect(linkTarget("access", link({ section: "access", page: "tools" }))).toEqual({ tab: "computer" });
     // A plain Access link (the team map's computer button) still opens the Computer tab, where Works on lives.
     expect(linkTarget("access", link({ section: "access" }))).toEqual({ tab: "computer" });
+  });
+
+  it("lands a link that names a card on that card, on its section's tab, and on no other section", () => {
+    expect(linkTarget("overview", link({ section: "overview", anchor: "conversations" }))).toEqual({ tab: "bot", anchor: "conversations" });
+    expect(linkTarget("access", link({ section: "access", anchor: "conversations" }))).toEqual({ tab: "computer", anchor: "conversations" });
+    expect(linkTarget("usage", link({ section: "overview", anchor: "conversations" }))).toEqual(sectionTarget("usage"));
   });
 
   it("never applies a link's page to another section, and falls back to the section's own place", () => {

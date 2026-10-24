@@ -54,8 +54,8 @@ describe("workspace backup data boundary", () => {
     expect(excludedWorkspaceAuthPath(path)).toBe(true);
   });
 
-  it("never exports or restores saved website logins or their key", () => {
-    for (const path of ["logins.json.enc", "logins-key", "logins.json.enc.4242.05a7b3e0-1234-4abc-8def-0123456789ab.tmp", "logins-key.12.05a7b3e0-1234.tmp"]) {
+  it("never exports or restores saved website logins or their key, or the key sealing webhook secrets", () => {
+    for (const path of ["logins.json.enc", "logins-key", "logins.json.enc.4242.05a7b3e0-1234-4abc-8def-0123456789ab.tmp", "logins-key.12.05a7b3e0-1234.tmp", "webhook-key", "webhook-key.12.05a7b3e0-1234.tmp"]) {
       expect(excludedWorkspaceAuthPath(path)).toBe(true);
     }
     for (const path of ["logins.json", "logins.md", "workspaces/bot/logins.json.enc", "attachments/logins-key"]) expect(excludedWorkspaceAuthPath(path)).toBe(false);

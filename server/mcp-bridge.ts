@@ -3,7 +3,9 @@ import { StringDecoder } from "node:string_decoder";
 
 import { CONTROL_ACT_WITHIN_MS, CONTROL_UNCONFIRMED, CONTROL_WAITED, controlRefusal, createControlClient, type ControlState } from "./control-client.ts";
 import { augmentedPath, resolveCliSpawn } from "./env-path.ts";
+import { textOnlyErrorResultLine } from "./mcp-error-result.ts";
 import { createToolListNormalizer } from "./mcp-tool-schema.ts";
+import { toolSchemaProfileFromEnv } from "./tool-schema-profile.ts";
 
 export const BRIDGE_INACTIVITY_MS = 45_000;
 const PROBE_TIMEOUT_MS = 10_000;
@@ -216,7 +218,7 @@ export function runMcpBridge(options: BridgeOptions): void {
     forward,
     ...(client ? { gate: { check: () => client.state(true) } } : {}),
   });
-  const toolLists = createToolListNormalizer();
+  const toolLists = createToolListNormalizer(toolSchemaProfileFromEnv(), (line) => process.stderr.write(`${options.label}: ${line}\n`));
   let pendingInput = Promise.resolve();
   const inbound = createLineSplitter((line) => {
     toolLists.observeRequest(line);
@@ -233,7 +235,7 @@ export function runMcpBridge(options: BridgeOptions): void {
   });
 
   // Injected responses must never land inside one of the child's half-written frames.
-  const outbound = createLineSplitter((line) => process.stdout.write(toolLists.rewriteResponse(line) + "\n"));
+  const outbound = createLineSplitter((line) => process.stdout.write(textOnlyErrorResultLine(toolLists.rewriteResponse(line)) + "\n"));
   child.stdout.on("data", (chunk) => outbound.push(chunk));
   child.stdout.on("end", () => outbound.flush());
 

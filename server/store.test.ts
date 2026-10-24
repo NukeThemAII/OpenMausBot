@@ -268,8 +268,8 @@ describe("Store", () => {
     store.setChiefOfStaff(general.id);
     expect(store.deleteSection("Studio")).toMatch(/Chief/);
     expect(store.bot(chief.id)).toMatchObject({ chiefOfStaff: true, section: "Studio" });
-    expect(store.deleteSection("missing")).toBe("No such team");
-    expect(store.deleteSection("")).toBe("No such team");
+    expect(store.deleteSection("missing")).toBe("No such department");
+    expect(store.deleteSection("")).toBe("No such department");
   });
 
   it("restores persisted membership if deleting the team cannot finish", () => {
@@ -330,7 +330,7 @@ describe("Store", () => {
       text: "Voice note attached",
       attachments: [
         { kind: "image", path: "/attachments/shot.png", mime: "image/png" },
-        { kind: "audio", path: "/attachments/note.mp3", mime: "audio/mpeg", durationMs: 4200 },
+        { kind: "audio", path: "/attachments/note.mp3", mime: "audio/mpeg", durationMs: 4200, text: "The spoken words" },
       ],
     });
     expect(reply.attachments?.[1]).toEqual({
@@ -338,6 +338,7 @@ describe("Store", () => {
       path: "/attachments/note.mp3",
       mime: "audio/mpeg",
       durationMs: 4200,
+      text: "The spoken words",
     });
     const reloaded = new Store(selection);
     const stored = reloaded.messagesFor(bot.threadId).find((message) => message.id === reply.id);
@@ -345,6 +346,7 @@ describe("Store", () => {
     const encoded = JSON.stringify(stored);
     expect(encoded).toContain('"kind":"audio"');
     expect(encoded).toContain('"durationMs":4200');
+    expect(encoded).toContain('"text":"The spoken words"');
   });
 
   it("keeps surface pin provenance server-private and round-trips it through bots.json", () => {
@@ -516,7 +518,7 @@ describe("Store", () => {
   });
 
   it("createBot seeds a greeting without promising engine-specific tools", () => {
-    const store = new Store(selection);
+    const store = new Store(selection, undefined, undefined, "en");
     const bot = store.createBot();
 
     const messages = store.messagesFor(bot.threadId);
@@ -527,6 +529,15 @@ describe("Store", () => {
       text: `Hi, I'm ${bot.name}. What would you like me to do?`,
     });
     expect(bot.modelSelection).toEqual(selection());
+  });
+
+  it("reads the current language when creating a bot", () => {
+    let language = "en";
+    const store = new Store(selection, undefined, undefined, () => language);
+    language = "pt-BR";
+
+    const bot = store.createBot();
+    expect(store.messagesFor(bot.threadId)[0]?.text).toBe(`Oi, eu sou ${bot.name}. O que você gostaria que eu fizesse?`);
   });
 
   it("clears provider-owned voice ids as one durable mutation", () => {
@@ -1516,16 +1527,43 @@ describe("Store", () => {
     expect(reloaded.bot(bot.id)?.resumeCursors).toEqual({ claude: "sess-abc", codex: "thread-xyz" });
   });
 
-  it("seedIfEmpty creates exactly one starter bot, once", () => {
+  it("seedIfEmpty starts a fresh workspace with one bot, the Chief of Staff, once", () => {
     const store = new Store(selection);
     store.seedIfEmpty();
     expect(store.bots).toHaveLength(1);
+    expect(store.bots[0], "the first bot a new person meets is their Chief of Staff").toMatchObject({ chiefOfStaff: true, hidden: false });
+    expect(store.bots[0], "the role is the flag, so an untouched starter still reads as unused when sending to the Cloud")
+      .toMatchObject({ title: "", description: "", soul: "" });
     store.seedIfEmpty();
     expect(store.bots).toHaveLength(1);
 
     const reloaded = new Store(selection);
     reloaded.seedIfEmpty();
     expect(reloaded.bots).toHaveLength(1);
+    expect(reloaded.bots[0]?.chiefOfStaff).toBe(true);
+  });
+
+  it("seedIfEmpty makes the new install's Chief its MausBot in chrome, introduced, and no bot after it takes chrome or silver in turn", () => {
+    const store = new Store(selection);
+    store.seedIfEmpty();
+    const chief = store.bots[0]!;
+    expect(chief).toMatchObject({ name: "MausBot", color: "chrome", chiefOfStaff: true, defaultBot: {} });
+    expect(store.messagesFor(chief.threadId).map((message) => [message.kind, message.helperIntro, message.card?.options.length])).toEqual([["options", true, 4]]);
+    expect(store.messagesFor(chief.threadId)[0]!.text).toContain("Hi, I'm MausBot, your helper for everything here.");
+    const later = Array.from({ length: 25 }, () => store.createBot());
+    expect(later.map((bot) => bot.color)).not.toContain("silver");
+    expect(later.map((bot) => bot.color)).not.toContain("chrome");
+    expect(later[0]?.color).toBe("blue");
+    expect(later.map((bot) => bot.name)).not.toContain("MausBot");
+    expect(new Store(selection).bot(chief.id)).toMatchObject({ name: "MausBot", color: "chrome", defaultBot: {} });
+  });
+
+  it("seedIfEmpty leaves an existing workspace without a Chief as it is", () => {
+    const store = new Store(selection);
+    const existing = store.createBot();
+    store.seedIfEmpty();
+    expect(store.bots.map((bot) => bot.id)).toEqual([existing.id]);
+    expect(new Store(selection).bot(existing.id)?.chiefOfStaff).toBeFalsy();
   });
 
   it("chains appended messages and keeps the newest as active leaf", () => {
@@ -1678,6 +1716,61 @@ describe("Store", () => {
   });
 });
 
+describe("Store bot order", () => {
+  beforeEach(() => {
+    rmSync(DATA_DIR, { recursive: true, force: true });
+  });
+
+  // createBot puts the newest bot first, so four creations read [d, c, b, a].
+  const fleet = (store: Store) => {
+    const a = store.createBot({ name: "A" }, { seedMessages: false });
+    const b = store.createBot({ name: "B" }, { seedMessages: false });
+    const c = store.createBot({ name: "C" }, { seedMessages: false });
+    const d = store.createBot({ name: "D" }, { seedMessages: false });
+    return { a, b, c, d };
+  };
+  const order = (store: Store) => store.bots.map((bot) => bot.id);
+
+  it("reorders the whole fleet, persists it, and emits one whole-list change", () => {
+    const store = new Store(selection);
+    const { a, b, c, d } = fleet(store);
+    expect(order(store)).toEqual([d.id, c.id, b.id, a.id]);
+    const changes: unknown[] = [];
+    store.onChange((change) => changes.push(change));
+    const before = store.bots;
+    expect(store.reorderBots([a.id, b.id, c.id, d.id])?.map((bot) => bot.id)).toEqual([a.id, b.id, c.id, d.id]);
+    expect(changes).toEqual([{ type: "bots.order" }]);
+    // Same array and same records: schedulers and other consumers hold these objects.
+    expect(store.bots).toBe(before);
+    expect(store.bot(a.id)).toBe(a);
+    expect(order(new Store(selection))).toEqual([a.id, b.id, c.id, d.id]);
+  });
+
+  it("is stable for the bots a partial list leaves out", () => {
+    const store = new Store(selection);
+    const { a, b, c, d } = fleet(store);
+    // a and c sit at positions 3 and 1: a takes 1 and c takes 3; d and b never move.
+    expect(store.reorderBots([a.id, c.id])?.map((bot) => bot.id)).toEqual([d.id, a.id, b.id, c.id]);
+    expect(order(new Store(selection))).toEqual([d.id, a.id, b.id, c.id]);
+    // Swapping two neighbours inside one bucket leaves the rest alone.
+    expect(store.reorderBots([b.id, a.id])?.map((bot) => bot.id)).toEqual([d.id, b.id, a.id, c.id]);
+  });
+
+  it("refuses an empty list, a repeated id or an unknown id without touching anything", () => {
+    const store = new Store(selection);
+    const { a, b } = fleet(store);
+    const saved = order(store);
+    const changes: unknown[] = [];
+    store.onChange((change) => changes.push(change));
+    for (const ids of [[], [a.id, a.id], [a.id, "missing"], ["missing"], [b.id, a.id, b.id]]) {
+      expect(store.reorderBots(ids), JSON.stringify(ids)).toBeNull();
+    }
+    expect(changes).toEqual([]);
+    expect(order(store)).toEqual(saved);
+    expect(order(new Store(selection))).toEqual(saved);
+  });
+});
+
 describe("Store change stream", () => {
   beforeEach(() => {
     rmSync(DATA_DIR, { recursive: true, force: true });
@@ -1734,10 +1827,33 @@ describe("Store change stream", () => {
     store.patchMessage(bot.threadId, first.id, { text: "a2" });
     store.branchMessage(bot.threadId, first.id, "b");
     store.setActiveLeaf(bot.threadId, first.id);
-    store.toggleReaction(bot.threadId, first.id, "👍", "user");
+    store.setReaction(bot.threadId, first.id, "user", { emoji: "👍", at: 1 });
     expect(events.map((e) => e.type)).toEqual(["message.patch", "message", "thread", "thread", "message.patch"]);
     expect(events[2]).toMatchObject({ type: "thread", threadId: bot.threadId, activeLeafId: (events[1] as any).message.id });
     expect(events[3]).toMatchObject({ type: "thread", threadId: bot.threadId, activeLeafId: first.id });
+  });
+
+  it("keeps a reaction line a reaction when it is retried unchanged, and makes it words when edited", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    const asked = store.appendMessage(bot.threadId, { role: "bot", kind: "text", text: "Shall I send it?" });
+    const line = store.appendMessage(bot.threadId, { role: "user", kind: "text", text: "👍", replyToId: asked.id, reaction: "👍" });
+    expect(store.branchMessage(bot.threadId, line.id, "👍")).toMatchObject({ text: "👍", replyToId: asked.id, reaction: "👍" });
+    expect(store.branchMessage(bot.threadId, line.id, "Yes, but tomorrow")).not.toHaveProperty("reaction");
+  });
+
+  it("keeps one reaction per person: a new one replaces theirs, and nobody else's", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    const reply = store.appendMessage(bot.threadId, { role: "bot", kind: "text", text: "Shall I send it?" });
+    const react = (by: string, emoji: string | null) =>
+      store.setReaction(bot.threadId, reply.id, by, emoji ? { emoji, at: 1 } : null)?.reactions;
+    expect(react("p_alice", "👍")).toEqual([{ emoji: "👍", by: "p_alice", at: 1 }]);
+    expect(react("p_bob", "👍")).toEqual([{ emoji: "👍", by: "p_alice", at: 1 }, { emoji: "👍", by: "p_bob", at: 1 }]);
+    expect(react("p_alice", "👎")).toEqual([{ emoji: "👍", by: "p_bob", at: 1 }, { emoji: "👎", by: "p_alice", at: 1 }]);
+    expect(react("p_bob", null)).toEqual([{ emoji: "👎", by: "p_alice", at: 1 }]);
+    expect(react("p_alice", null)).toBeUndefined();
+    expect(store.setReaction(bot.threadId, "no-such-message", "p_alice", null)).toBeNull();
   });
 
   it("announces screen frames whose pixels are pruned", () => {
@@ -1794,7 +1910,7 @@ describe("Store change stream", () => {
     const titled = store.titleGroupTaskFromFirstMessage(group.id, "Audit the payroll", task.threadId);
     expect(titled?.threadId).toBe(task.threadId);
     expect(titled?.title).toBe("Audit the payroll");
-    store.renameGroupTask(group.id, task.threadId, "Payroll audit");
+    store.patchGroupTask(group.id, task.threadId, { title: "Payroll audit" });
     expect(store.retitleGroupTask(group.id, task.threadId, "Audit the payroll", "Payroll checks")).toBeNull();
     expect(store.activeGroupTask(group.id)!.title).toBe("Payroll audit");
     const fresh = store.createGroupTask(group.id)!.threadId;

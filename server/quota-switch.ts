@@ -182,8 +182,8 @@ export function createQuotaSwitch(deps: QuotaSwitchDeps): QuotaSwitch {
         kind: "options",
         card: {
           title: `${nameOf(current)} is out of quota`,
-          subtitle: original ? "Continue this conversation on another engine?"
-            : "Switch this conversation to another engine? Send your message again afterwards.",
+          subtitle: original ? "Continue this conversation with another AI?"
+            : "Switch this conversation to another AI? Send your message again afterwards.",
           options: [...offered.map((engine) => engine.name), NOT_NOW],
           requestId: newId(),
           fixedOptions: true,
@@ -233,19 +233,19 @@ export function createQuotaSwitch(deps: QuotaSwitchDeps): QuotaSwitch {
       return false;
     };
     const closed = () => ({ answered: "unavailable", dismissed: true });
-    if (!enabled()) return refuse("continuing on another engine is switched off — nothing switched.", closed);
+    if (!enabled()) return refuse("continuing with another AI is switched off — nothing switched.", closed);
     const engines = deps.registry.instances();
     const engine = engines.find((candidate) => candidate.instanceId === chosen.instanceId);
     if (!engine) {
       const rest = (offer()?.quotaSwitch!.engines ?? []).filter((other) => other.instanceId !== chosen.instanceId);
-      if (!rest.length) return refuse(`${chosen.name} is no longer configured, and the card offered no other engine — nothing switched.`, closed);
+      if (!rest.length) return refuse(`${chosen.name} is no longer configured, and the card offered no other AI — nothing switched.`, closed);
       return refuse(`${chosen.name} is no longer configured — nothing switched.`,
         (card) => ({ options: [...rest.map((other) => other.name), NOT_NOW], quotaSwitch: { ...card.quotaSwitch!, engines: rest } }));
     }
     const before = store.projectBotForTask(botId, threadId);
     if (!before) return false;
     const current = engines.find((candidate) => candidate.instanceId === before.modelSelection.instanceId);
-    if (!current) return refuse("this conversation's own engine is no longer configured here, so no other engine can be checked against it — nothing switched. Choose a model for this conversation instead.", closed);
+    if (!current) return refuse("this conversation's own AI is no longer configured here, so no other AI can be checked against it — nothing switched. Choose a model for this conversation instead.", closed);
     const selection = await takeover(engine, before, current);
     // No await from here to the resend: the gate, the switch and the resend must see one state.
     const card = offer();

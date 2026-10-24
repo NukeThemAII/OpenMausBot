@@ -178,6 +178,19 @@ export function relativeTime(at: number, now = Date.now()): string {
   return new Date(at).toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
+export function localizedRelativeTime(at: number, locale: string, now = Date.now()): string {
+  const seconds = Math.max(0, Math.round((now - at) / 1000));
+  const formatter = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
+  if (seconds < 45) return formatter.format(0, "second");
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return formatter.format(-minutes, "minute");
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return formatter.format(-hours, "hour");
+  const days = Math.round(hours / 24);
+  if (days < 7) return formatter.format(-days, "day");
+  return new Date(at).toLocaleDateString(locale, { month: "short", day: "numeric" });
+}
+
 export type CapacityLevel = "ok" | "near" | "over";
 
 export interface CapacityStatus {
@@ -203,9 +216,9 @@ export function capacityStatus(index: MemoryCapacity): CapacityStatus {
   return { level, lineShare, byteShare, sentence, warning };
 }
 
-function fileLabel(path: string): string {
+export function fileLabel(path: string): string {
   if (path === MEMORY_INDEX) return "MEMORY.md";
-  if (path.startsWith("memory/log/")) return `the ${path.slice("memory/log/".length).replace(/\.md$/, "")} log`;
+  if (path.startsWith("memory/log/")) return path.slice("memory/log/".length).replace(/\.md$/, "");
   return path.replace(/^memory\//, "").replace(/\.md$/, "");
 }
 
@@ -213,7 +226,7 @@ export function journalSummary(row: MemoryJournalRow, botName: string): string {
   const who = row.actor === "bot" ? botName : row.actor === "import" ? "An import" : row.actor === "upkeep" ? "Memory upkeep" : "You";
   const file = fileLabel(row.path);
   const isIndex = row.path === MEMORY_INDEX;
-  const topic = isIndex ? file : row.path.startsWith("memory/log/") ? file : `the ${file} topic`;
+  const topic = isIndex ? file : row.path.startsWith("memory/log/") ? `the ${file} log` : `the ${file} topic`;
   if (row.kind === "created") return `${who} created ${topic}${row.added ? ` with ${plural(row.added, "line")}` : ""}`;
   if (row.kind === "deleted") return `${who} deleted ${topic}`;
   if (row.added && !row.removed) return `${who} added ${plural(row.added, "line")} to ${topic}`;
@@ -235,6 +248,19 @@ export function journalSource(row: MemoryJournalRow): string | null {
   if (row.actor === "bot") return "during a task";
   if (row.via === "ui") return "in Settings";
   if (row.via === "api") return "through the API";
+  return null;
+}
+
+export function journalSourceKey(row: MemoryJournalRow): "memory.source.undo" | "memory.source.disk" | "memory.source.tidy" | "memory.source.organize" | "memory.source.capture" | "memory.source.captureWithTitle" | "memory.source.chat" | "memory.source.task" | "memory.source.settings" | "memory.source.api" | null {
+  if (row.via === "revert") return "memory.source.undo";
+  if (row.via === "disk") return "memory.source.disk";
+  if (row.via === "tidy") return "memory.source.tidy";
+  if (row.via === "organize") return "memory.source.organize";
+  if (row.via === "capture") return row.threadTitle ? "memory.source.captureWithTitle" : "memory.source.capture";
+  if (row.threadTitle) return "memory.source.chat";
+  if (row.actor === "bot") return "memory.source.task";
+  if (row.via === "ui") return "memory.source.settings";
+  if (row.via === "api") return "memory.source.api";
   return null;
 }
 

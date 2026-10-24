@@ -209,22 +209,6 @@ and removes only its data directory; the server log stays at the printed path
 and the tools directory keeps the downloads. Every verb refuses a handle whose
 launch has stopped.
 
-## Live key prompt cancellation
-
-With a fresh `ui launch` handle in `$H`, run the delayed-key-save regression:
-
-```sh
-pnpm control:omb ui eval --ui "$H" --js "$(cat scripts/testing/live-key-lifecycle.js)"
-```
-
-It submits the real key form, then dismisses it or switches chats by keyboard-style
-activation before the synthetic save resolves. Both results must show
-`oldPromptDetached: true`, `microphoneStarts: 0`, and `phase: "idle"`. The script
-clears only the disposable fixture's Live key, stubs credential saving and media,
-and restores the bridge and call mode in `finally`. It never saves a real key or
-opens the microphone; it does not prove real-audio acceptance. Stop the launcher
-as described above.
-
 ## Queued edits and Claude update recovery
 
 The queued-message Edit action must remove the server's held send before

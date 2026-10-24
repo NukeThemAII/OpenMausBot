@@ -2,6 +2,10 @@
 // other endpoints that speak the OpenAI chat-completions contract.
 import type { ModelCatalog, ProviderDriver } from "../contracts.ts";
 import { createOpenAIChatRuntime } from "./openai-chat.ts";
+import {
+  freeDefault, freeFallbackCatalog, freeLabel, freeToolModels, freeToolsFirst, isOpenRouterOrigin, openRouterFreeTier,
+  withOpenRouterTurns, type OpenRouterModelRow,
+} from "./openrouter-free.ts";
 
 const DRIVER_KIND = "openai-compat";
 const DEFAULT_IDLE_TIMEOUT_MS = 180_000;
@@ -126,6 +130,8 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
             : [{ id: config.model, label: config.model, custom: true }, ...seeded.options],
         }
       : seeded;
+    const openRouter = Boolean(apiKey) && !config.managedModels && isOpenRouterOrigin(config.url);
+    const freeTier = () => openRouter ? openRouterFreeTier(apiKey, config.url) : Promise.resolve(null);
 
     const fetchModels = async () => {
       if (config.managedModels) return;
@@ -136,7 +142,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
           signal: AbortSignal.timeout(8_000),
         });
         if (!response.ok) return;
-        type Row = { id?: unknown; name?: unknown; created?: unknown };
+        type Row = OpenRouterModelRow & { name?: unknown; created?: unknown };
         const json = await response.json() as { data?: Row[] } | Row[];
         let rows = Array.isArray(json) ? json : Array.isArray(json.data) ? json.data : [];
         // OpenAI lists its catalog unordered and mixed with non-chat models.
@@ -151,28 +157,37 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
           const id = typeof row.id === "string" ? row.id : "";
           if (!id || seen.has(id)) continue;
           seen.add(id);
+          const label = typeof row.name === "string" && row.name.trim() ? row.name : id;
           options.push({
             id,
-            label: typeof row.name === "string" && row.name.trim() ? row.name : id,
+            label: openRouter ? freeLabel(label, row) : label,
             ...(config.catalog === "openai" ? {} : { custom: true }),
           });
         }
         if (!options.length) return;
-        if (config.model && !options.some((model) => model.id === config.model)) {
-          options.unshift({ id: config.model, label: config.model, custom: true });
+        const freeTools = await freeTier() ? freeToolModels(rows) : [];
+        const ordered = freeToolsFirst(options, freeTools);
+        if (config.model && !ordered.some((model) => model.id === config.model)) {
+          ordered.unshift({ id: config.model, label: config.model, custom: true });
         }
-        catalog = { default: config.model ?? options[0].id, options };
+        catalog = { default: config.model ?? freeDefault(freeTools) ?? ordered[0].id, options: ordered };
       } catch {}
     };
-    if (apiKey) void fetchModels();
+    const loading = apiKey ? Promise.all([
+      config.model ? null : freeTier().then((free) => {
+        if (free && catalog === seeded) catalog = freeFallbackCatalog(seeded);
+      }),
+      fetchModels(),
+    ]) : null;
 
-    return createOpenAIChatRuntime({
+    const runtime = createOpenAIChatRuntime({
       input,
       driverKind: DRIVER_KIND,
       apiKey,
       apiUrl: config.url,
       tools: config.tools,
       computerUse: true,
+      nudgeAnnouncedAction: true,
       models: () => catalog,
       refreshModels: fetchModels,
       requestBody: (model, messages, stream) => ({
@@ -205,5 +220,6 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
         }),
       },
     });
+    return openRouter && loading ? withOpenRouterTurns(runtime, loading) : runtime;
   },
 };

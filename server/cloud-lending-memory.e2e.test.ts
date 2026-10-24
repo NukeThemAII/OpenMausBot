@@ -599,14 +599,12 @@ it("a routine a guest left behind reports into a conversation of its own, and it
     expect(created.status, JSON.stringify(created.body)).toBe(201);
     return created.body.routine.id as string;
   };
-  const reportThread = async (bot: { id: string }, status?: string) => {
+  /** Where a run of the routine reports; with `reported`, once its report is there. */
+  const reportThread = async (routineId: string, reported = false) => {
     let found = "";
     await expect.poll(async () => {
-      const tasks = ((await api("GET", "/api/bots", { token: owner })).body.bots as any[]).find((candidate) => candidate.id === bot.id)?.tasks ?? [];
-      for (const task of tasks) {
-        const messages = (await api("GET", `/api/threads/${task.threadId}/messages`, { token: owner })).body.messages ?? [];
-        if (messages.some((message: any) => message.kind === "routine.run" && (!status || message.routineRun?.status === status))) found = task.threadId;
-      }
+      const run = ((await api("GET", "/api/routines", { token: owner })).body.runs as any[]).find((candidate) => candidate.routineId === routineId);
+      found = run?.resultsThreadId && (!reported || run.report?.state === "posted") ? run.resultsThreadId : "";
       return found;
     }, { timeout: 20_000 }).not.toBe("");
     return found;
@@ -617,16 +615,44 @@ it("a routine a guest left behind reports into a conversation of its own, and it
   const heldRoutine = await guestRoutine(held);
   await leftBehind({ routineIds: [id, heldRoutine] });
   expect((await api("POST", `/api/routines/${id}/run`, { token: owner })).status).toBe(201);
-  const results = await reportThread(bot, "completed");
+  const results = await reportThread(id, true);
+  const saved = ((await api("GET", "/api/bots", { token: owner })).body.bots as any[]).find((candidate) => candidate.id === bot.id);
+  expect([saved.threadId, saved.mainThreadId]).not.toContain(results);
+  expect(((await api("GET", `/api/threads/${results}/messages`, { token: owner })).body.messages as any[]).filter((message) => message.automation?.routineId === id)).toHaveLength(1);
   await completedTurn(() => say(owner, bot, "What did the routine find?", results));
   await settled(results);
   const next = await completedTurn(async () => say(owner, bot, "What's next?", await newThread(bot)));
   expect(next.system).not.toContain("GUEST-ROUTINE-REPORT");
   await toolsFor(async () => { expect((await api("POST", `/api/routines/${heldRoutine}/run`, { token: owner })).status).toBe(201); });
-  const heldResults = await reportThread(held);
+  const heldResults = await reportThread(heldRoutine);
   const tools = await toolsFor(() => say(owner, held, "Read plan.md from my Mac.", heldResults));
   expect((await sees(tools)).unavailable).toContain("Someone else wrote in this conversation");
 }, 90_000);
+
+it("an outside event's runs all report into one conversation of their own, never into the owner's chats", async () => {
+  const bot = await newBot("Shop", "done");
+  const created = await api("POST", "/api/webhooks", { token: owner, body: { name: "Shop orders", prompt: "Handle the new order.", botId: bot.id } });
+  expect(created.status, JSON.stringify(created.body)).toBe(201);
+  const { webhook, credential } = created.body as { webhook: { id: string; endpointId: string }; credential: { secret: string } };
+  const runs = async () => ((await api("GET", "/api/routines", { token: owner })).body.runs as any[]).filter((run) => run.webhookId === webhook.id);
+  for (const order of ["order-1", "order-2"]) {
+    const delivered = await fetch(`http://127.0.0.1:${Number(new URL(base).port) + 1}/hooks/${webhook.endpointId}`, {
+      method: "POST", headers: { authorization: `Bearer ${credential.secret}`, "content-type": "application/json", "idempotency-key": order }, body: JSON.stringify({ order }),
+    });
+    expect(delivered.status).toBe(202);
+    const { runId } = await delivered.json() as { runId: string };
+    await expect.poll(async () => (await runs()).find((run) => run.id === runId)?.report?.state, { timeout: 20_000 }).toBe("posted");
+  }
+  const [second, first] = await runs();
+  expect(second.resultsThreadId).toBe(first.resultsThreadId);
+  const saved = ((await api("GET", "/api/bots", { token: owner })).body.bots as any[]).find((candidate) => candidate.id === bot.id);
+  expect([saved.threadId, saved.mainThreadId]).not.toContain(first.resultsThreadId);
+  expect(saved.tasks.find((task: any) => task.threadId === first.resultsThreadId)).toMatchObject({ title: "Shop orders · Results" });
+  for (const run of [first, second]) expect(saved.tasks.find((task: any) => task.threadId === run.threadId)).toMatchObject({ routineRunId: run.id });
+  const reports = ((await api("GET", `/api/threads/${first.resultsThreadId}/messages`, { token: owner })).body.messages as any[]).filter((message) => message.automation);
+  expect(reports.map((message) => [message.automation.runId, message.automation.trigger])).toEqual([[first.id, "webhook"], [second.id, "webhook"]]);
+  expect(((await api("GET", `/api/threads/${saved.threadId}/messages`, { token: owner })).body.messages as any[]).some((message) => message.automation)).toBe(false);
+}, 60_000);
 
 it("a conversation a guest left behind works in its own folder: what is written there flags nothing, even in the bot's project", async () => {
   const bot = await newBot("Private folders", "held");

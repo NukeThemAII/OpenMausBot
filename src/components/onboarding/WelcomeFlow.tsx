@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKe
 import type { CloudOffer } from "../../../electron/cloud-home.mjs";
 import { MausAvatar } from "@/components/Avatar";
 import { useDesktopCapabilities } from "@/components/DesktopCapabilities";
+import { engineReady } from "@/components/EngineLibrary";
 import { setEmailGateDone, track } from "@/lib/analytics";
 import { brand } from "@/lib/brand";
 import { cn } from "@/lib/cn";
@@ -43,7 +44,7 @@ const MASCOT_FOR_BEAT: Record<BeatId, MausState> = {
   bot: "celebrate",
 };
 
-function beatTitle(beat: BeatId): string | null {
+function beatTitle(beat: BeatId, bot: Bot | null): string | null {
   switch (beat) {
     case "hello":
       return t("onboarding.welcome", { app: brand().name });
@@ -54,7 +55,7 @@ function beatTitle(beat: BeatId): string | null {
     case "permissions":
       return t("onboarding.perms.title");
     case "bot":
-      return t("onboarding.bot.title");
+      return t(bot?.chiefOfStaff ? "onboarding.bot.chiefTitle" : "onboarding.bot.title");
     case "reel":
       return t("onboarding.reel.title");
     case "phone":
@@ -98,14 +99,16 @@ export function WelcomeFlow({
   /** Where the import step looks; the desktop app's own window looks on its own server. `detection` skips the look. */
   setupImport?: { client: SetupImportClient; detection?: SetupDetection } | null;
 }) {
-  const { dispatch } = useStore();
+  const { state, dispatch } = useStore();
   const { capabilities } = useDesktopCapabilities();
   const offer = useCloudBeatOffer(hosted, cloudOffer);
   const importClient = setupImport === undefined ? (localSetupImport(hosted) ? setupImportApi : null) : setupImport?.client ?? null;
   const [detection, setDetection] = useState<SetupDetection | null>(setupImport?.detection ?? null);
   const [importResult, setImportResult] = useState<SetupImportResult | null>(null);
   const [importBusy, setImportBusy] = useState(false);
-  const beats = beatsFor({ dictation: dictation ?? capabilities.dictation.available, reel, hosted, setupImport: detection !== null, cloud: offer !== null });
+  const aiStepShown = useRef(initialBeat === "engines");
+  const aiReady = !aiStepShown.current && state.instances.some(engineReady);
+  const beats = beatsFor({ dictation: dictation ?? capabilities.dictation.available, reel, hosted, setupImport: detection !== null, cloud: offer !== null, aiReady });
   const [beat, setBeat] = useState<BeatId>(() => (initialBeat && beats.includes(initialBeat) ? initialBeat : "hello"));
   const [mascot, setMascot] = useState<MausState>(MASCOT_FOR_BEAT[beat]);
   const [motion, setMotion] = useState<{ kind: Motion; key: number }>({ kind: "blink", key: 0 });
@@ -142,6 +145,7 @@ export function WelcomeFlow({
 
   const go = useCallback(
     (target: BeatId) => {
+      if (target === "engines") aiStepShown.current = true;
       withViewTransition(() => {
         setBeat(target);
         setMascot(MASCOT_FOR_BEAT[target]);
@@ -209,7 +213,7 @@ export function WelcomeFlow({
   }, [beat]);
 
   const hello = beat === "hello";
-  const title = beatTitle(beat);
+  const title = beatTitle(beat, bot);
   const logo = hello ? brand().logo : undefined;
   const beatProps = { onNext: advance, onSkip: advance, setMascot, bump };
   const current = beats.indexOf(beat) + 1;

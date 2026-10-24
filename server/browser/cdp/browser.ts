@@ -67,7 +67,7 @@ export class CdpBrowser implements PageHost {
     this.mac = (options.platform ?? process.platform) === "darwin";
     const identity = options.identity ? identityOverride(options.identity, options.acceptLanguage) : null;
     const headless = options.headless ?? true;
-    this.setup = { identity, focusEmulation: headless, interceptFileChooser: headless, handleAuth: options.handleAuth === true };
+    this.setup = { identity, focusEmulation: headless, interceptFileChooser: headless, handleAuth: options.handleAuth === true, noPasskeys: headless };
     this.#viewport = options.viewport === undefined ? (headless ? VIEWPORT : null) : options.viewport;
     this.downloads = options.downloadDir
       ? new Downloads(connection.root, options.downloadDir, { ownerOf: (frameId) => this.#ownerOf(frameId), ...(options.downloadLimits ? { limits: options.downloadLimits } : {}) })

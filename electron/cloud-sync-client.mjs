@@ -3,6 +3,7 @@
 import { closeSync, createWriteStream, openSync, readSync, statSync } from "node:fs";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { BACKGROUND_HEADERS, CloudAsleepError, asleepAnswer } from "./cloud-power.mjs";
 import { CHUNK_BYTES, MIN_CHUNK_BYTES } from "./cloud-sync-rules.mjs";
 
 // Slowest connection a transfer is given time for, in bytes per millisecond (32 KB/s).
@@ -18,15 +19,22 @@ export class SyncHttpError extends Error {
   }
 }
 
-export function createSyncClient({ origin, fetch: fetchImpl, chunkBytes = CHUNK_BYTES, minChunkBytes = MIN_CHUNK_BYTES }) {
+/** `power`: My Cloud's power gate (cloud-power.mjs); while it says asleep no call is made. */
+export function createSyncClient({ origin, fetch: fetchImpl, power = null, chunkBytes = CHUNK_BYTES, minChunkBytes = MIN_CHUNK_BYTES }) {
   let chunk = chunkBytes;
   const call = async (method, path, { body, raw, headers = {}, signal, timeoutMs = 60_000 } = {}) => {
+    if (power?.asleep()) throw new CloudAsleepError();
     const response = await fetchImpl(`${origin}${path}`, {
       method, credentials: "include", redirect: "error", cache: "no-store",
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
-      headers: { origin, ...(body !== undefined ? { "content-type": "application/json" } : raw ? { "content-type": "application/octet-stream" } : {}), ...headers },
+      headers: { origin, ...BACKGROUND_HEADERS, ...(body !== undefined ? { "content-type": "application/json" } : raw ? { "content-type": "application/octet-stream" } : {}), ...headers },
       ...(body !== undefined ? { body: JSON.stringify(body) } : raw ? { body: raw } : {}),
     });
+    if (asleepAnswer(response)) {
+      await response.body?.cancel().catch(() => {});
+      power?.hold();
+      throw new CloudAsleepError();
+    }
     if (response.status === 401 || response.status === 403) throw new SyncAuthError("Sign in to My Cloud again.");
     return response;
   };

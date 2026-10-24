@@ -108,6 +108,7 @@
 
 @theme {
   --animate-panel-in: panel-in 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+  --animate-sheet-in: sheet-in 0.26s cubic-bezier(0.22, 1, 0.36, 1);
   --animate-workspace-in: workspace-in 0.18s cubic-bezier(0.22, 1, 0.36, 1);
   --animate-pop-in: pop-in 0.2s cubic-bezier(0.22, 1, 0.36, 1);
   --animate-pop-out: pop-out 0.2s cubic-bezier(0.22, 1, 0.36, 1) forwards;
@@ -126,6 +127,11 @@
   --animate-ripple: ripple 0.9s cubic-bezier(0.22, 1, 0.36, 1) both;
   /* onboarding: a bolt travelling from a webhook address to the bot */
   --animate-bolt: bolt 0.9s cubic-bezier(0.77, 0, 0.175, 1) infinite;
+  /* Team map: a computer whose bot is acting breathes; its link to the bot carries a slow flow of dashes. */
+  --animate-computer-glow: computer-glow 2.4s ease-in-out infinite;
+  --animate-link-flow: link-flow 1.1s linear infinite;
+  /* Team map: a card's border acknowledging a message sent to it from the map. */
+  --animate-sent-border: sent-border 1.2s ease-out forwards;
 
   /* Defaults = Midnight. Kept here so the app is never unstyled. */
   --color-app: #070707;
@@ -268,6 +274,8 @@
   --identity-yellow: #D8A729;
   --identity-teal: #01A492;
   --identity-coral: #E5634E;
+  --identity-silver: #A8ADB4;
+  --identity-chrome: #B3BAC4;
 }
 
 /* ── Atelier ───────────────────────────────────────────────────────────────
@@ -331,6 +339,8 @@
   --identity-yellow: #896a19;
   --identity-teal: #017c6f;
   --identity-coral: #cd361e;
+  --identity-silver: #686f79;
+  --identity-chrome: #646f80;
 }
 
 /* ── Foundry ───────────────────────────────────────────────────────────────
@@ -399,6 +409,8 @@
   --identity-yellow: #D8A729;
   --identity-teal: #01A492;
   --identity-coral: #E5634E;
+  --identity-silver: #A8ADB4;
+  --identity-chrome: #B3BAC4;
 }
 
 /* ── Lagoon ────────────────────────────────────────────────────────────────
@@ -474,6 +486,8 @@
   --identity-yellow: #836518;
   --identity-teal: #01776a;
   --identity-coral: #c3341d;
+  --identity-silver: #646a73;
+  --identity-chrome: #5f6a7b;
 }
 
 /* ── Graphite ─────────────────────────────────────────────────────────────
@@ -529,6 +543,8 @@
   --identity-yellow: #D8A729;
   --identity-teal: #01A492;
   --identity-coral: #E5634E;
+  --identity-silver: #A8ADB4;
+  --identity-chrome: #B3BAC4;
 }
 
 /* ── Linen ────────────────────────────────────────────────────────────────
@@ -584,6 +600,8 @@
   --identity-yellow: #886819;
   --identity-teal: #017a6d;
   --identity-coral: #c9361e;
+  --identity-silver: #676d77;
+  --identity-chrome: #626d7e;
 }
 
 /* ── Dusk ─────────────────────────────────────────────────────────────────
@@ -638,6 +656,8 @@
   --identity-yellow: #D8A729;
   --identity-teal: #01A492;
   --identity-coral: #E5634E;
+  --identity-silver: #A8ADB4;
+  --identity-chrome: #B3BAC4;
 }
 
 /* ── Daylight ─────────────────────────────────────────────────────────────
@@ -708,6 +728,8 @@
   --identity-yellow: #91701b;
   --identity-teal: #018375;
   --identity-coral: #d83920;
+  --identity-silver: #6e7580;
+  --identity-chrome: #697688;
 }
 
 /* ── Meadow ───────────────────────────────────────────────────────────────
@@ -766,6 +788,119 @@
   --identity-yellow: #93721b;
   --identity-teal: #018577;
   --identity-coral: #db3a20;
+  --identity-silver: #707782;
+  --identity-chrome: #6b778a;
+}
+
+/* ── Pop ──────────────────────────────────────────────────────────────────
+   Cream paper, white cards, ink outlines and hard offset shadows. Light-only,
+   with an ink bubble for your own messages, so it takes the same @scope
+   treatment as Daylight and Meadow. The brand grape #8b5cf6 carries white at
+   only 4.2:1, so the filled accent is one step deeper; the brand grape stays
+   as the accent border. Mint, butter and coral are fills for ink text only.
+   ───────────────────────────────────────────────────────────────────────── */
+[data-skin="pop"] {
+  --code-color-scheme: light;
+  --color-app: #fdf5ea;           /* the page */
+  --color-panel: #f6ebdb;         /* sidebar */
+  --color-raised: #efe3d1;
+  --color-raised-hover: #e4d4bc;  /* the selected row */
+  --color-card: #ffffff;
+  --color-inset: #f2e8d7;
+  --color-control: #ece0cc;
+  --color-hairline: #1b1613;
+
+  --color-ink: #1b1613;
+  --color-ink-secondary: #3a322d;
+  --color-ink-tertiary: #5f5650;
+
+  --color-accent: #7f52f0;
+  --color-accent-border: #8b5cf6;
+  --color-accent-text: #6d28d9;
+  --color-focus: #7f52f0;
+  --color-accent-ink: #ffffff;
+  --color-composer: #ffffff;
+  --color-composer-ring: #1b1613;
+  --color-menu: #ffffff;
+  --color-bubble-user: #1b1613;   /* your own messages, inverted */
+  --color-bubble-user-ink: #ffffff;
+
+  --color-success: #1f7a4d;
+  --color-danger: #d93a2b;
+  --color-danger-ink: #ffffff;
+  --color-success-ink: #ffffff;
+  --color-warning: #8a5a00;
+  --color-scrollbar: #d0bfa6;
+  --color-maus-line: #6b625b;
+
+  --font-sans: "Plus Jakarta Sans", ui-rounded, "SF Pro Rounded", "Inter",
+    -apple-system, system-ui, "Segoe UI", sans-serif;
+  --radius-lg: 12px;
+  --radius-xl: 18px;
+  --identity-green: #00824a;
+  --identity-blue: #1c6de0;
+  --identity-red: #d4323a;
+  --identity-orange: #ae5b14;
+  --identity-purple: #8057C8;
+  --identity-cyan: #0a7b94;
+  --identity-pink: #cf2e75;
+  --identity-yellow: #8d6c1a;
+  --identity-teal: #017f72;
+  --identity-coral: #d1381f;
+  --identity-silver: #6a727c;
+  --identity-chrome: #667284;
+}
+
+[data-skin="halloween"] {
+  --code-color-scheme: dark;
+  --color-app: #110d16;
+  --color-panel: #17121e;
+  --color-raised: #262030;
+  --color-raised-hover: #2e2539;
+  --color-composer: #1d1725;
+  --color-composer-ring: #352a40;
+  --color-card: #201a29;
+  --color-menu: #1e1827;
+  --color-inset: #1b1622;
+  --color-control: #262030;
+  --color-hairline: #3b3048;
+
+  --color-ink: #f8efe2;
+  --color-ink-secondary: #c2b3cc;
+  --color-ink-tertiary: #a898b4;
+
+  --color-accent: #ff7f1f;
+  --color-accent-border: #ff8f3a;
+  --color-accent-text: #ffa060;
+  --color-focus: #ff8f3a;
+  --color-accent-ink: #1d0e02;
+  --color-bubble-user: #3d2818;
+  --color-bubble-user-ink: #fff1e2;
+
+  --color-success: #7cc48f;
+  --color-danger: #f0727c;
+  --color-danger-ink: #240a0e;
+  --color-success-ink: #0d1a10;
+  --color-warning: #f2b45a;
+  --color-scrollbar: #3b3048;
+  --color-maus-line: #c2b3cc;
+
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    "Segoe UI", system-ui, sans-serif;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --identity-green: #009957;
+  --identity-blue: #377FE6;
+  --identity-red: #D94B52;
+  --identity-orange: #E78531;
+  --identity-purple: #8c67cd;
+  --identity-cyan: #0EA5C6;
+  --identity-pink: #D84F8B;
+  --identity-yellow: #D8A729;
+  --identity-teal: #01A492;
+  --identity-coral: #E5634E;
+  --identity-silver: #A8ADB4;
+  --identity-chrome: #B3BAC4;
 }
 
 /* Shiki emits both palettes so cached blocks follow the nearest skin without
@@ -1023,7 +1158,7 @@ body {
 
 /* Liquid glass: the surface for centred pop-ups (Settings, Apps, Triggers).
    Every value is derived from the active skin's own tokens, so each of the
-   nine skins gets a glass of its own colour and no skin block changes. The
+   ten skins gets a glass of its own colour and no skin block changes. The
    app behind stays visible, blurred, through a light scrim. Unlayered so a
    leftover `bg-panel` on the same element cannot win. */
 .glass-surface {
@@ -1250,6 +1385,10 @@ body {
   from { transform: translateX(28px); opacity: 0; }
   to { transform: translateX(0); opacity: 1; }
 }
+@keyframes sheet-in {
+  from { transform: translateY(32px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
 @keyframes workspace-in {
   from { opacity: 0.92; }
   to { opacity: 1; }
@@ -1333,6 +1472,21 @@ body {
 @keyframes ripple {
   from { box-shadow: 0 0 0 0 color-mix(in oklab, var(--color-accent) 55%, transparent); }
   to { box-shadow: 0 0 0 14px color-mix(in oklab, var(--color-accent) 0%, transparent); }
+}
+@keyframes computer-glow {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+@keyframes link-flow {
+  to { stroke-dashoffset: -20; }
+}
+@keyframes sent-border {
+  0%, 25% { opacity: 1; }
+  100% { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-computer-glow, .animate-link-flow { animation: none; }
+  .animate-sent-border { animation: none; }
 }
 @keyframes bolt {
   0% { transform: translateX(-4px) scale(0.9); opacity: 0.2; }
@@ -2053,6 +2207,184 @@ html[data-cloud-intent-morph] [data-tour="composer"] { view-transition-name: clo
   }
 }
 
+/* Pop's own bubble is ink on cream: the same inverted context, with butter,
+   coral and mint as the fills that carry ink text on it. */
+@scope ([data-skin="pop"]) to ([data-skin]) {
+  .bg-bubble-user {
+    --color-ink: #ffffff;
+    --color-ink-secondary: #e4dad0;
+    --color-ink-tertiary: #bdb1a6;
+    --color-panel: #2a221d;
+    --color-inset: #2f2722;
+    --color-raised: #3a322d;
+    --color-raised-hover: #4a4039;
+    --color-control: #3a322d;
+    --color-hairline: #8a7e74;
+    --color-accent: #ffd966;
+    --color-accent-text: #ffd966;
+    --color-accent-ink: #1b1613;
+    --color-focus: #ffd966;
+    --color-danger: #ff7a66;
+    --color-danger-ink: #1b1613;
+    --color-success: #8ee3b0;
+    --color-success-ink: #1b1613;
+  }
+}
+
+/* Pop's sticker look: ink outlines and hard offset shadows with no blur.
+   Unlayered, so it wins over the utilities it restyles. A picker miniature
+   is not a scope root, so its few pixels keep the plain palette. */
+@scope ([data-skin="pop"]:not([data-skin-preview])) to ([data-skin]) {
+  .bg-bubble-user {
+    box-shadow: 3px 3px 0 var(--color-accent-border);
+  }
+  .bg-app {
+    background-image: radial-gradient(
+      circle,
+      color-mix(in srgb, var(--color-raised-hover) 75%, transparent) 1.2px,
+      transparent 1.4px
+    );
+    background-size: 18px 18px;
+  }
+  .bg-card {
+    border: 2px solid var(--color-ink);
+    box-shadow: 3px 3px 0 var(--color-ink);
+  }
+  .shadow-sm { --tw-shadow: 2px 2px 0 var(--color-ink); }
+  .shadow-md { --tw-shadow: 3px 3px 0 var(--color-ink); }
+  .shadow-lg { --tw-shadow: 4px 4px 0 var(--color-ink); }
+  .shadow-xl { --tw-shadow: 6px 6px 0 var(--color-ink); }
+  .shadow-2xl { --tw-shadow: 8px 8px 0 var(--color-ink); }
+  .bg-menu,
+  [role="menu"],
+  [role="dialog"] {
+    border: 2px solid var(--color-ink);
+  }
+  .ui-button,
+  .ui-pill {
+    border: 2px solid var(--color-ink);
+    box-shadow: 2px 2px 0 var(--color-ink);
+    font-weight: 700;
+    transition: transform 90ms ease, box-shadow 90ms ease, background-color 120ms ease, color 120ms ease;
+  }
+  .ui-icon-button {
+    border: 2px solid var(--color-ink);
+    border-radius: 9999px;
+    box-shadow: 2px 2px 0 var(--color-ink);
+    background: var(--color-card);
+    color: var(--color-ink);
+  }
+  button.bg-accent.text-accent-ink,
+  button.bg-danger.text-danger-ink {
+    border: 2px solid var(--color-ink);
+    box-shadow: 2px 2px 0 var(--color-ink);
+  }
+  .glass-surface {
+    background: var(--color-menu);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    border: 3px solid var(--color-ink);
+    box-shadow: 6px 6px 0 var(--color-ink);
+  }
+  .glass-card {
+    background: var(--color-card);
+    border: 2px solid var(--color-ink);
+  }
+  .glass-surface .bg-card {
+    background-color: var(--color-card);
+  }
+  .glass-rail {
+    background: var(--color-panel);
+  }
+  :is([role="progressbar"], [role="meter"]).overflow-hidden {
+    height: 0.75rem;
+    border: 2px solid var(--color-ink);
+    background:
+      repeating-linear-gradient(135deg, #efe4d4 0 4px, #e4d4bc 4px 6px);
+  }
+  :is([role="progressbar"], [role="meter"]).overflow-hidden > .bg-accent,
+  :is([role="progressbar"], [role="meter"]).overflow-hidden > .bg-success {
+    background-color: #8ee3b0;
+  }
+  :is([role="progressbar"], [role="meter"]).overflow-hidden > .bg-warning {
+    background-color: #ffd966;
+  }
+  :is([role="progressbar"], [role="meter"]).overflow-hidden > .bg-danger {
+    background-color: #ff7a66;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .ui-button:enabled:hover,
+    button.ui-pill:enabled:hover,
+    a.ui-pill:hover {
+      transform: translate(-1px, -1px);
+      box-shadow: 3px 3px 0 var(--color-ink);
+    }
+    .ui-button:enabled:active,
+    button.ui-pill:enabled:active,
+    a.ui-pill:active {
+      transform: translate(2px, 2px);
+      box-shadow: 0 0 0 var(--color-ink);
+    }
+  }
+}
+
+[data-skin="pop"][data-skin-preview] {
+  box-shadow: 0 0 0 1.5px var(--color-ink), 2px 2px 0 1.5px var(--color-ink);
+}
+[data-skin="pop"][data-skin-preview] .bg-card {
+  box-shadow: 0 0 0 1px var(--color-ink);
+}
+[data-skin="pop"][data-skin-preview] .bg-bubble-user {
+  box-shadow: 1.5px 1.5px 0 var(--color-accent-border);
+}
+
+/* The main pane only, and never the picker miniature. Isolation keeps the
+   bats behind the conversation. */
+@scope ([data-skin="halloween"]:not([data-skin-preview])) to ([data-skin]) {
+  main.bg-app {
+    isolation: isolate;
+    background-image:
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 90 90'%3E%3Cg fill='none' stroke='%23f8efe2' stroke-opacity='.12' stroke-linecap='round'%3E%3Cpath d='M0 0h72M0 0l62 34M0 0l34 62M0 0v72'/%3E%3Cpath d='M16 0c-2 6-6 9-16 10M32 0c-4 12-12 18-32 20M48 0c-6 18-20 28-48 32M60 0c-6 22-26 40-60 46'/%3E%3C/g%3E%3Cpath d='M32 40v14' stroke='%23f8efe2' stroke-opacity='.12'/%3E%3Ccircle cx='32' cy='57' r='3' fill='%23f8efe2' fill-opacity='.12'/%3E%3C/svg%3E"),
+      radial-gradient(60% 55% at 50% 100%, rgb(255 127 31 / 0.08), transparent 70%);
+    background-repeat: no-repeat;
+    background-position: 0 0, 0 0;
+    background-size: 96px 96px, 100% 100%;
+  }
+  main.bg-app::before,
+  main.bg-app::after {
+    content: "";
+    position: absolute;
+    inset: 64px 0 auto 0;
+    height: 120px;
+    z-index: -1;
+    pointer-events: none;
+    background: no-repeat url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 32'%3E%3Cpath fill='%23f8efe2' fill-opacity='.15' d='M32 10C34 6 35 5 36 4L37 9C40 8 44 6 48 2C50 8 56 10 64 10C58 14 56 20 56 26C52 22 47 21 43 23C41 21 38 21 36 24C35 26 33 28 32 30C31 28 29 26 28 24C26 21 23 21 21 23C17 21 12 22 8 26C8 20 6 14 0 10C8 10 14 8 16 2C20 6 24 8 27 9L28 4C29 5 30 6 32 10Z'/%3E%3C/svg%3E");
+    background-size: 34px 17px;
+    animation: halloween-bat 52s linear infinite;
+  }
+  main.bg-app::after {
+    top: 104px;
+    background-size: 22px 11px;
+    animation-duration: 67s;
+    animation-delay: -30s;
+  }
+}
+
+@keyframes halloween-bat {
+  0% { background-position: -60px 40px; }
+  25% { background-position: 25% 22px; }
+  50% { background-position: 50% 48px; }
+  75% { background-position: 75% 26px; }
+  100% { background-position: calc(100% + 60px) 40px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-skin="halloween"] main.bg-app::before,
+  [data-skin="halloween"] main.bg-app::after {
+    display: none;
+  }
+}
+
 /* Disabled buttons.
    Upstream fades them with `disabled:opacity-40`. On a dark ground that holds:
    the button stays darker than the page and the white label survives. On a
@@ -2171,6 +2503,21 @@ button:disabled.bg-danger {
     --color-danger: color(display-p3 0.7202 0.1738 0.2207);
     --color-warning: color(display-p3 0.5270 0.3546 0.0278);
   }
+  :is([data-skin="pop"]) {
+    --color-accent: color(display-p3 0.4751 0.2990 0.9505);
+    --color-accent-border: color(display-p3 0.5215 0.3418 0.9730);
+    --color-accent-text: color(display-p3 0.4002 0.1038 0.8623);
+    --color-focus: color(display-p3 0.4751 0.2990 0.9505);
+    --color-success: color(display-p3 0.2127 0.4772 0.3073);
+    --color-danger: color(display-p3 0.8102 0.2412 0.1727);
+    --color-warning: color(display-p3 0.5248 0.3557 0.0473);
+  }
+  :is([data-skin="halloween"]) {
+    --color-accent: color(display-p3 0.9556 0.5098 0.1754);
+    --color-accent-border: color(display-p3 0.9592 0.5706 0.2597);
+    --color-accent-text: color(display-p3 0.9634 0.6355 0.3925);
+    --color-focus: color(display-p3 0.9592 0.5706 0.2597);
+  }
 }
 
 /* Window drag regions. A header marked by useCaptionChrome().dragProps is
@@ -2201,6 +2548,8 @@ button:disabled.bg-danger {
 .bot-identity[data-bot-color="yellow"] { color: var(--identity-yellow); }
 .bot-identity[data-bot-color="teal"] { color: var(--identity-teal); }
 .bot-identity[data-bot-color="coral"] { color: var(--identity-coral); }
+.bot-identity[data-bot-color="silver"] { color: var(--identity-silver); }
+.bot-identity[data-bot-color="chrome"] { color: var(--identity-chrome); }
 
 .user-bubble-colored {
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.16);
@@ -2270,3 +2619,30 @@ button:disabled.bg-danger {
   15%, 70% { opacity: 1; }
   100% { opacity: 0; transform: translate(20px, -34px) scale(1.1); }
 }
+
+/* Trace waterfall: AI steps lavender, tools pale teal, errors red, each mixed into the skin's card so every skin keeps its contrast. */
+.trace-bar { border: 1px solid transparent; }
+.trace-bar-step {
+  --trace-hue: #8b7cf6;
+  background: color-mix(in srgb, var(--trace-hue) 20%, var(--color-card));
+  border-color: color-mix(in srgb, var(--trace-hue) 42%, var(--color-card));
+}
+.trace-bar-tool {
+  --trace-hue: #2aa79a;
+  background: color-mix(in srgb, var(--trace-hue) 14%, var(--color-card));
+  border-color: color-mix(in srgb, var(--trace-hue) 36%, var(--color-card));
+}
+.trace-bar-group { background: color-mix(in srgb, #2aa79a 9%, var(--color-card)); border-style: dashed; }
+.trace-bar-error {
+  background: color-mix(in srgb, var(--color-danger) 20%, var(--color-card));
+  border-color: color-mix(in srgb, var(--color-danger) 60%, var(--color-card));
+}
+.trace-bar-span {
+  background: color-mix(in srgb, var(--color-ink) 6%, var(--color-card));
+  border-color: color-mix(in srgb, var(--color-ink) 13%, var(--color-card));
+}
+.trace-bar-span-error { border-color: color-mix(in srgb, var(--color-danger) 55%, var(--color-card)); }
+.trace-bar-running { mask-image: linear-gradient(to right, #000 70%, rgb(0 0 0 / 0.35)); }
+.trace-step-box { background: color-mix(in srgb, #8b7cf6 14%, var(--color-card)); border-color: color-mix(in srgb, #8b7cf6 30%, var(--color-card)); }
+.trace-step-ink { color: color-mix(in srgb, #7c6cf0 85%, var(--color-ink)); }
+.trace-tool-ink { color: color-mix(in srgb, #1f9a8c 80%, var(--color-ink)); }

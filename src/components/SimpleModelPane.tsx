@@ -4,7 +4,8 @@ import type { InstanceInfo } from "@/state/store";
 import type { EffortLevel } from "../../shared/wire";
 import { InstanceProviderMark } from "./ProviderIcons";
 import type { RailProvider } from "./ModelPicker";
-import { friendlyEffort, modelBlurb } from "@/lib/model-friendly";
+import { modelBlurb } from "@/lib/model-friendly";
+import { effortLabel } from "./ModelPicker";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
 
@@ -231,7 +232,7 @@ export function SimpleModelPane({
                   effort.current === level ? "bg-raised text-ink shadow-sm" : "text-ink-secondary hover:text-ink",
                 )}
               >
-                {friendlyEffort(level)}
+                {effortLabel(level)}
               </button>
             ))}
           </div>

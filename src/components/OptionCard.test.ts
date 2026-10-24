@@ -90,7 +90,7 @@ describe("OptionCard", () => {
   });
 
   it("offers a closed set of choices with no free-text box", () => {
-    const offer = { title: "Claude is out of quota", subtitle: "Continue this conversation on another engine?", options: ["Codex", "Not now"], requestId: "r1" };
+    const offer = { title: "Claude is out of quota", subtitle: "Continue this conversation with another AI?", options: ["Codex", "Not now"], requestId: "r1" };
     // an open question keeps its box; the same card marked fixedOptions drops it
     expect(render(offer)).toContain("<input");
     const markup = render({ ...offer, fixedOptions: true });

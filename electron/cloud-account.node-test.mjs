@@ -13,8 +13,9 @@ async function fixture(t, options = {}) {
   const f = { now: 1_800_000_000_000, requests: [], browsers: [], states: [], saved: null, approved: false, revoked: false,
     sessionStatus: 200, invalidIdentity: false, invalidEntitlement: false, badUrl: false, failWrite: false, slowToken: null,
     entitlement: { plan: "free", status: "inactive", expiresAt: null, version: 0 }, timer: null, delay: null, cloud: undefined, expiresIn: 600,
-    disk: { status: 404, body: "<!doctype html>not here" }, sessionPage: null, sessionError: null, tokenPage: null, publicConfig: { status: 404, body: { error: "not_found" } },
-    offer: undefined, checkout: { status: 404, body: "<!doctype html>not here" }, interest: { status: 200, body: { ok: true } } };
+    disk: { status: 404, body: "<!doctype html>not here" }, x: { status: 404, body: { error: "unsupported" } }, pages: { status: 404, body: { error: "unsupported" } }, sessionPage: null, sessionError: null, tokenPage: null, publicConfig: { status: 404, body: { error: "not_found" } },
+    offer: undefined, checkout: { status: 404, body: "<!doctype html>not here" }, interest: { status: 200, body: { ok: true } },
+    upgradePreview: { status: 404, body: { error: "not_found" } }, upgrade: { status: 404, body: { error: "not_found" } }, teams: undefined, teamPairing: { status: 404, body: { error: "not_found" } }, moved: { status: 404, body: { error: "not_found" } } };
   const identity = () => ({ cloudContractVersion: 1, expiresAt: f.now + 86400_000, device: { id: "fixture-device" }, account: { id: "fixture-account", email: "person@example.test" } });
   const server = createServer(async (req, res) => {
     let body = ""; for await (const chunk of req) body += chunk;
@@ -31,7 +32,12 @@ async function fixture(t, options = {}) {
       if (typeof f.disk.body === "string") { res.writeHead(f.disk.status, { "content-type": "text/html" }); return res.end(f.disk.body); }
       return send(f.disk.status, f.disk.body);
     }
-    for (const [route, answer] of [["/api/cloud/desktop/checkout", f.checkout], ["/api/cloud/desktop/interest", f.interest]]) {
+    if (req.url === "/api/cloud/desktop/services/x" && req.headers.authorization === `Bearer ${accessToken}`) return send(f.x.status, f.x.body);
+    if (/^\/api\/cloud\/desktop\/teams\/[^/]+\/pairing$/.test(req.url) && req.method === "POST" && req.headers.authorization === `Bearer ${accessToken}`) return send(f.teamPairing.status, f.teamPairing.body);
+    if (req.url === "/api/cloud/desktop/services/pages" && req.headers.authorization === `Bearer ${accessToken}`) return send(f.pages.status, f.pages.body);
+    if (req.url === "/api/cloud/desktop/moved" && req.method === "POST" && req.headers.authorization === `Bearer ${accessToken}`) return send(f.moved.status, f.moved.body);
+    for (const [route, answer] of [["/api/cloud/desktop/checkout", f.checkout], ["/api/cloud/desktop/interest", f.interest],
+      ["/api/cloud/desktop/upgrade/preview", f.upgradePreview], ["/api/cloud/desktop/upgrade", f.upgrade]]) {
       if (req.url !== route || req.method !== "POST" || req.headers.authorization !== `Bearer ${accessToken}`) continue;
       if (typeof answer.body === "string") { res.writeHead(answer.status, { "content-type": "text/html" }); return res.end(answer.body); }
       return send(answer.status, answer.body);
@@ -49,7 +55,7 @@ async function fixture(t, options = {}) {
       if (f.sessionStatus !== 200) return send(f.sessionStatus, { error: "unavailable" });
       return send(200, { ...identity(), ...(f.invalidIdentity ? { account: { id: "someone-else", email: "other@example.test" } } : {}),
         entitlement: f.invalidEntitlement ? { plan: "pro", status: "active" } : f.entitlement, ...(f.cloud === undefined ? {} : { cloud: f.cloud }),
-        ...(f.offer === undefined ? {} : { offer: f.offer }) });
+        ...(f.offer === undefined ? {} : { offer: f.offer }), ...(f.teams === undefined ? {} : { teams: f.teams }) });
     }
     send(404, { error: "not_found" });
   });
@@ -149,6 +155,19 @@ test("while the Cloud is set up, or a payment is being linked, progress is asked
   assert.deepEqual(state.purchase, { state: "confirming", tier: "personal", paidAt: f.now - 60_000 }); assert.equal(state.entitlement.plan, "free"); assert.equal(f.delay, 15_000);
 });
 
+test("a Team plan's Cloud is its team's: its setup is followed every 15 seconds, then the session every minute, never waiting on a My Cloud", async t => {
+  const f = await fixture(t); await f.connect();
+  f.entitlement = { plan: "pro", tier: "team", status: "active", expiresAt: f.now + 3 * 3600_000, version: 1 };
+  const team = machine => [{ id: "team-acme", name: "Acme", role: "owner", machine }];
+  f.teams = team({ state: "setting_up", origin: null, pairingAvailable: false, setup: { step: "storage" } });
+  let state = await f.client.refresh();
+  assert.deepEqual(state.teams[0].machine, { status: "provisioning", setup: { step: "storage" } }); assert.equal(f.delay, 15_000);
+  f.teams = team({ state: "ready", status: "ready", origin: "https://omb-t-2.fly.dev", pairingAvailable: true });
+  state = await f.client.refresh();
+  assert.equal(state.machine, undefined); assert.equal(f.delay, 60_000, "the team's Cloud is ready: nothing is being set up");
+  f.teams = undefined; await f.client.refresh(); assert.equal(f.delay, 15_000, "no team listed yet: its setup");
+});
+
 test("a connection that fails while the Admin says My Cloud can't be reached says why, from the Admin's latest word; otherwise the request's own error", async t => {
   const f = await fixture(t); await f.connect();
   const origin = "https://home-7f3k2.fly.dev", since = f.now - 6 * 60_000;
@@ -205,7 +224,7 @@ test("a free trial and its AI credit come with a verified session, for display o
 });
 
 const plans = () => [
-  { tier: "personal", label: "Personal", price: { currency: "USD", amount: 2900, interval: "month" }, allowances: null },
+  { tier: "starter", label: "Starter", price: { currency: "USD", amount: 1500, interval: "month" }, allowances: null },
   { tier: "pro", label: "Pro", price: { currency: "USD", amount: 4900, interval: "month" }, allowances: null },
 ];
 test("what this person may buy: the session's own offer when signed in, else the public plans, read with no sign-in or cookie at most every 10 minutes", async t => {
@@ -215,7 +234,7 @@ test("what this person may buy: the session's own offer when signed in, else the
   assert.equal(await f.client.offer(), null); assert.equal(asked().length, 1, "a failed ask counts for 30 seconds");
   f.now += 30_000; f.publicConfig = { status: 200, body: { name: "OpenMausBot", surface: "cloud", plans: plans(), trial: { days: 7, holdDays: 3, creditUsd: 5 }, refundDays: 14 } };
   const [first, second] = await Promise.all([f.client.offer(), f.client.offer()]);
-  assert.deepEqual(first.plans.map(plan => [plan.tier, plan.amount, plan.trialDays]), [["personal", 2900, 7], ["pro", 4900, 7]]);
+  assert.deepEqual(first.plans.map(plan => [plan.tier, plan.amount, plan.trialDays]), [["starter", 1500, 7], ["pro", 4900, 7]]);
   assert.deepEqual([first.recommended, first.creditUsd, first.refundDays], ["pro", 5, 14]);
   assert.deepEqual(second, first); assert.equal(asked().length, 2, "one ask at a time");
   f.now += 9 * 60_000; await f.client.offer(); assert.equal(asked().length, 2, "an answer counts for 10 minutes");
@@ -245,7 +264,7 @@ test("Dodo's own checkout page is the only checkout address ever opened", () => 
     assert.equal(checkoutDestination(url), null, String(url));
   }
   assert.equal(checkoutDestination("https://test.checkout.dodopayments.com/session/cks_123", { fixture: true }), "https://test.checkout.dodopayments.com/session/cks_123");
-  assert.deepEqual([...CHECKOUT_SOURCES], ["app_card", "app_howto", "app_menu", "app_settings", "app_routines", "update_popup", "app_onboarding"]);
+  assert.deepEqual([...CHECKOUT_SOURCES], ["app_card", "app_howto", "app_menu", "app_settings", "app_routines", "app_pages", "update_popup", "app_onboarding"]);
 });
 
 test("signed in, a checkout is the Admin's for this account, opened in the browser only when it is Dodo's; then the session is asked every 3 seconds for 30 minutes", async t => {
@@ -316,9 +335,9 @@ test("the purchase is over once its Cloud was opened, announced or shown ready: 
 
 test("after a restart mid-checkout, the checkout the Admin still holds is watched from first sight like this app's own", async t => {
   const f = await fixture(t); await f.connect();
-  f.offer = { plans: plans(), recommended: "pro", trialDays: 7, checkout: { plan: "personal", openUntil: f.now + 3600_000 } };
+  f.offer = { plans: plans(), recommended: "pro", trialDays: 7, checkout: { plan: "starter", openUntil: f.now + 3600_000 } };
   const seen = await f.client.refresh();
-  assert.deepEqual(seen.checkout, { plan: "personal", startedAt: f.now }, "no page is kept: no link");
+  assert.deepEqual(seen.checkout, { plan: "starter", startedAt: f.now }, "no page is kept: no link");
   assert.equal(f.client.checkoutPending(), true, "watched: focus reads the session at once");
   assert.equal(f.delay, 3_000, "every 3 seconds");
   f.now += 10 * 60_000; await f.client.refresh();
@@ -328,7 +347,7 @@ test("after a restart mid-checkout, the checkout the Admin still holds is watche
   f.browsers = []; const DODO = "https://test.checkout.dodopayments.com/session/cks_held";
   f.checkout = { status: 200, body: { cloudContractVersion: 1, url: DODO } };
   assert.equal((await f.client.reopenCheckout("pro", "app_card")).outcome, "opened");
-  assert.deepEqual(JSON.parse(f.requests.findLast(row => row.route === "/api/cloud/desktop/checkout").body), { plan: "personal", source: "app_card" },
+  assert.deepEqual(JSON.parse(f.requests.findLast(row => row.route === "/api/cloud/desktop/checkout").body), { plan: "starter", source: "app_card" },
     "the plan the Admin holds, under the page's source");
   assert.deepEqual(f.browsers, [DODO]);
   const paid = await fixture(t); await paid.connect();
@@ -677,6 +696,39 @@ test("cancelling during the encrypted write queues deletion after it and cannot 
   assert.equal(await store.read(), null); assert.equal(f.client.state().status, "signed-out"); assert.equal(f.client.state().entitlement, undefined);
 });
 
+test("X research access: this sign-in's own relay token, null without a plan or the service, never a URL off the Cloud's origin", async t => {
+  const f = await fixture(t);
+  const before = f.requests.length;
+  assert.equal(await f.client.xResearchAccess(), null);
+  assert.equal(f.requests.length, before);
+  await f.connect();
+  const token = `omb_xd_${"a".repeat(43)}`, url = `${f.origin}/api/cloud/services/x`;
+  f.x = { status: 200, body: { cloudContractVersion: 1, url, token } };
+  assert.deepEqual(await f.client.xResearchAccess(), { url, token });
+  assert.ok(f.requests.some(r => r.route === "/api/cloud/desktop/services/x" && r.method === "POST" && r.token === `Bearer ${accessToken}`));
+  f.x = { status: 402, body: { error: "subscription_inactive" } }; assert.equal(await f.client.xResearchAccess(), null);
+  f.x = { status: 404, body: { error: "unsupported" } }; assert.equal(await f.client.xResearchAccess(), null);
+  f.x = { status: 200, body: { cloudContractVersion: 1, url: "https://elsewhere.example.test/api/cloud/services/x", token } }; await assert.rejects(f.client.xResearchAccess(), /Invalid/);
+  f.x = { status: 200, body: { cloudContractVersion: 1, url, token: "short" } }; await assert.rejects(f.client.xResearchAccess(), /Invalid/);
+  f.x = { status: 500, body: { error: "down" } }; await assert.rejects(f.client.xResearchAccess());
+});
+
+test("pages access: this sign-in's own pages token on any plan, null without the service, never a URL off the Cloud's origin", async t => {
+  const f = await fixture(t);
+  const before = f.requests.length;
+  assert.equal(await f.client.pagesAccess(), null);
+  assert.equal(f.requests.length, before);
+  await f.connect();
+  const token = `omb_pd_${"a".repeat(43)}`, url = `${f.origin}/api/cloud/pages/token`;
+  f.pages = { status: 200, body: { cloudContractVersion: 1, url, token } };
+  assert.deepEqual(await f.client.pagesAccess(), { url, token });
+  assert.ok(f.requests.some(r => r.route === "/api/cloud/desktop/services/pages" && r.method === "POST" && r.token === `Bearer ${accessToken}`));
+  f.pages = { status: 404, body: { error: "unsupported" } }; assert.equal(await f.client.pagesAccess(), null);
+  f.pages = { status: 200, body: { cloudContractVersion: 1, url: "https://elsewhere.example.test/api/cloud/pages/token", token } }; await assert.rejects(f.client.pagesAccess(), /Invalid/);
+  f.pages = { status: 200, body: { cloudContractVersion: 1, url, token: `omb_xd_${"a".repeat(43)}` } }; await assert.rejects(f.client.pagesAccess(), /Invalid/);
+  f.pages = { status: 500, body: { error: "down" } }; await assert.rejects(f.client.pagesAccess());
+});
+
 test("My Cloud's line in the server menus says what is true now: the trial's end while it is ahead, always on while paid for, stopped when not, nothing when unknown", () => {
   const date = value => new Date(value).toISOString().slice(0, 10);
   const connected = (extra = {}) => ({ status: "connected", account: { id: "a", email: "a@example.test" }, entitlement: { plan: "pro", tier: "pro", status: "active", expiresAt: 2e12, version: 1 }, ...extra });
@@ -691,4 +743,128 @@ test("My Cloud's line in the server menus says what is true now: the trial's end
     connected({ entitlement: { plan: "free", status: "inactive", expiresAt: null, version: 3 }, machine: { status: "stopped" } })]) assert.equal(cloudMenuSublabel(state, date), "Stopped");
   for (const state of [null, { status: "signed-out" }, { status: "reauth-required", message: "expired", lastPlan: { tier: "pro", active: true } }, { status: "unavailable" },
     connected({ entitlement: { plan: "free", status: "inactive", expiresAt: null, version: 1 } })]) assert.equal(cloudMenuSublabel(state, date), null);
+});
+
+test("the session's teams come with a verified session, each with its Cloud; a team pairing is asked of the Admin's team route for the team's own address, and 404 means the person is no longer in it", async t => {
+  const f = await fixture(t); await f.connect();
+  const origin = "https://omb-u-acme.fly.dev", code = "AAAA-BBBB-CCCC";
+  assert.equal(f.client.state().teams, undefined, "in no team: nothing added");
+  f.teams = [{ id: "team-acme", name: "Acme", role: "member", machine: { state: "ready", origin, pairingAvailable: true, status: "ready" } }, { id: "team-x", name: "Later", role: "admin", machine: null }];
+  await f.client.refresh();
+  assert.deepEqual(f.client.state().teams, [{ id: "team-acme", name: "Acme", role: "member", machine: { status: "ready", origin } }, { id: "team-x", name: "Later", role: "admin", machine: null }]);
+  assert.equal(f.client.homeTarget(), null, "a team's Cloud is never My Cloud");
+  await assert.rejects(f.client.pairTeam("team-x"), { message: "Later isn't ready to open yet." });
+  await assert.rejects(f.client.pairTeam("team-nope"), { gone: true });
+  f.teamPairing = { status: 200, body: { cloudContractVersion: 1, origin, code, pairingUrl: `${origin}/pair#code=${code}`, expiresAt: f.now + 300_000, credential: "omb_pair_x" } };
+  assert.deepEqual(await f.client.pairTeam("team-acme"), { origin, code, expiresAt: f.now + 300_000 });
+  const asked = f.requests.filter(request => request.route.includes("/teams/"));
+  assert.deepEqual(asked.map(request => [request.route, request.method, request.token]), [["/api/cloud/desktop/teams/team-acme/pairing", "POST", `Bearer ${accessToken}`]]);
+  f.teamPairing = { status: 200, body: { cloudContractVersion: 1, origin: "https://other.fly.dev", code, expiresAt: f.now + 300_000 } };
+  await assert.rejects(f.client.pairTeam("team-acme"), { message: "Invalid Cloud pairing response." }, "a code for another address never connects");
+  f.teamPairing = { status: 409, body: { error: "cloud_unavailable" } };
+  await assert.rejects(f.client.pairTeam("team-acme"), { message: "Acme isn't running right now." });
+  f.teamPairing = { status: 404, body: { error: "not_found" } };
+  f.teams = [];
+  await assert.rejects(f.client.pairTeam("team-acme"), { gone: true, message: "You're no longer in Acme." });
+  await until(() => f.client.state().teams === undefined);
+  f.teams = undefined; await f.client.refresh();
+  assert.equal(f.client.state().teams, undefined, "an older Admin: no teams");
+});
+
+test("this computer tells the Admin its move is done, and asks for an ended Cloud's export, as itself; as before when it can't say", async t => {
+  const f = await fixture(t), computer = "C".repeat(43);
+  assert.equal(await f.client.reportMove({ installation: computer }), false, "nobody signed in");
+  await f.connect();
+  assert.equal(await f.client.reportMove({ installation: computer }), false, "an Admin that can't take it yet");
+  f.moved = { status: 200, body: { cloudContractVersion: 1, recorded: true } };
+  assert.equal(await f.client.reportMove({ installation: computer }), true);
+  const said = f.requests.findLast(r => r.route === "/api/cloud/desktop/moved");
+  assert.deepEqual([said.method, said.token, JSON.parse(said.body)], ["POST", `Bearer ${accessToken}`, { installation: computer }]);
+  f.moved = { status: 409, body: { error: "not_moved" } };
+  await assert.rejects(f.client.reportMove({ installation: computer }));
+  await assert.rejects(f.client.exportHome({ installation: computer }));
+  assert.deepEqual(JSON.parse(f.requests.findLast(r => r.route === "/api/cloud/desktop/export").body), { installation: computer });
+  await assert.rejects(f.client.exportHome());
+  assert.deepEqual(JSON.parse(f.requests.findLast(r => r.route === "/api/cloud/desktop/export").body), {});
+});
+
+test("usage meter: the session's usage reaches the state and the Cloud page's snapshot, checked; Upgrade sends a change only with this app's own preview", async t => {
+  const f = await fixture(t);
+  f.entitlement = { plan: "pro", tier: "pro", status: "active", expiresAt: f.now + 30 * 86400_000, version: 1 };
+  const resetsAt = f.now + 7 * 86400_000, nextBillingAt = f.now + 20 * 86400_000;
+  f.cloud = { state: "ready", origin: "https://cloud-home.example.test", pairingAvailable: true, usage: { tier: "pro", resetsAt,
+    meters: [{ kind: "computerHours", used: 250, max: 300 }, { kind: "tokens", used: 1, max: 2 }, { kind: "voice", used: 5, max: 0 }, { kind: "x", used: 5_000, max: 5_000, usedUp: true }],
+    upgrades: [{ tier: "max", amount: 9900 }, { tier: "gold", amount: 1 }, { tier: "pro", amount: 4900 }] } };
+  await f.connect();
+  const usage = { tier: "pro", resetsAt, meters: [{ kind: "computerHours", used: 250, max: 300 }, { kind: "x", used: 5_000, max: 5_000, usedUp: true }], upgrades: [{ tier: "max", amount: 9900 }] };
+  assert.deepEqual(f.client.state().usage, usage);
+  assert.deepEqual(cloudPlanSnapshot(f.client.state()).usage, usage);
+  const upgrades = () => f.requests.filter(request => request.route === "/api/cloud/desktop/upgrade");
+  // Without this app's own preview, nothing is sent.
+  assert.deepEqual(await f.client.upgrade("max", "app_usage"), { outcome: "refused", code: "confirmation_required" });
+  assert.equal(upgrades().length, 0);
+  await assert.rejects(f.client.upgradePreview("gold", "app_usage"));
+  await assert.rejects(f.client.upgradePreview("max", "somewhere"));
+  // The preview: the Admin's numbers come back; its confirmation stays here.
+  const confirmation = "C".repeat(43), expiresAt = f.now + 600_000;
+  f.upgradePreview = { status: 200, body: { cloudContractVersion: 1, tier: "max", from: "pro", trial: false, price: 9900, chargeNow: 3300, tax: 0, currency: "USD", nextBillingAt, confirmation, expiresAt } };
+  const shown = await f.client.upgradePreview("max", "app_usage");
+  assert.deepEqual(shown, { outcome: "preview", preview: { plan: "max", from: "pro", trial: false, price: 9900, chargeNow: 3300, tax: 0, nextBillingAt, expiresAt } });
+  assert.ok(!JSON.stringify(shown).includes(confirmation) && !JSON.stringify(f.client.state()).includes(confirmation));
+  assert.deepEqual(JSON.parse(f.requests.findLast(request => request.route === "/api/cloud/desktop/upgrade/preview").body), { plan: "max", source: "app_usage" });
+  // The change carries it, once.
+  f.upgrade = { status: 200, body: { cloudContractVersion: 1, status: "upgraded", tier: "max", trial: false } };
+  assert.deepEqual(await f.client.upgrade("max", "app_usage"), { outcome: "upgraded", tier: "max" });
+  assert.deepEqual(upgrades().map(request => JSON.parse(request.body)), [{ plan: "max", confirmation, source: "app_usage" }]);
+  assert.deepEqual(await f.client.upgrade("max", "app_usage"), { outcome: "refused", code: "confirmation_required" });
+  assert.equal(upgrades().length, 1);
+  // A preview for another plan, or one ten minutes old, sends nothing either.
+  await f.client.upgradePreview("max", "app_usage");
+  assert.deepEqual(await f.client.upgrade("pro", "app_usage"), { outcome: "refused", code: "confirmation_required" });
+  await f.client.upgradePreview("max", "app_usage");
+  f.now += 600_001;
+  assert.deepEqual(await f.client.upgrade("max", "app_usage"), { outcome: "refused", code: "confirmation_required" });
+  assert.equal(upgrades().length, 1);
+  // The Admin's answers, in the app's words: a refusal by its code, Dodo still taking the payment, a declined card.
+  f.upgradePreview = { status: 409, body: { cloudContractVersion: 1, error: "price_changed", errorDescription: "The price changed." } };
+  assert.deepEqual(await f.client.upgradePreview("max", "app_settings"), { outcome: "refused", code: "price_changed" });
+  f.upgradePreview = { status: 202, body: { cloudContractVersion: 1, status: "pending", tier: "pro", trial: false } };
+  assert.deepEqual(await f.client.upgradePreview("max", "app_settings"), { outcome: "settled", status: "pending", tier: "pro" });
+  f.upgradePreview = { status: 200, body: { cloudContractVersion: 1, tier: "max", from: "pro", trial: false, price: 9900, chargeNow: 3300, tax: 0, currency: "USD", confirmation, expiresAt: f.now + 600_000 } };
+  await f.client.upgradePreview("max", "app_settings");
+  f.upgrade = { status: 402, body: { cloudContractVersion: 1, error: "payment_failed", errorDescription: "Your payment didn't go through." } };
+  assert.deepEqual(await f.client.upgrade("max", "app_settings"), { outcome: "refused", code: "payment_failed" });
+  // A gateway's own error page, or one that timed out, says nothing about the change: the session will.
+  for (const answer of [{ status: 502, body: "<!doctype html>Bad gateway" }, { status: 504, body: { error: "timeout" } }]) {
+    await f.client.upgradePreview("max", "app_settings");
+    f.upgrade = answer;
+    assert.deepEqual(await f.client.upgrade("max", "app_settings"), { outcome: "unconfirmed" });
+  }
+  // The Admin's own word that nothing changed is just that.
+  await f.client.upgradePreview("max", "app_settings");
+  f.upgrade = { status: 502, body: { cloudContractVersion: 1, error: "provider_error", errorDescription: "Nothing was changed." } };
+  assert.deepEqual(await f.client.upgrade("max", "app_settings"), { outcome: "failed" });
+  // An Admin that can't change plans from the app (off, or older): the Cloud page opens instead.
+  for (const answer of [{ status: 503, body: { cloudContractVersion: 1, error: "temporarily_unavailable", errorDescription: "Off." } }, { status: 404, body: { error: "not_found" } }]) {
+    f.upgradePreview = answer;
+    const opened = f.browsers.length;
+    assert.deepEqual(await f.client.upgradePreview("max", "app_usage"), { outcome: "browser" });
+    assert.deepEqual(f.browsers.slice(opened), [`${f.origin}/cloud`]);
+  }
+  // A preview that doesn't add up is never shown.
+  f.upgradePreview = { status: 200, body: { cloudContractVersion: 1, tier: "pro", trial: false, price: 9900, chargeNow: 3300, tax: 0, currency: "USD", confirmation, expiresAt: f.now + 600_000 } };
+  assert.deepEqual(await f.client.upgradePreview("max", "app_usage"), { outcome: "failed" });
+});
+
+test("usage meter: no usage without an active plan, and none from a malformed answer", async t => {
+  const f = await fixture(t);
+  f.cloud = { state: "ready", origin: "https://cloud-home.example.test", pairingAvailable: true, usage: { tier: "pro", resetsAt: f.now, meters: [], upgrades: [] } };
+  await f.connect();
+  assert.equal(f.client.state().usage, undefined);
+  assert.equal(cloudPlanSnapshot(f.client.state()).usage, undefined);
+  f.entitlement = { plan: "pro", tier: "pro", status: "active", expiresAt: f.now + 30 * 86400_000, version: 1 };
+  f.cloud = { ...f.cloud, usage: { tier: "pro", meters: "lots" } };
+  await f.client.refresh();
+  assert.equal(f.client.state().status, "connected");
+  assert.equal(f.client.state().usage, undefined);
 });

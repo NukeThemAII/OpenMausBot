@@ -2,8 +2,9 @@
 import { describe, expect, it } from "vitest";
 
 import { claudeSignedIn } from "./claude-auth-status.ts";
-import { claudeAuthFailure, claudeResultError, claudeVersionTooOld } from "./claude.ts";
-import { claudeApiErrorMessage, claudeLimitMessage, claudeLimitRefusal, claudeUsageLimit } from "./claude-limits.ts";
+import { claudeAuthFailure } from "./claude-auth-recovery.ts";
+import { claudeResultError, claudeVersionTooOld } from "./claude.ts";
+import { claudeApiErrorMessage, claudeEngineReset, claudeLimitMessage, claudeLimitRefusal, claudeUsageLimit } from "./claude-limits.ts";
 import { classifyError } from "./retry.ts";
 
 describe("claudeSignedIn", () => {
@@ -93,6 +94,29 @@ describe("Claude usage limits", () => {
     expect(claudeLimitRefusal(undefined)).toBeNull();
   });
 
+  // Captured from a refused Fable call while the 5-hour window was allowed at 18%: the model ran on extra usage.
+  const OUT_OF_CREDITS = { status: "rejected", resetsAt: 1793491200, overageDisabledReason: "out_of_credits", isUsingOverage: false, errorCode: "credits_required" };
+
+  it("tells used-up extra-usage credits apart from a plan window, and holds the engine only for a window every model shares", () => {
+    const credits = claudeLimitRefusal(OUT_OF_CREDITS);
+    expect(credits).toEqual({ window: null, resetsAt: 1793491200, credits: true });
+    expect(claudeLimitRefusal({ status: "rejected", overageDisabledReason: "out_of_credits" })?.credits).toBe(true);
+    expect(claudeEngineReset(credits)).toBeUndefined();
+    expect(claudeEngineReset(claudeLimitRefusal({ ...WEEKLY, rateLimitType: "seven_day_opus" }))).toBeUndefined();
+    expect(claudeEngineReset(claudeLimitRefusal({ ...WEEKLY, rateLimitType: "seven_day_fable" }))).toBeUndefined();
+    expect(claudeEngineReset(claudeLimitRefusal(WEEKLY))).toEqual({ limitResetsAt: 1791795600_000 });
+    expect(claudeEngineReset(claudeLimitRefusal({ ...WEEKLY, rateLimitType: "seven_day_overage_included" }))).toEqual({ limitResetsAt: 1791795600_000 });
+    expect(claudeEngineReset(null)).toBeUndefined();
+  });
+
+  it("says a model's credits ran out, with no countdown to the billing reset", () => {
+    const message = claudeLimitMessage(claudeLimitRefusal(OUT_OF_CREDITS), undefined, BEFORE_RESET, "America/Los_Angeles");
+    expect(message).toContain("runs on extra usage for your account, and those credits are used up");
+    expect(message).toContain("switch this bot to a model your plan includes");
+    expect(message).not.toMatch(/reached its|resets|Oct 31/);
+    expect(claudeLimitMessage(claudeLimitRefusal({ ...WEEKLY, rateLimitType: "seven_day_fable" }), undefined, BEFORE_RESET, "UTC")).toContain("choose another model for this bot");
+  });
+
   it("knows the refused call by its code, its words or a refused account", () => {
     expect(claudeUsageLimit({ error: "rate_limit", is_api_error_message: true, api_error: "usage_limit_reached" }, "")).toBe(true);
     expect(claudeUsageLimit({ is_api_error_message: true }, WEEKLY_TEXT)).toBe(true);
@@ -108,14 +132,14 @@ describe("Claude usage limits", () => {
 
   it("says which limit, when it resets, and what runs until then", () => {
     expect(claudeLimitMessage(claudeLimitRefusal(WEEKLY), WEEKLY_TEXT, BEFORE_RESET, "Asia/Calcutta"))
-      .toBe("This Claude account has reached its weekly limit, which resets Oct 12, 2:30 PM (Asia/Calcutta). Until then, switch this bot to another engine or Claude account.");
+      .toBe("This Claude account has reached its weekly limit, which resets Oct 12, 2:30 PM (Asia/Calcutta). Until then, switch this bot to another AI or Claude account.");
     expect(claudeLimitMessage({ window: "five_hour", resetsAt: 1791795600 }, undefined, BEFORE_RESET, "UTC"))
-      .toBe("This Claude account has reached its 5-hour limit, which resets Oct 12, 9:00 AM (UTC). Until then, switch this bot to another engine or Claude account.");
+      .toBe("This Claude account has reached its 5-hour limit, which resets Oct 12, 9:00 AM (UTC). Until then, switch this bot to another AI or Claude account.");
     expect(claudeLimitMessage({ window: "seven_day_opus", resetsAt: 1791795600 }, undefined, BEFORE_RESET, "UTC"))
       .toBe("This Claude account has reached its weekly Opus limit, which resets Oct 12, 9:00 AM (UTC). Until then, choose another model for this bot.");
     expect(claudeLimitMessage({ window: "seven_day_sonnet", resetsAt: null })).toBe("This Claude account has reached its weekly Sonnet limit. For now, choose another model for this bot.");
     expect(claudeLimitMessage({ window: "overage", resetsAt: null }, "You're out of usage credits. Contact your admin to add more."))
-      .toBe("This Claude account has reached its usage limit (Claude says: \"You're out of usage credits. Contact your admin to add more\"). For now, switch this bot to another engine or Claude account.");
+      .toBe("This Claude account has reached its usage limit (Claude says: \"You're out of usage credits. Contact your admin to add more\"). For now, switch this bot to another AI or Claude account.");
     expect(claudeLimitMessage(claudeLimitRefusal(WEEKLY), WEEKLY_TEXT, 1791795600_000 + 1, "UTC")).toContain(`(Claude says: "${WEEKLY_TEXT}")`);
     expect(claudeLimitMessage(claudeLimitRefusal(WEEKLY), undefined, BEFORE_RESET, "Mars/Olympus")).toContain("which resets 2026-10-12 09:00 UTC.");
   });

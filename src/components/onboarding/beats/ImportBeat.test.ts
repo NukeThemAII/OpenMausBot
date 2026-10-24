@@ -21,7 +21,8 @@ vi.mock("react", async (original) => ({
 const analytics = vi.hoisted(() => ({ track: vi.fn() }));
 vi.mock("@/lib/analytics", () => ({ track: analytics.track }));
 vi.mock("@/state/store", () => ({ api: vi.fn() }));
-import { ImportBeat, RESULT_READ_MS } from "./ImportBeat";
+vi.mock("@/components/GrokImportFlow", () => ({ GrokImportFlow: () => "GROK_FLOW" }));
+import { GrokBotRow, ImportBeat, RESULT_READ_MS } from "./ImportBeat";
 import { PrimaryButton, QuietButton } from "./shared";
 
 type Node = ReactElement<{ children?: ReactNode; onClick?: () => void; onChange?: (checked: boolean) => void; label?: string; disabled?: boolean }>;
@@ -58,6 +59,7 @@ function render(extra: { detection?: SetupDetection; result?: SetupImportResult 
     primary: all.find((node) => node.type === PrimaryButton)!,
     skip: all.find((node) => node.type === QuietButton),
     row: (label: string) => all.find((node) => node.props.label === label),
+    grok: all.find((node) => node.type === GrokBotRow) as ReactElement<{ open: boolean; onToggle: () => void }> | undefined,
   };
 }
 const flush = async () => {
@@ -182,4 +184,31 @@ describe("the import step", () => {
     vi.advanceTimersByTime(RESULT_READ_MS * 3);
     expect(props.onNext).not.toHaveBeenCalled();
   });
+
+  it("offers an optional Grok Bot row that opens the same Grok import inline, and closes again", () => {
+    const closed = render();
+    expect(closed.html).toContain("Have a Grok Bot? Paste its link");
+    expect(closed.html).not.toContain("GROK_FLOW");
+    expect(closed.html.match(/type="checkbox"/g)).toHaveLength(2);
+    expect(closed.grok!.props.open).toBe(false);
+    closed.grok!.props.onToggle();
+    const open = render();
+    expect(open.grok!.props.open).toBe(true);
+    expect(open.html).toContain("GROK_FLOW");
+    expect(open.html).toContain("Not now");
+    open.grok!.props.onToggle();
+    expect(render().html).not.toContain("GROK_FLOW");
+  });
+
+  it("can be skipped with the Grok Bot row open, and adds no step of its own", () => {
+    render().grok!.props.onToggle();
+    const open = render();
+    open.skip!.props.onClick!();
+    expect(props.onSkip).toHaveBeenCalledOnce();
+    expect(props.onNext).not.toHaveBeenCalled();
+    // Bringing in skills and tools does not depend on the row.
+    expect(open.primary.props.disabled).toBe(false);
+    expect(render({ result: BROUGHT }).grok).toBeUndefined();
+  });
 });
+

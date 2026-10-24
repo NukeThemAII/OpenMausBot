@@ -38,6 +38,16 @@ const catalog = (...ids: string[]): ModelCatalog => ({
 });
 
 describe("OpenCode catalog", () => {
+  // `opencode models opencode-go --verbose` from opencode 1.18.27, trimmed to four of its entries.
+  it("lists MiniMax M3.1 Flash from OpenCode Go's real model list, with its window and effort levels", () => {
+    const verbose = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "testing", "fixtures", "opencode-1.18.27-models-verbose-go.txt"), "utf8");
+    const parsed = parseOpenCodeModelsOutput(verbose);
+    expect(parsed?.options.map((option) => option.id)).toEqual(["opencode-go/glm-5.3", "opencode-go/minimax-m3", "opencode-go/minimax-m3.1-flash", "opencode-go/qwen3.8-flash"]);
+    expect(parsed?.options[2]).toEqual({
+      id: "opencode-go/minimax-m3.1-flash", label: "Go · MiniMax M3.1 Flash", contextWindow: 1_000_000,
+      variants: ["low", "medium", "high", "xhigh", "max"].map((id) => ({ id, label: expect.any(String) })),
+    });
+  });
   it("keeps advertised opaque variants without inventing default or mapping minimal", () => {
     const parsed = parseOpenCodeModelsOutput([
       "opencode/reasoner",
@@ -971,9 +981,10 @@ describe("OpenCode session variants", () => {
   it("reapplies an explicit choice on resume and targets only its native session", async () => {
     const f = await fixture({ [model]: variantConfig(["low", "high"]) });
     expect((await f.run({ variant: "high" })).done).toMatchObject({ ok: true });
+    const before = f.calls().length;
     const { done, events } = await f.run({ threadId: "resumed-thread", resumeCursor: "native-resumed", variant: "high" });
     expect(done).toMatchObject({ ok: true, threadId: "resumed-thread" });
-    expect(f.calls().map((entry) => entry.params)).toEqual([{ sessionId: "native-resumed", configId: "effort", value: "high" }]);
+    expect(f.calls().slice(before).map((entry) => entry.params)).toEqual([{ sessionId: "native-resumed", configId: "effort", value: "high" }]);
     expect(events.filter((event) => event.type === "session.model-variants").every((event) => event.threadId === "resumed-thread")).toBe(true);
   });
 

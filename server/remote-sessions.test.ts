@@ -468,11 +468,17 @@ describe("pairing", () => {
       expect(smuggled.status).toBe(403);
       expect(smuggled.body.error).toContain('"autoApprove"');
     }
+    const avatarUrl = "/api/attachments/5f0c2b1e-8a43-4c1d-9e7a-2b6f1d3c4e5a.webp";
+    expect((await call("/api/config", { method: "PUT", body: JSON.stringify({ profile: { email: "ada@example.com", avatarUrl } }) })).status).toBe(200);
     const config = await call("/api/config", { headers: h() });
     expect(config.status).toBe(200);
     expect(config.body.vps.sshAlias).toBe("");
     expect(config.body.profile.email).toBe("");
+    // The sidebar picture is the attachment address only, the same thing a bot's picture is.
+    expect(config.body.profile.avatarUrl).toBe(avatarUrl);
     expect(JSON.stringify(config.body)).not.toContain("partitionId");
+    expect((await call("/api/config", { method: "PUT", body: JSON.stringify({ profile: { email: "", avatarUrl: "" } }) })).status).toBe(200);
+    expect((await call("/api/config", { headers: h() })).body.profile.avatarUrl).toBeUndefined();
   });
 
   it("projects client config consistently for REST, live events, and replay without stripping admin events", async () => {

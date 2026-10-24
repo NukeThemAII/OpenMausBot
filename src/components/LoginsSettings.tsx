@@ -77,6 +77,7 @@ export function LoginsSettings() {
   return (
     <Card title={t("settings.logins.title")} subtitle={t("settings.logins.subtitle")}>
       <div className="flex flex-col gap-3" aria-busy={logins === null || busy}>
+        {state.config?.cloudHome === true && <p className="text-[12px] leading-relaxed text-ink-secondary" data-logins-cloud-own>{t("settings.logins.cloudOwn")}</p>}
         {logins === null && !error && <p className="text-[12px] text-ink-secondary">{t("settings.logins.loading")}</p>}
         {logins?.length === 0 && !adding && <p className="text-[12px] leading-relaxed text-ink-secondary">{t("settings.logins.empty")}</p>}
         {!!logins?.length && (

@@ -47,7 +47,7 @@ describe("typed capability fields for the cloud computer", () => {
     expect(bare.adapter.capabilities.highlevelMcp).toBe(false);
     expect(onBoat(bare)).toBe(false);
     expect(cloudPlaceRefusal({ computerMcp: bare.adapter.capabilities.computerMcp, name: "Caps Compat Bare" }, "works-on", "Scout")?.message)
-      .toBe("Caps Compat Bare can't use a computer. Choose a model that can, such as Claude or ChatGPT. Choose another model in Scout's settings.");
+      .toBe("Caps Compat Bare can't use a desktop. Choose a model that can, such as Claude or ChatGPT. Choose another model in Scout's settings.");
     expect(cloudPlaceRefusal({ computerMcp: mounted.adapter.capabilities.computerMcp, name: "Caps Compat" }, "works-on", "Scout")).toBeNull();
   });
 

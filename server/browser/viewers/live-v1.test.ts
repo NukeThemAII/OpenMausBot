@@ -49,6 +49,16 @@ describe("the v1 live view on the new browser", () => {
     expect(backend.chrome.sent.some((sent) => sent.method === "Input.insertText" && sent.params.text === "hi")).toBe(true);
   });
 
+  it("holds a slow start's waiting event to the one the agent-browser engine sends while its browser is busy", () => {
+    const steps = structuredClone(V1_GOLDEN) as unknown as Array<Record<string, unknown>>;
+    const waiting = (shape: unknown) => steps.map((step) => step.step === "open" ? { ...step, shapes: { ...(step.shapes as object), waiting: shape } } : step);
+    expect(v1Differences(steps)).toEqual([]);
+    expect(v1Differences(waiting({ reason: "string" }))).toEqual([]);
+    expect(v1Differences(waiting({ reason: "number" }))).toEqual(['open: waiting carries {"reason":"number"}, the contract {"reason":"string"}']);
+    expect(v1Differences(waiting({}).map((step) => step.step === "open" ? { ...step, shapes: { ...(step.shapes as object), stalled: {} } } : step)))
+      .toContain("open: an event the v1 contract does not have: stalled");
+  });
+
   it("opens at most two views of one browser and eight in all", async () => {
     const { open } = setup();
     await open("a");
@@ -98,6 +108,17 @@ describe("the v1 live view on the new browser", () => {
     const keys = backend.chrome.sent.filter((sent) => sent.method === "Input.dispatchKeyEvent").map((sent) => sent.params);
     expect(keys).toContainEqual(expect.objectContaining({ type: "keyDown", key: "Enter", text: "\r", windowsVirtualKeyCode: 13 }));
     expect(keys).toContainEqual(expect.objectContaining({ type: "keyUp", key: "Enter" }));
+  });
+
+  it("tells a phone its browser closed unused and ends its view for good, so it does not reconnect and start it again", async () => {
+    const { open, service, backend } = setup();
+    const { sse } = await open();
+    await sleep(25);
+    expect(await service.closeIdle(20)).toEqual(["bot:a"]);
+    await sleep(20);
+    expect(sse.events.filter((event) => event.type === "error").map((event) => event.data)).toEqual([{ retryable: false, asleep: true, message: expect.stringContaining("sat unused") }]);
+    expect(sse.writableEnded).toBe(true);
+    expect(backend.chromes).toHaveLength(1);
   });
 
   it("restarts the browser for the person, closes every view of it, and the bot hears it on its next call", async () => {

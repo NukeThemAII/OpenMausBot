@@ -13,6 +13,7 @@ import {
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { app } from "electron";
+import { createSpeechTranscript } from "./speech-transcript.mjs";
 
 import {
   buildSpeechHelper,
@@ -107,6 +108,7 @@ export function startSpeech(win, options = {}) {
   let offset = 0;
   let reportedError = null;
   let completed = false;
+  const transcript = createSpeechTranscript();
 
   const drain = () => {
     let content;
@@ -129,7 +131,7 @@ export function startSpeech(win, options = {}) {
         if (parsed.partial === false && typeof parsed.text === "string") completed = true;
         // A stopped or replaced helper can flush one last chunk: never into the session that replaced it.
         if (child === speechSession && !win.isDestroyed()) {
-          win.webContents.send("speech:transcript", parsed);
+          win.webContents.send("speech:transcript", transcript(parsed));
         }
       } catch {
       }

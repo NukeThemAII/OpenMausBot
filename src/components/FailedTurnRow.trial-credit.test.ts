@@ -41,7 +41,7 @@ describe("a turn the trial's Claude credit refused", () => {
     expect(usedUp.html).toContain("Dein Claude-Guthaben der Testphase ist aufgebraucht.");
     expect(usedUp.html).not.toContain("Your trial Claude credit is used up");
     expect(usedUp.buttons).toEqual(["Eigene KI verbinden"]);
-    expect(show(stored("ended")).html).toContain("Das Claude-Guthaben der Testphase ist auf My Cloud nicht mehr verfügbar.");
+    expect(show(stored("ended")).html).toContain("Das Claude-Guthaben der Testphase ist in der Cloud nicht mehr verfügbar.");
     expect(show(stored("too_low")).html).toContain("reicht für diesen Chat nicht aus");
     const paused = show(stored("paused"), vi.fn());
     expect(paused.html).toContain("Das Claude-Guthaben der Testphase ist vorübergehend pausiert.");

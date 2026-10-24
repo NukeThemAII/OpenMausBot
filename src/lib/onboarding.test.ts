@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  aiChoices,
   beatWidth,
   beatsFor,
   cloudBeatPossible,
@@ -9,7 +10,6 @@ import {
   companyModelCount,
   completionPatch,
   EMPTY_ONBOARDING,
-  engineSummary,
   hintSeen,
   hostedMember,
   spotlightsQuiet,
@@ -150,33 +150,20 @@ describe("organisation sign-in in the engines beat", () => {
   });
 });
 
-describe("engineSummary", () => {
-  type Row = { id: string; install?: object; managed?: object; ok: boolean };
-  const ok = (row: Row) => row.ok;
-  const personal = (id: string, ready: boolean): Row => ({ id, install: {}, ok: ready });
-  const company = (id: string, ready: boolean): Row => ({ id, managed: { organizationId: "org", organizationName: "Org" }, ok: ready });
+describe("connecting an AI in the welcome", () => {
+  type Row = { id: string; driverKind: string; access?: string; readOnly?: boolean };
+  const row = (id: string, driverKind: string, extra: Partial<Row> = {}): Row => ({ id, driverKind, ...extra });
 
-  it("counts a signed-in Company engine as ready when nothing personal is", () => {
-    const rows = [personal("claude", false), personal("codex", false), company("company.claude", true)];
-    const summary = engineSummary(rows, ok, { company: true });
-    expect(summary.allReady).toBe(true);
-    expect(summary.company).toBe(1);
-    expect(summary.ready.map((row) => row.id)).toEqual([]);
-    expect(summary.setup.map((row) => row.id)).toEqual(["claude", "codex"]);
-  });
-
-  it("does not count a Company engine that cannot run", () => {
-    const summary = engineSummary([personal("claude", false), company("company.claude", false)], ok, { company: true });
-    expect(summary.company).toBe(0);
-    expect(summary.allReady).toBe(false);
-  });
-
-  it("counts exactly as before where organisation sign-in is not offered", () => {
-    const rows = [personal("claude", true), personal("codex", false), company("company.claude", true)];
-    const summary = engineSummary(rows, ok, { company: false });
-    expect(summary).toEqual({ ready: [rows[0]], setup: [rows[1]], company: 0, allReady: false });
-    expect(engineSummary([personal("claude", true)], ok, { company: false }).allReady).toBe(true);
-    expect(engineSummary([], ok, { company: false }).allReady).toBe(false);
+  it("recommends a Claude account first, then a ChatGPT plan, and folds every other way under it", () => {
+    const grok = row("grok", "grokAgent");
+    const codex = row("codex", "codex");
+    const claudeKey = row("claude-api", "claudeAgent", { access: "api" });
+    const claude = row("claude", "claudeAgent");
+    expect(aiChoices([grok, codex, claudeKey, claude])).toEqual({ recommended: claude, others: [grok, codex, claudeKey] });
+    expect(aiChoices([grok, claudeKey, codex]).recommended).toBe(codex);
+    expect(aiChoices([grok, claudeKey]).recommended).toBe(grok);
+    expect(aiChoices([row("company", "claudeAgent", { readOnly: true }), grok]).recommended, "an organization's model is not a sign-in").toBe(grok);
+    expect(aiChoices([])).toEqual({ recommended: undefined, others: [] });
   });
 });
 
@@ -200,6 +187,13 @@ describe("persistence patches", () => {
 describe("beat machine", () => {
   it("lists beats for the desktop app with the reel off", () => {
     expect(beatsFor({ dictation: true, reel: false })).toEqual(["hello", "engines", "permissions", "phone", "bot"]);
+  });
+
+  it("leaves out the AI step when an AI already works, whatever else is on", () => {
+    expect(beatsFor({ dictation: true, reel: false, aiReady: true })).toEqual(["hello", "permissions", "phone", "bot"]);
+    expect(beatsFor({ dictation: true, reel: true, setupImport: true, cloud: true, aiReady: true }))
+      .toEqual(["hello", "reel", "import", "permissions", "phone", "cloud", "bot"]);
+    expect(beatsFor({ dictation: true, reel: false, aiReady: false })).toContain("engines");
   });
 
   it("drops the permissions beat where there is no microphone to ask for", () => {

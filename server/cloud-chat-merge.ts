@@ -8,7 +8,8 @@ import { DatabaseSync } from "node:sqlite";
 import { splitTranscriptAttachments } from "../src/lib/composer-attachments.ts";
 import { movesThreadToTop } from "../shared/wire.ts";
 import { cleanupStaleAttachmentPartials } from "./attachments.ts";
-import type { BotRecord, GroupRecord, GroupTaskRecord, Message, Store, TaskRecord } from "./store.ts";
+import { stampOwner, type CloudOwner } from "./cloud-owner-lines.ts";
+import type { BotRecord, GroupDefaultResponder, GroupRecord, GroupTaskRecord, Message, Store, TaskRecord } from "./store.ts";
 import { restorePaths } from "./workspace-backup-paths.ts";
 
 export interface ThreadRows { rows: Message[]; leaf: string | null }
@@ -23,12 +24,12 @@ export interface ThreadMerge { owner: Owner; threadId: string; task?: TaskRecord
 /** `messages`: text lines (what a person reads as messages); `intoExisting`: of those, the ones added to conversations it already had. */
 export interface ChatMergeResult { conversations: number; messages: number; intoExisting: number; skippedBots: number; skippedRooms: number; deleted: number }
 export interface ChatMergePlan extends ChatMergeResult { threads: ThreadMerge[] }
-export type ChatStore = Pick<Store, "bots" | "groups" | "bot" | "group" | "messagesFor" | "activeLeaf" | "importTranscript" | "patchBot" | "patchGroup">;
+export type ChatStore = Pick<Store, "bots" | "groups" | "bot" | "group" | "messagesFor" | "activeLeaf" | "importTranscript" | "patchBot" | "patchGroup" | "createGroup">;
 
 const BOT_TASK_KEYS = ["threadId", "title", "createdAt", "titleFromFirstMessage", "openedBy", "closedBy", "archivedAt", "pinned", "link", "linkAuto",
-  "lastReadMessageId", "pinnedMessageId", "routineRunId", "askedAt"] as const;
-const GROUP_TASK_KEYS = ["threadId", "title", "createdAt", "titleFromFirstMessage", "pinned", "pinnedMessageId"] as const;
-const ATTACHMENT_NAME = /^[A-Za-z0-9-]{1,80}\.[A-Za-z0-9]{1,10}$/;
+  "lastReadMessageId", "pinnedMessageId", "routineRunId", "askedAt", "snoozedUntil"] as const;
+const GROUP_TASK_KEYS = ["threadId", "title", "createdAt", "titleFromFirstMessage", "pinned", "pinnedMessageId", "turnTimeoutMinutes"] as const;
+export const ATTACHMENT_NAME = /^[A-Za-z0-9-]{1,80}\.[A-Za-z0-9]{1,10}$/;
 
 const ownerKey = (owner: Owner) => `${owner.kind}:${owner.id}`;
 const newest = (values: Iterable<number>) => { let max = Number.NEGATIVE_INFINITY; for (const value of values) if (value > max) max = value; return max; };
@@ -81,11 +82,14 @@ function interleave(here: Message[][], added: Message[][]): Message[] {
   return out;
 }
 
+/** `keepSummaries`: `from` is this conversation's own rows as another computer sends them, its context summaries too. */
+export interface MergeOptions { keepSummaries?: boolean }
+
 /** Adds `from`'s rows `to` lacks; the ones on `from`'s visible path are placed among `to`'s by time, turn by turn. */
-export function mergeThread(from: ThreadRows, to: ThreadRows): { added: Message[]; relinked: Link[]; leaf: string | null; synced: number } {
+export function mergeThread(from: ThreadRows, to: ThreadRows, { keepSummaries = false }: MergeOptions = {}): { added: Message[]; relinked: Link[]; leaf: string | null; synced: number } {
   const have = new Set(to.rows.map((row) => row.id));
   const synced = newest(from.rows.filter((row) => have.has(row.id)).map((row) => row.at));
-  const source = withoutSummaries(from, have);
+  const source = keepSummaries ? from : withoutSummaries(from, have);
   const added = source.rows.filter((row) => !have.has(row.id));
   const unchanged = { added, relinked: [], leaf: to.leaf, synced };
   if (!added.length) return unchanged;
@@ -120,7 +124,7 @@ function carriedTask(task: TaskRecord | GroupTaskRecord, owner: Owner, rows: rea
  * A conversation `to` lacks is added unless `to` once had it: one with a message from before `syncedAt` (when the two were
  * last in step: the copy, or an earlier bring) or no newer than the newest message both share was there, so `to` deleted it since.
  */
-export function planChatMerge(from: ChatsSide, to: ChatsSide, syncedAt = Number.NEGATIVE_INFINITY): ChatMergePlan {
+export function planChatMerge(from: ChatsSide, to: ChatsSide, syncedAt = Number.NEGATIVE_INFINITY, options: MergeOptions = {}): ChatMergePlan {
   const owners = new Set([...to.bots.map((bot) => `bot:${bot.id}`), ...to.groups.map((group) => `group:${group.id}`)]);
   const homes = new Map<string, string>();
   for (const conversation of conversations(to)) homes.set(conversation.threadId, ownerKey(conversation.owner));
@@ -133,7 +137,7 @@ export function planChatMerge(from: ChatsSide, to: ChatsSide, syncedAt = Number.
     if (!owners.has(ownerKey(owner))) { if (!dm) missing.add(ownerKey(owner)); continue; }
     const home = homes.get(threadId);
     if (home === ownerKey(owner)) {
-      const merged = mergeThread(rows, to.thread(threadId));
+      const merged = mergeThread(rows, to.thread(threadId), options);
       synced = Math.max(synced, merged.synced);
       if (!merged.added.length) continue;
       plan.threads.push({ owner, threadId, added: merged.added, relinked: merged.relinked, leaf: merged.leaf });
@@ -191,7 +195,8 @@ export function liveChats(store: ChatStore): ChatsSide {
   return { bots: store.bots, groups: store.groups, thread: (threadId) => ({ rows: store.messagesFor(threadId), leaf: store.activeLeaf(threadId) }) };
 }
 
-function attachmentNames(message: Message, source: string): string[] {
+/** The attachments in this computer's folder a row names, by file name. */
+export function attachmentNames(message: Message, source: string): string[] {
   const root = `${source.replaceAll("\\", "/").replace(/\/$/, "")}/attachments/`;
   const fold = (value: string) => /^(?:[A-Za-z]:\/|\/\/)/.test(root) ? value.toLowerCase() : value;
   const paths: unknown[] = Array.isArray(message.attachments) ? message.attachments.map((attachment) => (attachment as { path?: unknown } | null)?.path) : [];
@@ -245,19 +250,127 @@ export function applyChatMerge(store: ChatStore, plan: ChatMergePlan): void {
   }
 }
 
+/** Rebases the added rows' paths from the other computer's folder to this one's, then adds them. */
+function applyFrom(store: ChatStore, dataDir: string, plan: ChatMergePlan, sourceDataDir: string, carry?: (name: string) => boolean): void {
+  const destination = resolve(dataDir), paths = restorePaths(sourceDataDir, destination);
+  let copied = false;
+  for (const thread of plan.threads) for (const message of thread.added) {
+    if (carry) for (const name of attachmentNames(message, sourceDataDir)) copied = carry(name) || copied;
+    if (sourceDataDir !== destination) paths.message(message);
+  }
+  if (copied) cleanupStaleAttachmentPartials();
+  applyChatMerge(store, plan);
+}
+
 export function mergeStagedChats(store: ChatStore, dataDir: string, staged: { data: string; sourceDataDir: string }, syncedAt?: number): ChatMergeResult {
   const from = stagedChats(staged.data);
   try {
     const plan = planChatMerge(from, liveChats(store), syncedAt);
-    const destination = resolve(dataDir), paths = restorePaths(staged.sourceDataDir, destination);
-    let copied = false;
-    for (const thread of plan.threads) for (const message of thread.added) {
-      for (const name of attachmentNames(message, staged.sourceDataDir)) copied = carryAttachment(staged.data, dataDir, name) || copied;
-      if (staged.sourceDataDir !== destination) paths.message(message);
-    }
-    if (copied) cleanupStaleAttachmentPartials();
-    applyChatMerge(store, plan);
+    applyFrom(store, dataDir, plan, staged.sourceDataDir, (name) => carryAttachment(staged.data, dataDir, name));
     const { threads: _threads, ...result } = plan;
     return result;
   } finally { from.close(); }
+}
+
+/** One bot or room conversation's rows another computer stored since it last sent it (server/cloud-send-chats.ts). */
+export interface SentConversation {
+  /** Whose conversation it is: a bot's, or a room's (`room`). */
+  bot?: string;
+  room?: string;
+  /** The room as the sender has it, so this server can make it when it lacks it. */
+  roomInfo?: SentRoom;
+  threadId: string;
+  /** The conversation's entry in the bot's or room's list; null for a bot's main conversation. */
+  task: TaskRecord | GroupTaskRecord | null;
+  rows: Message[];
+  leaf: string | null;
+  /** Rows of it went before: a conversation this server lacks now was removed here, and is not brought back. */
+  sent: boolean;
+}
+/** A room as the sender has it: what the room is, never that computer's folders or turn state. */
+export interface SentRoom {
+  name: string;
+  memberIds: string[];
+  defaultResponder?: GroupDefaultResponder;
+  bulletin: string;
+  section?: string;
+  setupCompletedAt?: number | null;
+  setupSkippedAt?: number | null;
+  audienceFloor?: GroupRecord["audienceFloor"];
+}
+export interface SentChatsResult {
+  conversations: number;
+  messages: number;
+  /** Taken (rows added, or nothing new): the sender's cursor moves past what it sent. */
+  accepted: string[];
+  /** Its bot is not here, or is answering in it now, or its room's bots are not here yet: sent again later. */
+  waiting: string[];
+  /** Removed here since: never sent again. */
+  removed: string[];
+}
+
+const listedIn = (owner: { threadId: string; tasks?: ReadonlyArray<{ threadId: string }> }, threadId: string) =>
+  owner.threadId === threadId || (owner.tasks ?? []).some((task) => task.threadId === threadId);
+/** Only the sender knows what it sent before, so only its `sent` makes a conversation this server lacks one removed here. */
+const removedHere = (store: ChatStore, conversation: SentConversation, listed: boolean) =>
+  conversation.sent && !listed && !store.messagesFor(conversation.threadId).length;
+const sentThread = (conversation: SentConversation): ChatsSide["thread"] => (threadId) =>
+  threadId === conversation.threadId ? { rows: conversation.rows, leaf: conversation.leaf } : { rows: [], leaf: null };
+
+function botSide(store: ChatStore, conversation: SentConversation): ChatsSide | "waiting" | "removed" {
+  const bot = store.bot(conversation.bot!);
+  if (!bot) return "waiting";
+  if (removedHere(store, conversation, listedIn(bot, conversation.threadId))) return "removed";
+  const tasks = conversation.task ? [conversation.task as TaskRecord] : [];
+  return { bots: [{ id: bot.id, threadId: conversation.task ? bot.threadId : conversation.threadId, tasks }], groups: [], thread: sentThread(conversation) };
+}
+
+function roomSide(store: ChatStore, conversation: SentConversation): ChatsSide | "waiting" | "removed" {
+  let room = store.group(conversation.room!);
+  if (room?.dm) return "waiting";
+  if (!room) {
+    if (conversation.sent) return "removed";
+    room = openRoom(store, conversation);
+    if (!room) return "waiting";
+  } else if (removedHere(store, conversation, listedIn(room, conversation.threadId))) return "removed";
+  const tasks = conversation.task ? [conversation.task as GroupTaskRecord] : [];
+  return { bots: [], groups: [{ id: room.id, threadId: conversation.task ? room.threadId : conversation.threadId, tasks, dm: false }], thread: sentThread(conversation) };
+}
+
+/** A room this server lacks and never had from the sender, made under the sender's ids with the members this server
+ * has; its first thread is the conversation being sent. None while none of its bots is here. */
+function openRoom(store: ChatStore, conversation: SentConversation): GroupRecord | undefined {
+  const info = conversation.roomInfo;
+  const members = (info?.memberIds ?? []).filter((id) => store.bot(id));
+  if (!info || !members.length || [...conversations(liveChats(store))].some((entry) => entry.threadId === conversation.threadId)) return undefined;
+  const room = store.createGroup(info.name, members, false, typeof info.section === "string" ? info.section.slice(0, 60) || undefined : undefined,
+    { bulletin: info.bulletin, defaultResponder: info.defaultResponder, completed: info.setupCompletedAt != null, id: conversation.room, threadId: conversation.threadId });
+  const first = room.tasks?.find((task) => task.threadId === conversation.threadId);
+  if (first && conversation.task) Object.assign(first, Object.fromEntries(GROUP_TASK_KEYS.filter((key) => (conversation.task as GroupTaskRecord)[key] !== undefined)
+    .map((key) => [key, structuredClone((conversation.task as GroupTaskRecord)[key])])));
+  store.patchGroup(room.id, info.audienceFloor ? { audienceFloor: info.audienceFloor } : {});
+  return room;
+}
+
+/**
+ * Adds each sent conversation's rows the way a copy's are added (planChatMerge), one conversation at a time, so rows
+ * one conversation shares never make another look deleted. Attachments arrived before, under their own names. Only the
+ * sender knows what it sent before, so only its `sent` makes a conversation this server lacks one removed here. `owner`:
+ * the owner's own session sent them, so a bot conversation's lines and answers its owner wrote arrive as the owner's.
+ */
+export function addSentChats(store: ChatStore, dataDir: string, sourceDataDir: string, sent: readonly SentConversation[],
+  { busy, owner = null }: { busy(threadId: string): boolean; owner?: CloudOwner | null }): SentChatsResult {
+  const result: SentChatsResult = { conversations: 0, messages: 0, accepted: [], waiting: [], removed: [] };
+  for (const conversation of sent) {
+    if (busy(conversation.threadId)) { result.waiting.push(conversation.threadId); continue; }
+    const from = conversation.room === undefined ? botSide(store, owner ? { ...conversation, rows: stampOwner(conversation.rows, owner) } : conversation)
+      : roomSide(store, conversation);
+    if (from === "waiting" || from === "removed") { result[from].push(conversation.threadId); continue; }
+    const plan = planChatMerge(from, liveChats(store), Number.NEGATIVE_INFINITY, { keepSummaries: true });
+    applyFrom(store, dataDir, plan, sourceDataDir);
+    result.conversations += plan.conversations;
+    result.messages += plan.messages;
+    result.accepted.push(conversation.threadId);
+  }
+  return result;
 }

@@ -34,6 +34,12 @@ const fileSchema = z.object({ version: z.literal(1), connection: connectionSchem
 export type HighLevelConnection = z.infer<typeof connectionSchema>;
 type StoreFile = z.infer<typeof fileSchema>;
 
+/** A connection as this store keeps it, from anywhere else (one moved from the person's own computer); null if not. */
+export function parseHighLevelConnection(value: unknown): HighLevelConnection | null {
+  const parsed = connectionSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
 export interface HighLevelTokenRotation {
   accessToken: string;
   refreshToken?: string;

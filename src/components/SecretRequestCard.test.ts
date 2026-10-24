@@ -147,6 +147,20 @@ describe("SecretRequestCard key analytics", () => {
     expect(fixture.track.mock.calls).toEqual([["api_key_saved", { provider: "boat", via: "chat_request", result: "rejected" }]]);
   });
 
+  // Even with the desktop bridge, the 1Password token goes to this server's Logins (which checks it with 1Password),
+  // never the bridge's settings-file store: on My Cloud no bridge exists, and the Cloud's Logins is where bots read it.
+  it("saves a 1Password token through Logins, never the settings bridge, then resumes the bot", async () => {
+    const setCredential = vi.fn();
+    vi.stubGlobal("window", { ogb: { setCredential } });
+    fixture.api.mockResolvedValueOnce({ onePassword: { connected: true } }).mockResolvedValueOnce({ ok: true });
+    await submit("onePasswordToken", "ops_ZZtestSECRET0123456789");
+    expect(setCredential).not.toHaveBeenCalled();
+    expect(fixture.api.mock.calls[0]).toEqual(["/api/logins/1password", { method: "POST", body: JSON.stringify({ token: "ops_ZZtestSECRET0123456789" }) }]);
+    expect(fixture.api.mock.calls[1]![0]).toBe("/api/bots/bot-1/secret-cards/secret-card/provided");
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(JSON.stringify(fixture.track.mock.calls)).not.toContain("ZZtestSECRET");
+  });
+
   it("reports an xAI key saved from chat as unverified: nothing checks it before it is used", async () => {
     fixture.api.mockResolvedValueOnce({ xai: { configured: true } }).mockResolvedValueOnce({ ok: true });
     await submit("xaiApiKey", "xai-ZZtestSECRET0123456789");

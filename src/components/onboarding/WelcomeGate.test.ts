@@ -82,6 +82,14 @@ describe("who gets the welcome flow", () => {
     expect(tree?.props).toMatchObject({ hosted: false, initialBeat: undefined, replay: false });
   });
 
+  it("introduces the Chief of Staff when there is one, wherever it sits in the list", () => {
+    vi.stubGlobal("window", LOCAL_PAGE);
+    store.state = { ...store.state, bots: [{ id: "old", hidden: true, chiefOfStaff: true }, { id: "helper" }, { id: "chief", chiefOfStaff: true }] };
+    expect(gate(LOCAL_VIEWER).tree?.props.bot).toMatchObject({ id: "chief" });
+    store.state = { ...store.state, bots: [{ id: "old", hidden: true }, { id: "helper" }] };
+    expect(gate(LOCAL_VIEWER).tree?.props.bot).toMatchObject({ id: "helper" });
+  });
+
   it("opens the hosted beat set for a hosted workspace's admin", () => {
     const { tree } = gate({ hosted: true, canSave: true });
     expect(tree?.type).toBe(WelcomeFlow);

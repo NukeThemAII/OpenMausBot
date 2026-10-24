@@ -157,6 +157,78 @@ async function fixture(script: Script, provider: Provider = "openai-compat", api
   };
 }
 
+describe("bounded action announcement recovery", () => {
+  const later = `${"The terminal output is absent; the launch receipt only confirms the process. ".repeat(7)}\n\nLet me execute the commands to create the file and read it back.`;
+
+  it("recovers a later long announcement after the first nudge and preserves earlier results", async () => {
+    const f = await fixture((_body, response, round) => {
+      if (round === 1) answer(response, "I'll open the terminal.");
+      else if (round === 3) answer(response, later);
+      else if (round === 2 || round === 4) sse(response, [chunk({ tool_calls: [toolCall("audit_write", JSON.stringify({ name: `step-${round}`, value: "done" }), `call-${round}`)] }, "tool_calls")]);
+      else answer(response, "Both receipts are verified.");
+    });
+    await f.start({ approvalMode: "full" });
+    expect(await f.completed()).toMatchObject({ ok: true });
+    expect(f.requests).toHaveLength(5);
+    expect(f.effects().map(effect => effect.name)).toEqual(["step-2", "step-4"]);
+    expect(f.requests[3].messages).toContainEqual(expect.objectContaining({ role: "tool", tool_call_id: "call-2" }));
+    expect(f.requests[3].messages.at(-1)).toMatchObject({ content: expect.stringContaining("Never repeat") });
+  });
+
+  it("fails after three nudges even when each recovery makes tool progress", async () => {
+    const f = await fixture((_body, response, round) => round % 2
+      ? answer(response, "I'll inspect the next result.")
+      : sse(response, [chunk({ tool_calls: [toolCall("audit_write", JSON.stringify({ name: `step-${round}`, value: "done" }), `call-${round}`)] }, "tool_calls")]));
+    await f.start({ approvalMode: "full" });
+    expect(await f.completed()).toMatchObject({ ok: false });
+    expect(f.requests).toHaveLength(7);
+    expect(f.effects()).toHaveLength(3);
+    expect(f.recorder.events).toContainEqual(expect.objectContaining({ type: "runtime.error", message: expect.stringContaining("3 announcement nudges") }));
+  });
+
+  it("stops on a second announcement without tool progress", async () => {
+    const f = await fixture((_body, response) => answer(response, "I'll inspect the terminal."));
+    await f.start();
+    expect(await f.completed()).toMatchObject({ ok: false });
+    expect(f.requests).toHaveLength(2);
+    expect(f.effects()).toEqual([]);
+  });
+
+  it("does not nudge after a denied operation", async () => {
+    const f = await fixture((_body, response, round) => round === 1
+      ? sse(response, [chunk({ tool_calls: [toolCall()] }, "tool_calls")])
+      : answer(response, "I'll write the receipt now."));
+    await f.start();
+    await f.decide("deny");
+    expect(await f.completed()).toMatchObject({ ok: false });
+    expect(f.requests).toHaveLength(2);
+    expect(f.effects()).toEqual([]);
+  });
+
+  it("does not use an announcement to bypass a failed operation", async () => {
+    const f = await fixture((_body, response, round) => round === 1
+      ? sse(response, [chunk({ tool_calls: [toolCall("audit_fail")] }, "tool_calls")])
+      : answer(response, "I'll write the receipt now."));
+    await f.start({ approvalMode: "full" });
+    expect(await f.completed()).toMatchObject({ ok: false });
+    expect(f.requests).toHaveLength(2);
+    expect(f.effects()).toEqual([]);
+  });
+
+  // Whether to run an operation again is the model's call under the engine's own permissions: the nudge only asks it not to.
+  it("leaves a repeated operation after a nudge to the model and the turn's permissions", async () => {
+    const f = await fixture((_body, response, round) => {
+      if (round === 2) answer(response, "I'll write the receipt now.");
+      else if (round === 1 || round === 3) sse(response, [chunk({ tool_calls: [toolCall("audit_write", round === 1 ? '{"name":"receipt","value":"done"}' : '{"value":"done","name":"receipt"}', `call-${round}`)] }, "tool_calls")]);
+      else answer(response, "Receipt verified.");
+    });
+    await f.start({ approvalMode: "full" });
+    expect(await f.completed()).toMatchObject({ ok: true });
+    expect(f.requests).toHaveLength(4);
+    expect(f.effects()).toHaveLength(2);
+  });
+});
+
 describe("a searched MCP catalog", () => {
   it("asks about the tool call_tool runs, and never about a search", async () => {
     const remote = await startFakeHttpMcp({ tools: whopLikeCatalog(300) });
@@ -492,6 +564,45 @@ describe("OpenAI-compatible computer images", () => {
       expect(f.requests[0].messages.at(-1)?.content).toContain("cannot see images");
       expect(f.requests[1].messages.at(-1)).toMatchObject({ role: "tool" });
     }
+  });
+
+  it("resends a round the provider refuses as too large once, without the older screenshot and without running the tool again", async () => {
+    const screenshot = Buffer.concat([Buffer.from(png, "base64"), Buffer.alloc(150_000)]).toString("base64");
+    const limit = 100_000;
+    const sizes: number[] = [];
+    const f = await fixture((body, response, round) => {
+      sizes.push(Buffer.byteLength(JSON.stringify(body)));
+      if (sizes.at(-1)! > limit) {
+        response.writeHead(413, { "content-type": "text/html" });
+        response.end("<html><head><title>413 Request Entity Too Large</title></head><body>nginx</body></html>");
+      } else if (round === 1) sse(response, [chunk({ tool_calls: [{ ...toolCall(), function: { ...toolCall().function, name: "computer_write" } }] }, "tool_calls")]);
+      else answer(response, "Inspected the fixture screenshot.");
+    });
+    writeFileSync(join(f.directory, "mcp.mjs"), MCP_SCRIPT.replace(
+      'text: "Stored " + args.name + "=" + args.value',
+      `text: "Screenshot captured" }, { type: "image", mimeType: "image/png", data: ${JSON.stringify(screenshot)}`,
+    ));
+    const imagePath = join(f.directory, "input.png");
+    writeFileSync(imagePath, Buffer.from(png, "base64"));
+    const attached = [{ type: "text", text: "Store the synthetic receipt." }, { type: "image_url", image_url: { url: `data:image/png;base64,${png}` } }];
+    await f.start({
+      integrations: { localComputer: f.integrations!.custom!.audit as NonNullable<SendTurnInput["integrations"]>["localComputer"] },
+      images: [{ path: imagePath, mime: "image/png", bytes: Buffer.from(png, "base64").length }],
+    });
+    await f.decide();
+    expect(await f.completed()).toMatchObject({ ok: true });
+    expect(f.effects()).toHaveLength(1);
+    expect(f.requests).toHaveLength(3);
+    expect(sizes[1]).toBeGreaterThan(limit);
+    expect(sizes[2]).toBeLessThanOrEqual(limit);
+    expect(f.requests[2].messages.slice(0, -1)).toEqual(f.requests[1].messages.slice(0, -1));
+    expect(f.requests[2].messages.find((message) => message.role === "user")?.content).toEqual(attached);
+    expect(f.requests[2].messages.at(-2)).toMatchObject({ role: "tool", tool_call_id: "call_write" });
+    expect(f.requests[2].messages.at(-1)).toEqual({ role: "user", content: [
+      { type: "text", text: "Screenshot result from tool call call_write:" },
+      { type: "text", text: "[image omitted to fit the provider's size limit]" },
+    ] });
+    expect(f.recorder.events).toContainEqual(expect.objectContaining({ type: "turn.retrying", reason: "request_too_large" }));
   });
 
   it("keeps every tool response ahead of screenshots in a multiple-call batch", async () => {

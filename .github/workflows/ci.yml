@@ -31,15 +31,9 @@ concurrency:
 
 jobs:
   # ── The test leg, in pieces ──────────────────────────────────────────────
-  # One `typecheck + test (<os>)` job used to run everything in sequence:
-  # typecheck, lint, the whole vitest suite, then three smokes that only ran
-  # when everything before them passed. The suite runs its files serially
-  # (vite.config.ts, fileParallelism:false) and takes 17–19 minutes on one
-  # runner, so slow runners hit the job cap and read as red PRs, and a broken
-  # smoke stayed hidden behind any vitest failure for a day. Each piece is now
-  # its own job: platform-independent checks run once, the suite runs in four
-  # shards per platform, and every smoke reports on its own. One final `CI`
-  # check aggregates the required jobs (see docs/ci.md for ruleset migration).
+  # Platform-independent checks run once, the suite runs in shards per
+  # platform, and every smoke reports on its own. One final `CI` check
+  # aggregates the required jobs (see docs/ci.md for ruleset migration).
   static:
     name: typecheck + lint
     runs-on: ubuntu-latest
@@ -51,6 +45,7 @@ jobs:
     outputs:
       runtime: ${{ steps.scope.outputs.runtime }}
       vitest_os: ${{ steps.scope.outputs.vitest_os }}
+      vitest_matrix: ${{ steps.scope.outputs.vitest_matrix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -84,28 +79,23 @@ jobs:
     # A failing preflight still fails the required gates; nothing is waived.
     needs: static
     if: needs.static.outputs.runtime == 'true'
-    # vitest splits the file list deterministically across shards, so a
-    # failure names the same shard on every run and one shard is reproducible
-    # locally with the same --shard flag.
-    name: vitest (${{ matrix.os }}, shard ${{ matrix.shard }}/4)
+    # scripts/ci-scope.mjs picks the platforms and their shards: PRs run Linux
+    # and Windows (the account runs only five macOS jobs at a time); main
+    # pushes, merge groups and manual runs add macOS. Linux runs every file;
+    # Windows and macOS run every file but the e2e files that test only OMB's
+    # own logic (OMB_VITEST_E2E=host, scripts/testing/host-e2e.ts). The split
+    # is deterministic, so a failure names the same shard on every run, and
+    # the same --shard and OMB_VITEST_E2E reproduce it locally.
+    name: vitest (${{ matrix.os }}, shard ${{ matrix.shard }}/${{ matrix.shards }})
     strategy:
       fail-fast: false
-      matrix:
-        # The harness and pure desktop capabilities stay portable across all
-        # supported host platforms. POSIX-only process tests self-skip.
-        # scripts/ci-scope.mjs picks the platforms: PRs run Linux and Windows
-        # (the account runs only five macOS jobs at a time, and a PR used to
-        # queue seven), main pushes, merge groups and manual runs add macOS.
-        os: ${{ fromJSON(needs.static.outputs.vitest_os) }}
-        shard: [1, 2, 3, 4]
+      matrix: ${{ fromJSON(needs.static.outputs.vitest_matrix) }}
     runs-on: ${{ matrix.os }}
-    # scripts/testing/duration-sequencer.ts splits the files by their recorded
-    # CI seconds, not by count, so the heavy e2e files no longer share one
-    # shard. The cap catches a hang, not normal suite growth: Linux shards
-    # took 15-20 minutes by Oct 13 (the runtime and room suites), so Linux
-    # gets 30. Windows shards took 30-35 minutes by Oct 15, so the slower
-    # platforms get 45.
-    timeout-minutes: ${{ matrix.os == 'ubuntu-latest' && 30 || 45 }}
+    # scripts/testing/duration-sequencer.ts splits each platform's files by
+    # their recorded seconds on that platform, about 13 minutes a shard. The
+    # cap catches a hang, not normal suite growth; Windows runners are about
+    # 1.45x slower and vary more.
+    timeout-minutes: ${{ matrix.os == 'ubuntu-latest' && 20 || 30 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: pnpm/action-setup@ff378ebe6b225b0680b81c1ad4498ae0d1d3a5e3 # v6.0.10
@@ -127,7 +117,8 @@ jobs:
           # scripts/testing/ci-retry-runner.ts records each listed flaky test
           # that needed a retry here (the runner context is step-level only).
           OMB_VITEST_RETRY_LOG: ${{ runner.temp }}/vitest-retries.jsonl
-        run: pnpm exec vitest run --shard=${{ matrix.shard }}/4 --reporter=default --reporter=github-actions
+          OMB_VITEST_E2E: ${{ matrix.e2e }}
+        run: pnpm exec vitest run --shard=${{ matrix.shard }}/${{ matrix.shards }} --reporter=default --reporter=github-actions
       - name: Report flaky tests that needed a retry
         # Known flakes (scripts/testing/ci-retry-list.json) get two retries in
         # CI. A pass after a retry is still listed in the job summary, so the
@@ -138,6 +129,9 @@ jobs:
         run: node scripts/testing/ci-retry-summary.mjs
       - name: Broker and Electron unit tests
         if: matrix.shard == 1
+        # About half a minute; node --test has no overall deadline, so a file
+        # that never exits would otherwise hold the job to its cap.
+        timeout-minutes: 5
         run: pnpm broker:test && pnpm test:electron
 
   behavior-evals:
@@ -257,9 +251,14 @@ jobs:
         run: pnpm exec electron scripts/smoke-approval-modes.cjs
       - name: Verify app permissions and guarded display capture
         run: node scripts/smoke-app-permissions.mjs
+      - name: Verify chat app frames stay sealed
+        run: node scripts/smoke-app-frames.mjs --engagement
       - name: Verify paired phone authorization against packaged harness
         # Forks dist-server/index.js, built by the packaged server step.
         run: pnpm build:companion && pnpm exec electron scripts/smoke-phone-relay-auth.cjs
+      - name: Verify Send to My Cloud's login handoff over the real utility port
+        # Forks dist-server/index.js, built by the packaged server step.
+        run: pnpm exec electron scripts/smoke-login-handoff.cjs
 
   gate:
     # One aggregation, not three queued runners doing the same check.
@@ -440,7 +439,7 @@ jobs:
         env:
           OMB_UI_E2E: "1"
           OMB_UI_EVIDENCE_DIR: .omb-scratch/verify-evidence
-        run: pnpm exec vitest run scripts/testing/control-omb-ui.e2e.test.ts scripts/testing/bot-tools-ui.e2e.test.ts scripts/testing/thinking-timer-ui.e2e.test.ts scripts/testing/team-share-ui.e2e.test.ts scripts/testing/org-library-ui.e2e.test.ts scripts/testing/presets-ui.e2e.test.ts scripts/testing/browser-evidence.e2e.test.ts scripts/testing/rich-table-composer-ui.e2e.test.ts
+        run: pnpm exec vitest run scripts/testing/control-omb-ui.e2e.test.ts scripts/testing/bot-tools-ui.e2e.test.ts scripts/testing/thinking-timer-ui.e2e.test.ts scripts/testing/team-share-ui.e2e.test.ts scripts/testing/org-library-ui.e2e.test.ts scripts/testing/presets-ui.e2e.test.ts scripts/testing/browser-evidence.e2e.test.ts scripts/testing/rich-table-composer-ui.e2e.test.ts scripts/testing/computer-panel-focus-ui.e2e.test.ts
       - name: Upload the renderer screenshot
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
@@ -462,7 +461,9 @@ jobs:
     # user agent and client hints are the browser's own in the page, a
     # worker, a service worker and a cross-site frame. On Windows this is
     # also the check that the 0.36.0-omb.1 engine starts Chrome through the
-    # generated batch file. The same platforms as the vitest matrix.
+    # generated batch file. browser-passkey.e2e.test.ts: a passkey step's
+    # request ends at once there, so Try another way works. The same
+    # platforms as the vitest matrix.
     name: browser identity (${{ matrix.os }})
     strategy:
       fail-fast: false
@@ -486,7 +487,9 @@ jobs:
       - name: Drive a real Chrome through the launcher
         env:
           OMB_UI_E2E: "1"
-        run: pnpm exec vitest run scripts/testing/browser-identity.e2e.test.ts
+        # One file at a time: a runner's first Chrome launch is slow (on Windows it waits for a scan of the binary), and two
+        # at once ran the identity probe past its 30 s.
+        run: pnpm exec vitest run scripts/testing/browser-identity.e2e.test.ts scripts/testing/browser-passkey.e2e.test.ts --no-file-parallelism
 
   package-linux:
     needs: static
@@ -591,14 +594,28 @@ jobs:
         run: |
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           sudo apt-get update && sudo apt-get install -y xvfb
+      - name: Keep the runner's Google Chrome as it is for the whole run
+        # The macOS image's Chrome is older than Google's release, and about
+        # 30 s after Chrome first runs it starts its bundled GoogleUpdater,
+        # which swaps the new version into the app a minute later (155.0.8059.40
+        # to .85 in October 2026): a launch inside the swap fails at once, and
+        # a profile the new version opened is refused by the identity read
+        # from the old one. The locked bundle keeps the binary under test fixed.
+        if: runner.os == 'macOS'
+        run: |
+          chflags -R uchg "/Applications/Google Chrome.app"
+          defaults read "/Applications/Google Chrome.app/Contents/Info.plist" CFBundleShortVersionString | tee "$RUNNER_TEMP/chrome-version"
       - name: S4 on the runner's Google Chrome
         # The headed-identity case needs a display, which Linux runners get from Xvfb.
         env:
           OMB_CDP_E2E: "1"
         shell: bash
         run: |
-          run=(pnpm exec vitest run server/browser/cdp/s4- server/browser/checklist.e2e server/browser/viewers/viewers.e2e --reporter=verbose --silent=false --reporter=github-actions)
+          run=(pnpm exec vitest run server/browser/cdp/s4- server/browser/checklist.e2e server/browser/passkey-wall.e2e server/browser/viewers/viewers.e2e server/browser/viewers/stream-v2.e2e --reporter=verbose --silent=false --reporter=github-actions)
           if [ "$RUNNER_OS" = "Linux" ]; then xvfb-run -a "${run[@]}"; else "${run[@]}"; fi
+      - name: The runner's Google Chrome did not change during the run
+        if: ${{ !cancelled() && runner.os == 'macOS' }}
+        run: test "$(defaults read "/Applications/Google Chrome.app/Contents/Info.plist" CFBundleShortVersionString)" = "$(cat "$RUNNER_TEMP/chrome-version")"
       - name: S4 inside the server image's runtime, as its own user
         # maus, with its real home, as the server runs there. The image's
         # Chrome for Testing has no setuid sandbox helper yet, so this leg
@@ -613,4 +630,4 @@ jobs:
           docker run --rm --init --shm-size=512m --user maus -e CI=true \
             -e OMB_CDP_CHROME=/opt/openmausbot-browser/chrome -e OMB_CDP_HOST=container -e OMB_BROWSER_SANDBOX=0 \
             -v "$PWD:/src" -w /src omb-runtime:s4 \
-            node node_modules/vitest/vitest.mjs run server/browser/cdp/s4- server/browser/checklist.e2e server/browser/viewers/viewers.e2e --reporter=verbose --silent=false
+            node node_modules/vitest/vitest.mjs run server/browser/cdp/s4- server/browser/checklist.e2e server/browser/passkey-wall.e2e server/browser/viewers/viewers.e2e server/browser/viewers/stream-v2.e2e --reporter=verbose --silent=false

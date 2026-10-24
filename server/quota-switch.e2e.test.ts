@@ -117,7 +117,7 @@ it("offers the working engine once, and on the person's answer switches this con
     const offer = before.find((message) => message.card?.quotaSwitch);
     expect(offer.card).toMatchObject({
       title: `${LIMITED} is out of quota`,
-      subtitle: "Continue this conversation on another engine?",
+      subtitle: "Continue this conversation with another AI?",
       options: [BACKUP, "Not now"],
       fixedOptions: true,
       quotaSwitch: { engines: [{ instanceId: "backup", name: BACKUP }], messageId: before.find((message) => message.role === "user").id },

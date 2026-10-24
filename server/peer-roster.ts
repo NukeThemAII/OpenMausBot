@@ -1,7 +1,8 @@
-import { sameAudience } from "./bot-visibility.ts";
+import { botOwner } from "../shared/bot-owner.ts";
+import { sameAudience } from "./bot-visibility.ts"; import type { DefaultBotFields } from "../shared/default-bot.ts";
 import type { BotActivity } from "./store.ts";
 
-export interface RosterMember {
+export interface RosterMember extends Pick<DefaultBotFields, "defaultBot"> {
   id: string;
   name: string;
   title?: string;
@@ -11,6 +12,8 @@ export interface RosterMember {
   section?: string;
   chiefOfStaff?: boolean;
   managedSections?: string[];
+  createdBy?: string;
+  reportsTo?: string;
   /** Unset: every visible bot in the section; a list narrows to those ids; [] cuts the bot off from peers. */
   peers?: string[];
   activity?: BotActivity;
@@ -34,6 +37,20 @@ export function canAccessTeam(
   return target === sectionKey(from.section) || Boolean(from.chiefOfStaff &&
     Array.isArray(from.managedSections) && from.managedSections.some(value =>
       typeof value === "string" && sectionKey(value) === target));
+}
+
+/** A Team Cloud Chief its person owns: that person's email. */
+const ownedChief = (bot: Pick<RosterMember, "chiefOfStaff" | "createdBy" | "reportsTo">): string | null => bot.chiefOfStaff ? botOwner(bot) : null;
+
+/** Whether `from` may work with `target`. A Chief someone owns works only with the bots that person owns, in any
+ * department, and only those bots reach it; everything else follows the department rule. */
+export function inScope(from: RosterMember, target: RosterMember): boolean {
+  if (openTeams()) return true;
+  const chiefOf = ownedChief(from);
+  if (chiefOf) return botOwner(target) === chiefOf;
+  const targetChiefOf = ownedChief(target);
+  if (targetChiefOf) return botOwner(from) === targetChiefOf;
+  return canAccessTeam(from, target.section);
 }
 
 export function coordinatorSupervises(
@@ -92,7 +109,7 @@ export const peerAllowed = (
 };
 
 export function canReachPeer(from: RosterMember, target: RosterMember): boolean {
-  return from.id !== target.id && !target.hidden && canAccessTeam(from, target.section) && peerAllowed(from, target);
+  return from.id !== target.id && !target.hidden && inScope(from, target) && peerAllowed(from, target);
 }
 
 /** What a bot is told about its team can never be wider than what the comms endpoints allow. */

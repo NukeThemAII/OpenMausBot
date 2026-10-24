@@ -10,6 +10,7 @@ import { TRIAL_CREDIT_REFUSED } from "../shared/trial-credit.ts";
 import { CLOUD_HEALTH_PATH, CLOUD_PAIRING_PATH, CLOUD_PAIRING_SKEW_S, cloudPairingSignature, cloudRequestSignature } from "./cloud-home.ts";
 import { CLOUD_HEALTH_MAX_BYTES, HEALTH_BUCKET_CAP, createCloudHealth, createCloudHealthLedger, type CloudHealthDeps } from "./cloud-health.ts";
 import { DATA_DIR, EVENTS_DIR } from "./config.ts";
+import { memoryStallText, memoryStopText } from "./engine-memory.ts";
 import type { RuntimeEvent } from "./contracts.ts";
 import { createCloudSignedRoutes } from "./routes/cloud-signed.ts";
 import { SessionRegistry } from "./sessions.ts";
@@ -99,11 +100,14 @@ describe("the failure code a Cloud home reports", () => {
     w.fail("this thread could not start — the engine is not installed");
     w.fail("queued message could not start — the engine is not installed");
     w.fail(TRIAL_CREDIT_REFUSED.used_up);
+    w.fail(`${memoryStopText(5)} (opencodeGo exited null before the prompt result)`);
+    w.fail(memoryStallText("no activity for 20 minutes — the turn was stopped", 1));
     expect(incidents(w)).toEqual([
       { kind: "turn", code: "stalled", engine: null, count: 1 },
       { kind: "turn", code: "restart", engine: null, count: 1 },
       { kind: "turn", code: "could_not_start", engine: null, count: 2 },
       { kind: "turn", code: "trial_used_up", engine: null, count: 1 },
+      { kind: "turn", code: "out_of_memory", engine: null, count: 2 },
     ]);
   });
 

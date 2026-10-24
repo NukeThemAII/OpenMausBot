@@ -4,8 +4,9 @@ import { expect, it } from "vitest";
 import { launchVerificationServer, runControlOmb } from "../scripts/control-omb.ts";
 
 // Triggers v2, end to end on a real server with the scripted engine: a bot at Ask sets up a schedule and a webhook from
-// chat with no card to confirm; the webhook's secret never reaches the transcript; the person's link works through the
-// real receiver; runs show on the one live card; Undo removes what the bot made.
+// chat with no card to confirm; the webhook's address reaches the bot that owns it but never the transcript; the person's
+// Copy address is the same link and works through the real receiver; runs show on the one live card; Undo removes what
+// the bot made.
 it("sets up schedule and webhook triggers from chat at Ask, with no confirmation, no leaked secret, and a working link", async () => {
   const fixture = await launchVerificationServer(process.env, undefined, undefined, undefined, undefined, { scripted: true });
   const evidence: unknown[] = [{ fixture: fixture.info }];
@@ -55,12 +56,14 @@ it("sets up schedule and webhook triggers from chat at Ask, with no confirmation
     const routineId = scheduleCard.routineRequest.resultId as string;
     expect((await api("GET", "/api/routines")).routines.find((routine: any) => routine.id === routineId)).toMatchObject({ botId: bot.id, enabled: true, sourceThreadId: threadId });
 
-    // 2. "When our form tool calls" becomes a webhook trigger; the bot never sees its secret.
+    // 2. "When our form tool calls" becomes a webhook trigger; its address is in the bot's own tool result only.
     const hooked = await turn("Whenever our sales form calls us, draft a follow-up for the lead.", [
       { tool: "create_trigger", arguments: { when: "webhook", name: "Sales form leads", instructions: "Draft a follow-up for the lead in the event data." } },
       { tool: "list_triggers", arguments: {} },
     ]);
     expect(toolText(hooked, "create_trigger")).toContain("applied at once");
+    const botAddress = /"url": "([^"]+)"/u.exec(toolText(hooked, "create_trigger"))?.[1];
+    expect(botAddress).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/hooks\/wh_[\w-]+\/whsec_[\w-]+$/u);
     const listed = toolText(hooked, "list_triggers");
     expect(listed).toContain('"kind": "schedule"');
     expect(listed).toContain('"kind": "webhook"');
@@ -70,12 +73,13 @@ it("sets up schedule and webhook triggers from chat at Ask, with no confirmation
     const { webhooks } = await api("GET", "/api/webhooks");
     const webhook = webhooks.find((candidate: any) => candidate.id === webhookId);
     expect(webhook).toMatchObject({ botId: bot.id, enabled: true, prompt: "Draft a follow-up for the lead in the event data." });
-    const transcript = JSON.stringify({ hooked, messages: await messages() });
-    expect(transcript, "a bot-made webhook's secret reached the transcript or the tool result").not.toMatch(/whsec_/);
+    const transcript = JSON.stringify({ listed, messages: await messages() });
+    expect(transcript, "a bot-made webhook's secret reached the transcript or a listing").not.toMatch(/whsec_/);
     expect(await unanswered()).toEqual([]);
 
-    // 3. The person's Copy link mints the secret; the real receiver accepts it and dedupes a retry.
-    const { credential } = await api("POST", `/api/webhooks/${webhookId}/rotate`);
+    // 3. The person's Copy address is the bot's address, not a new one; the real receiver accepts it and dedupes a retry.
+    const { credential } = await api("GET", `/api/webhooks/${webhookId}/address`);
+    expect(credential.url).toBe(botAddress);
     writeFileSync(planPath, JSON.stringify({ [bot.id]: { steps: [], reply: "Drafted the follow-up." } }));
     const call = (key: string) => fetch(credential.url, { method: "POST", headers: { "content-type": "application/json", "idempotency-key": key }, body: JSON.stringify({ lead: "Ada", email: "ada@example.com" }) });
     const first = await call("lead-1");
@@ -86,10 +90,12 @@ it("sets up schedule and webhook triggers from chat at Ask, with no confirmation
     expect(retry).toMatchObject({ duplicate: true, runId: accepted.runId });
     await expect.poll(async () => (await api("GET", "/api/routines")).runs.find((run: any) => run.id === accepted.runId)?.status, { timeout: 20_000 }).toBe("completed");
 
-    // 4. A schedule run shows on the live card, not as a card per run in the conversation that made it.
+    // 4. Each run reports in the conversation that made it as the bot's own line, never as a card per run.
     const { run } = await api("POST", `/api/routines/${routineId}/run`, undefined, 201);
     await expect.poll(async () => (await api("GET", "/api/routines")).runs.find((candidate: any) => candidate.id === run.id)?.status, { timeout: 20_000 }).toBe("completed");
-    expect((await messages()).some((message) => message.kind === "routine.run" && message.routineRun?.runId === run.id)).toBe(false);
+    expect((await messages()).some((message) => message.kind === "routine.run")).toBe(false);
+    await expect.poll(async () => (await messages()).filter((message) => message.automation).map((message) => [message.automation.runId, message.text]), { timeout: 20_000 })
+      .toEqual([[accepted.runId, "Drafted the follow-up."], [run.id, "Drafted the follow-up."]]);
 
     // 5. manage_trigger pauses it, at Ask, with no card.
     const paused = await turn("Pause the morning summary.", [{ tool: "manage_trigger", arguments: { trigger_id: routineId, action: "pause" } }]);

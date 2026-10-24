@@ -7,10 +7,12 @@ icon: Wrench
 Most OpenMausBot failures come from one of four layers: the desktop app, a local agent CLI, a connected service, or a computer backend.
 
 <Cards>
+  <Card title="Where are my logs?" href="/docs/troubleshooting/logs" description="Where the logs are on Windows, macOS and Linux, and how to share them with secrets removed." />
   <Card title="App startup and ports" href="/docs/troubleshooting/startup-and-ports" description="App will not open, local server is unavailable, or a port is occupied." />
   <Card title="Agent engines" href="/docs/providers/troubleshooting" description="CLI missing, model unavailable, authentication failure, or reconnect loop." />
   <Card title="Connected apps" href="/docs/troubleshooting/connected-apps" description="OAuth completes but tools do not appear or an account disconnects." />
   <Card title="Desktop updates" href="/docs/troubleshooting/updates" description="Download spins, restart does nothing, or the new version does not launch." />
+  <Card title="Google sign-in in a cloud browser" href="/docs/troubleshooting/google-sign-in-cloud-browser" description="A passkey sign-in stops at “Verifying it’s you” in a bot’s browser." />
 </Cards>
 
 ## Collect useful evidence
@@ -21,6 +23,7 @@ Before opening an issue, record:
 - selected engine and model;
 - the exact visible error, not only “it failed”;
 - whether the same agent CLI works directly in a terminal;
-- whether restarting only the affected task changes the result.
+- whether restarting only the affected task changes the result;
+- the file from **Settings → General → Diagnostics → Export Diagnostics…**, which removes keys and passwords (see [Where are my logs?](/docs/troubleshooting/logs)).
 
 Never post API keys, OAuth callback URLs, bearer tokens, or the contents of secure credential files.

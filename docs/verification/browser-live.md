@@ -90,14 +90,21 @@ UI and harness, then removes its temporary data; the server log remains.
    the vault under 1Password in Settings → Logins: Pepper no longer lists or
    fills it. Unit tests use a fake SDK and reach no network.
 
+11. Page dialogs: give the test page a button that calls `confirm()`, take control and press it. The question shows over
+   the page within a second, with Dismiss and Accept, only in the view that holds the browser. Answering lets the click
+   finish, and typing goes on. Answer after more than 30 seconds: the click still finishes, with no restart. A page
+   that hangs (`while (true) {}`) is restarted for you after about 35 seconds. The panel reconnects, and sign-ins
+   are kept.
+
 Focused automated coverage:
 
 ```sh
 pnpm exec vitest run server/browser-engine.test.ts server/browser-runtime.test.ts \
-  server/harness-mcp-proxy.test.ts server/browser-live.test.ts \
+  server/harness-mcp-proxy.test.ts server/browser-live.test.ts server/browser-dialogs.test.ts \
   server/browser-live-routes.test.ts server/browser-codex-path.integration.test.ts \
-  src/lib/browser-input-queue.test.ts src/lib/browser-control.test.ts src/lib/browser-profiles.test.ts \
-  src/components/BrowserProfilesManager.test.ts src/components/BrowserViewport.test.ts \
+  src/lib/browser-stream-v1.test.ts src/lib/browser-stream-client.test.ts src/lib/browser-control.test.ts \
+  src/lib/browser-profiles.test.ts src/components/BrowserProfilesManager.test.ts \
+  src/components/browser/StreamSurface.test.ts server/routes/browser-viewers.test.ts \
   src/components/BrowserPanel.test.ts src/components/SignInRequestCard.test.ts \
   server/sign-in-request.e2e.test.ts server/login-fill.test.ts server/login-store.test.ts \
   server/totp.test.ts server/routes/logins.test.ts src/components/LoginsSettings.test.ts \

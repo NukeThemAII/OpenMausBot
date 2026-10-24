@@ -250,10 +250,33 @@ describe("Simple-mode sidebar layout", () => {
     (plus().props.onClick as () => void)();
     const menu = nodes(footer().plus).find((node) => /\bw-52\b/.test(node.props.className ?? ""))!;
     expect(menu.props.className).toEqual(expect.stringContaining("bottom-0 left-full"));
-    expect(nodes(footer().plus).some((node) => node.type === "button" && Children.toArray(node.props.children).includes("Create team"))).toBe(true);
+    const item = (label: string) => nodes(footer().plus).find((node) => node.type === "button" && nodes(node.props.children).concat(node).some((part) => Children.toArray(part.props.children).includes(label)));
+    expect(item("Create department"), "Simple mode never asks the person to design a department").toBeUndefined();
+    expect(item("Templates")).toBeUndefined();
+    expect(item("New Bot")).toBeDefined();
     (render().tree.find((node) => node.type === SidebarEdgeToggle)!.props as Parameters<typeof SidebarEdgeToggle>[0]).onToggle();
     expect(fixture.storage.get(SIDEBAR_DENSITY_KEY)).toBe("comfortable");
     expect(render().tree.some((node) => node.type === SimpleRailFooter)).toBe(false);
+  });
+
+  it("New Bot opens the form in both modes, Chief of Staff or not; Advanced keeps Create department and Templates", () => {
+    fixture.state = { ...fixture.state, bots: [bot("atlas", { chiefOfStaff: true }), bot("bea")] };
+    const openMenu = () => {
+      const plus = () => render().tree.find((node) => node.type === "button" && node.props["aria-label"] === "New or share")!;
+      (plus().props.onClick as () => void)();
+      const tree = render().tree;
+      return (label: string) => tree.find((node) => node.type === "button" && nodes(node.props.children).concat(node).some((part) => Children.toArray(part.props.children).includes(label)));
+    };
+    (openMenu()("New Bot")!.props.onClick as () => void)();
+    expect(fixture.dispatch.mock.calls.map(([action]) => action)).toEqual([{ type: "toggleNewBot", open: true }]);
+    fixture.dispatch.mockClear();
+    fixture.values = [];
+    fixture.advanced = true;
+    const item = openMenu();
+    expect(item("Create department")).toBeDefined();
+    expect(item("Templates")).toBeDefined();
+    (item("New Bot")!.props.onClick as () => void)();
+    expect(fixture.dispatch.mock.calls.map(([action]) => action)).toEqual([{ type: "toggleNewBot", open: true }]);
   });
 
   it("opens the search pill from the rail's search button by expanding the sidebar", () => {

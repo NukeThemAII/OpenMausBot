@@ -51,6 +51,12 @@ test("exposes the full local-shell bridge on window.ogb", () => {
   assert.equal(typeof exposed.api.onOpenAppSettings, "function");
 });
 
+test("openLogsFolder asks main for its own logs folder and names no path", async () => {
+  const before = invocations.length;
+  await exposed.api.openLogsFolder("C:\\Windows\\System32");
+  assert.deepEqual(invocations.slice(before), [["desktop:open-logs"]]);
+});
+
 test("copyText forwards only the text over the explicit clipboard:write-text channel", async () => {
   const before = invocations.length;
   await exposed.api.copyText("hello");

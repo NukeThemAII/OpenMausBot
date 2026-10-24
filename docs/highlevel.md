@@ -63,7 +63,8 @@ Private Integrations when the agency allows it.
 
 `GET /api/connectors/tools` also carries a `highlevel` entry with the twenty tool names. Bot settings do not use it for
 HighLevel (see [Per-bot scope](#per-bot-scope)). Cloud health merges `{ highlevel: { connected } }` into its connectors
-report.
+report while a HighLevel connection is saved (signed in, or needing sign-in again); a HighLevel never connected is not
+listed.
 
 ## Environment
 

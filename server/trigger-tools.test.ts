@@ -27,7 +27,9 @@ describe("listTriggers", () => {
     expect(listed.triggers!.map((trigger) => [trigger.id, trigger.kind])).toEqual([["r1", "schedule"], ["w1", "webhook"]]);
     expect(JSON.stringify(listed)).not.toContain("sk-ant-api03");
     expect(listed.triggers![1]).toMatchObject({ calls: 2, latestRun: { id: "x1", status: "completed" } });
-    expect(JSON.stringify(listed.triggers![1])).toContain("you never see its secret");
+    // A listing never carries the address; the bot asks for it with include_address.
+    expect(JSON.stringify(listed.triggers![1])).toContain("call list_triggers with this trigger_id and include_address");
+    expect(listed.triggers![1]).not.toHaveProperty("address");
     expect(listed.triggers![0]).toMatchObject({ schedule: { type: "weekly", time: "09:00", weekdays: ["monday", "tuesday", "wednesday", "thursday", "friday"] } });
   });
 
@@ -43,7 +45,7 @@ describe("listTriggers", () => {
 
 describe("parseTriggerRequest", () => {
   const source = { fromBotId: "bot-a", fromThreadId: "thread-a" };
-  const isSchedule = (id: string) => id.startsWith("r");
+  const isSchedule = (id: string) => id.startsWith("r") ? "schedule" as const : id.startsWith("a") ? "app" as const : "webhook" as const;
 
   it("routes a create by its kind and a change by whose id it is", () => {
     expect(parseTriggerRequest({ ...source, action: "create", kind: "schedule", routine: { name: "x" } }, isSchedule))
@@ -54,6 +56,10 @@ describe("parseTriggerRequest", () => {
       .toMatchObject({ ok: true, kind: "schedule", proposal: { action: "pause", routineId: "r1" } });
     expect(parseTriggerRequest({ ...source, action: "update", triggerId: "w1", changes: { name: "y" } }, isSchedule))
       .toMatchObject({ ok: true, kind: "webhook", operation: { action: "update", webhookId: "w1", changes: { name: "y" } } });
+    expect(parseTriggerRequest({ ...source, action: "create", kind: "app", trigger: { name: "x" } }, isSchedule))
+      .toMatchObject({ ok: true, kind: "app", operation: { action: "create", trigger: { name: "x" } } });
+    expect(parseTriggerRequest({ ...source, action: "update", triggerId: "a1", changes: { filter: { from: "acme" } } }, isSchedule))
+      .toMatchObject({ ok: true, kind: "app", operation: { action: "update", triggerId: "a1", changes: { filter: { from: "acme" } } } });
   });
 
   it("refuses a field the trigger's kind does not have, and unknown shapes", () => {
@@ -61,6 +67,8 @@ describe("parseTriggerRequest", () => {
       .toMatchObject({ ok: false, error: expect.stringContaining("has no schedule") });
     expect(parseTriggerRequest({ ...source, action: "update", triggerId: "r1", changes: { eventTypes: ["push"] } }, isSchedule))
       .toMatchObject({ ok: false });
+    expect(parseTriggerRequest({ ...source, action: "update", triggerId: "a1", changes: { event: "SLACK_X" } }, isSchedule))
+      .toMatchObject({ ok: false, error: expect.stringContaining("delete it and create a new one") });
     expect(parseTriggerRequest({ ...source, action: "create", kind: "email", routine: {} }, isSchedule)).toMatchObject({ ok: false });
     expect(parseTriggerRequest({ ...source, action: "create", kind: "schedule", routine: {}, extra: 1 }, isSchedule)).toMatchObject({ ok: false });
   });

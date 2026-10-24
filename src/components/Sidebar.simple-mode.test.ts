@@ -19,6 +19,7 @@ vi.mock("@/state/store", async (importOriginal) => {
 
 import { BotContextMenu, BotListItem, BotThreadList, botRowProps, GroupListItem, PinnedBotCircle, type BotRowProps } from "./Sidebar";
 import { SidebarBotActivity, sidebarBotActivityTasks } from "./SidebarBotActivity";
+import { forgetSearchDisclosuresForTests } from "@/lib/search-disclosure";
 
 const bot: Bot = {
   id: "atlas", threadId: "last-selected", name: "Atlas", title: "", description: "",
@@ -68,8 +69,8 @@ describe("bot-first sidebar", () => {
     const messages: Bot["messages"] = [{ id: "step", role: "bot", kind: "activity", at: 1, tool: { name: "mcp__omb__computer_batch", ok: true } }];
     const candidate = { ...bot, messages, tasks: [], projects: [] };
     const group: Group = { id: "room", threadId: "room-thread", name: "Team", memberIds: [bot.id], messages, defaultResponder: { kind: "mentions" }, bulletin: "", unread: false, createdAt: 1 };
-    const expected = advanced ? "mcp__omb__computer_batch" : "Use the computer";
-    const other = advanced ? "Use the computer" : "mcp__omb__computer_batch";
+    const expected = advanced ? "mcp__omb__computer_batch" : "Use the screen";
+    const other = advanced ? "Use the screen" : "mcp__omb__computer_batch";
     for (const markup of [
       renderToStaticMarkup(createElement(BotListItem, rowProps("comfortable", candidate))),
       renderToStaticMarkup(createElement(GroupListItem, { group, density: "comfortable", onMenu: vi.fn() })),
@@ -129,6 +130,21 @@ describe("bot-first sidebar", () => {
     const name = markup.match(/<span class="flex min-w-0 grow items-center gap-1\.5 truncate text-ink ([^"]*)"/)?.[1];
     expect(name).toBe(advanced ? "text-[15px] font-semibold leading-5" : "text-[14px] font-normal leading-[19px]");
     expect(markup).toContain("truncate text-[13px] leading-[18px]");
+  });
+
+  it.each([
+    { advanced: false, density: "comfortable" },
+    { advanced: false, density: "compact" },
+    { advanced: true, density: "comfortable" },
+    { advanced: true, density: "compact" },
+  ] as const)("puts the bot's role in its name line in $density density (advanced $advanced)", ({ advanced, density }) => {
+    fixture.advanced = advanced;
+    const markup = renderToStaticMarkup(createElement(BotListItem, rowProps(density, { ...bot, title: "Research" })));
+    const nameLine = markup.match(/<span class="flex min-w-0 grow items-center gap-1\.5 truncate text-ink [^"]*">([\s\S]*?)<\/span><\/span><\/span>/)?.[1] ?? "";
+    expect(nameLine.indexOf(">Atlas<")).toBeGreaterThan(-1);
+    expect(nameLine.indexOf('data-testid="bot-role"')).toBeGreaterThan(nameLine.indexOf(">Atlas<"));
+    expect(nameLine).toContain("Research");
+    expect(renderToStaticMarkup(createElement(BotListItem, rowProps(density)))).not.toContain('data-testid="bot-role"');
   });
 
   it.each([
@@ -196,7 +212,8 @@ describe("bot-first sidebar", () => {
     if (density !== "icons") expect(markup).toContain('aria-label="Expand Atlas threads" aria-expanded="false"');
   });
 
-  it.each(densities)("hides thread browsing and creation but keeps attention accessible in %s density", (density) => {
+  it.each(densities)("with Advanced threads off, hides thread browsing and creation but keeps attention accessible in %s density", (density) => {
+    fixture.advanced = true;
     fixture.showThreads = false;
     const markup = renderToStaticMarkup(createElement(BotListItem, rowProps(density)));
     expect(markup).not.toContain("data-sidebar-thread-row");
@@ -230,12 +247,14 @@ describe("bot-first sidebar", () => {
     const enabled = render();
     expect(enabled).toContain("New thread");
     expect(enabled).toContain("New folder");
+    expect(enabled).toContain("Delete all threads…");
     fixture.showThreads = false;
     const disabled = render();
     expect(disabled).not.toContain("New thread");
     expect(disabled).not.toContain("New folder");
+    expect(disabled).toContain("Delete all threads…");
     expect(disabled).toContain("Edit Profile");
-    expect(disabled).toContain("Move to team");
+    expect(disabled).toContain("Move to department");
   });
 
   it("Edit profile opens the panel without naming a section", () => {
@@ -285,7 +304,34 @@ describe("bot-first sidebar", () => {
     ]);
   });
 
+  it.each(densities)("lists the bot alone in Simple mode, with no thread or activity rows under it, keeping its dots, in %s density", (density) => {
+    // Its threads were left expanded in Advanced mode.
+    fixture.advanced = true;
+    let tree: ReactNode;
+    function Capture() { tree = botRow(rowProps(density)); return tree; }
+    renderToStaticMarkup(createElement(Capture));
+    findElement(tree, "aria-label", "Expand Atlas threads")?.props.onClick!({} as MouseEvent);
+    if (density !== "icons") expect(renderToStaticMarkup(createElement(BotListItem, rowProps(density)))).toContain('aria-label="Atlas threads"');
+    fixture.advanced = false;
+    fixture.showThreads = false;
+    for (const query of ["", "history"]) {
+      const markup = renderToStaticMarkup(createElement(BotListItem, rowProps(density, bot, query)));
+      expect(markup).toContain(`data-sidebar-bot-row="${bot.id}"`);
+      expect(markup).not.toContain("data-sidebar-thread-row");
+      expect(markup).not.toContain("data-sidebar-folder-row");
+      expect(markup).not.toContain("data-sidebar-activity-row");
+      expect(markup).not.toContain("data-sidebar-bot-activity");
+      expect(markup).not.toContain('aria-label="Atlas threads"');
+      expect(markup).toContain('data-testid="waiting-dot"');
+    }
+    const unread = renderToStaticMarkup(createElement(BotListItem, rowProps(density, { ...bot, tasks: [bot.tasks![0]!, bot.tasks![5]!] })));
+    expect(unread).not.toContain("data-sidebar-activity-row");
+    expect(unread).toContain(density === "icons" ? "rounded-full border border-panel bg-accent" : 'aria-label="Unread threads"');
+    forgetSearchDisclosuresForTests();
+  });
+
   it("reveals a matching sole thread when searching a bot", () => {
+    fixture.advanced = true;
     const single = { ...bot, projects: [], tasks: [bot.tasks![0]], unread: false };
     const markup = renderToStaticMarkup(createElement(BotListItem, rowProps("comfortable", single, "last selected")));
     expect(markup).toContain('data-sidebar-thread-row="last-selected"');
@@ -364,6 +410,7 @@ describe("activity-only escape hatch", () => {
       const markup = renderToStaticMarkup(createElement(BotListItem, rowProps("comfortable", left)));
       return ["left-behind", "main-chat"].filter((threadId) => markup.includes(`data-sidebar-activity-row="${threadId}"`));
     };
+    fixture.advanced = true;
     fixture.showThreads = false;
     expect(rows()).toEqual(["left-behind"]);
     fixture.state.selectedId = left.id;

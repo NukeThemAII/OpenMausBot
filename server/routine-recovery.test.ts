@@ -21,7 +21,7 @@ const MINUTE = 60_000;
 const ROUTING = "stream error: workspace routing discovery failed: error sending request";
 const STALL = "No activity for 20 minutes — the routine was stopped";
 const SIGNED_OUT = "Not logged in · Please run /login";
-const SIGN_IN_ACTION = "This bot's engine is signed out. Sign in again in Settings → Model providers.";
+const SIGN_IN_ACTION = "This bot's AI is signed out. Sign in again in Settings → Model providers.";
 const BUSY = "this thread is already working — interrupt it first";
 type EventBody = RuntimeEvent extends infer E ? E extends RuntimeEvent ? Omit<E, "eventId" | "provider" | "threadId" | "createdAt"> : never : never;
 
@@ -162,7 +162,7 @@ describe("an unattended run that fails for a passing reason", () => {
     const h = harness();
     const run = await h.start(h.routine().id);
     h.manager.failThread("thread-1", STALL, { cause: "stalled" });
-    expect(h.run(run.id)).toMatchObject({ status: "queued", retried: "stalled", attention: `Starting again shortly after the engine stalled: ${STALL}` });
+    expect(h.run(run.id)).toMatchObject({ status: "queued", retried: "stalled", attention: `Starting again shortly after the AI stalled: ${STALL}` });
     h.event("thread-1", { type: "turn.completed", ok: false, stopReason: "interrupted" });
     expect(h.run(run.id).status).toBe("queued");
     await h.advance(16 * SECOND);
@@ -239,7 +239,7 @@ describe("an unattended run only its owner can fix", () => {
     const h = harness();
     const first = await h.start(h.routine("maus-1", "Inbox sweep").id);
     h.fail("thread-1", SIGNED_OUT, { setup: true, stopReason: "auth_required" });
-    expect(h.run(first.id)).toMatchObject({ status: "failed", error: `${SIGN_IN_ACTION} The engine said: “${SIGNED_OUT}”` });
+    expect(h.run(first.id)).toMatchObject({ status: "failed", error: `${SIGN_IN_ACTION} The AI said: “${SIGNED_OUT}”` });
     expect(h.run(first.id).retried).toBeUndefined();
     expect(h.failed.map(({ alert }) => alert)).toEqual([{ detail: SIGN_IN_ACTION }]);
     await h.advance(5 * MINUTE);
@@ -272,7 +272,7 @@ describe("an unattended run only its owner can fix", () => {
     const run = await h.start(h.routine("maus-1").id);
     h.fail("thread-1", credits, { stopReason: "rpc_error" });
     expect(h.run(run.id)).toMatchObject({ status: "failed", error: credits });
-    expect(h.failed[0]!.alert).toEqual({ detail: "This bot's engine account is out of credit. Add credit with the provider, or choose another engine for this bot." });
+    expect(h.failed[0]!.alert).toEqual({ detail: "This bot's AI account is out of credit. Add credit with the provider, or choose another AI for this bot." });
 
     const trial = await h.start(h.routine("maus-2").id);
     h.fail(trial.threadId!, TRIAL_CREDIT_REFUSED.used_up, { setup: true, trialCredit: "used_up" });
@@ -283,13 +283,13 @@ describe("an unattended run only its owner can fix", () => {
   it("waits out a usage limit that resets within twelve hours, once, and says so once", async () => {
     const h = harness();
     const resetsAt = START + 2 * 3_600_000;
-    const limit = "This Claude account has reached its 5-hour limit, which resets soon. Until then, switch this bot to another engine or Claude account.";
+    const limit = "This Claude account has reached its 5-hour limit, which resets soon. Until then, switch this bot to another AI or Claude account.";
     const run = await h.start(h.routine().id);
     h.fail("thread-1", limit, { stopReason: "quota", limitResetsAt: resetsAt });
     expect(h.run(run.id)).toMatchObject({ status: "queued", retried: "usage_limit", retryAt: resetsAt + MINUTE, threadId: "thread-1",
-      attention: expect.stringMatching(/^Waiting for the engine's usage limit to reset; this run starts again at /) });
+      attention: expect.stringMatching(/^Waiting for the AI's usage limit to reset; this run starts again at /) });
     expect(h.failed).toEqual([]);
-    expect(h.deferred).toEqual([expect.objectContaining({ alert: { detail: expect.stringMatching(/^This bot's engine reached its usage limit\. This run starts again at .+\.$/) } })]);
+    expect(h.deferred).toEqual([expect.objectContaining({ alert: { detail: expect.stringMatching(/^This bot's AI reached its usage limit\. This run starts again at .+\.$/) } })]);
     expect(h.manager.wakeHold()).toEqual({ hold: false });
     expect(h.manager.wakeHold(3 * 3_600_000)).toEqual({ hold: true, reason: "due", at: resetsAt + MINUTE });
 
@@ -312,7 +312,7 @@ describe("an unattended run only its owner can fix", () => {
     const far = await h.start(h.routine("maus-2").id);
     h.fail(far.threadId!, "This Claude account has reached its weekly limit.", { stopReason: "quota", limitResetsAt: START + 13 * 3_600_000 });
     expect(h.run(far.id).status).toBe("failed");
-    const action = "This bot's engine reached its usage limit. Its routines work again once it resets, or choose another engine for this bot now.";
+    const action = "This bot's AI reached its usage limit. Its routines work again once it resets, or choose another AI for this bot now.";
     expect(h.failed.map(({ alert }) => alert)).toEqual([{ detail: action }, { detail: action }]);
     expect(h.deferred).toEqual([]);
   });

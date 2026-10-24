@@ -106,6 +106,15 @@ export function antigravityProfileDirectory(instanceId: string, baseDir = DATA_D
   return join(baseDir, "providers", "antigravity", createHash("sha256").update(instanceId).digest("hex"));
 }
 
+/** A removed account's Google sign-in goes with its profile, so no refresh token outlives the account. Best effort:
+ * the account is already gone from the config, and Windows refuses while a retiring process still holds a file. */
+export async function removeAntigravityProfile(instanceId: string, baseDir = DATA_DIR): Promise<void> {
+  await rm(antigravityProfileDirectory(instanceId, baseDir), { recursive: true, force: true, maxRetries: 4, retryDelay: 250 })
+    .catch((error) => {
+      console.warn(`antigravity: could not remove a removed account's profile: ${error instanceof Error ? error.message : String(error)}`);
+    });
+}
+
 /** An isolated Google profile per instance; foreign Google credentials are stripped so the account
  * and billing never change silently. */
 export async function prepareAntigravityProfile(input: {

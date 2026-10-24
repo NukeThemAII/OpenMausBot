@@ -14,7 +14,7 @@ vi.mock("@/state/store", async (importOriginal) => ({
 }));
 vi.mock("./CloudAccountSettings", () => ({ CloudAccountSettings: ({ cloudHome }: { cloudHome?: boolean }) => `CLOUD_PLAN_MARKER${cloudHome ? " home" : ""}` }));
 
-const plan = { state: vi.fn(), manage: vi.fn(), useThisComputer: vi.fn() };
+const plan = { state: vi.fn(), manage: vi.fn() };
 beforeEach(() => {
   fixture.section = "cloudAccount"; fixture.config = undefined;
   vi.stubGlobal("document", { documentElement: { dataset: {} } });
@@ -35,7 +35,7 @@ describe.each(["Simple", "Advanced"] as const)("%s Settings → OMB Cloud on a s
     fixture.config = { cloudHome: true };
     const html = render();
     expect(html).toContain("CLOUD_PLAN_MARKER home"); expect(html).toContain(reachable());
-    expect(html).toContain(fixture.advanced ? 'value="cloudAccount"' : 'data-settings-page="account"');
+    expect(html).toContain(fixture.advanced ? 'value="cloudAccount"' : 'data-settings-page="cloud"');
   });
   it("is the full account section in the app on this computer", () => {
     vi.stubGlobal("window", { ogb: { cloudAccount: {}, cloudPlan: plan } });

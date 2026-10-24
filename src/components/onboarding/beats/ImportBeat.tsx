@@ -1,6 +1,8 @@
 // "Bring what you already use": the skills and MCP servers another AI tool keeps on this computer, in one step.
 import { useEffect, useState, type ReactNode } from "react";
-import { BookOpen, Check, Info, Plug } from "lucide-react";
+import { BookOpen, Check, ChevronDown, Info, Plug } from "lucide-react";
+import { GrokBotMark } from "@/components/GrokBotMark";
+import { GrokImportFlow } from "@/components/GrokImportFlow";
 import { ClaudeMark, CodexMark, CursorMark, PresetProviderMark } from "@/components/ProviderIcons";
 import { track } from "@/lib/analytics";
 import { cn } from "@/lib/cn";
@@ -28,7 +30,7 @@ function SourceMarks({ sources }: { sources: readonly SetupSource[] }) {
   );
 }
 
-function ImportRow({ icon, label, summary, hint, sources, checked, disabled, onChange }: {
+export function ImportRow({ icon, label, summary, hint, sources, checked, disabled, onChange }: {
   icon: ReactNode;
   label: string;
   summary: string;
@@ -61,6 +63,37 @@ function ImportRow({ icon, label, summary, hint, sources, checked, disabled, onC
   );
 }
 
+/** "Have a Grok Bot? Paste its link": optional, opens the same Grok Bot import as Templates and Settings, inline. */
+export function GrokBotRow({ label, open, disabled, onToggle }: { label: string; open: boolean; disabled: boolean; onToggle: () => void }) {
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={onToggle}
+        disabled={disabled}
+        aria-expanded={open}
+        className="flex w-full items-start gap-3 px-3.5 py-3 text-left transition-colors hover:bg-raised/40 disabled:cursor-default"
+      >
+        <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center"><GrokBotMark size={15} /></span>
+        <span className="flex min-w-0 flex-1 flex-col">
+          <span className="text-[12.5px] leading-5 text-ink-secondary">
+            <span className="mr-2 text-[13.5px] font-medium text-ink">{label}</span>
+            {t("onboarding.import.grokSummary")}
+          </span>
+          <span className="mt-0.5 text-[12px] leading-relaxed text-ink-secondary">{t("onboarding.import.grokHint")}</span>
+        </span>
+        <ChevronDown size={15} className={cn("mt-0.5 shrink-0 text-ink-secondary transition-transform", open && "rotate-180")} />
+      </button>
+      {open && (
+        <div className="px-3.5 pb-3.5">
+          <GrokImportFlow bare />
+          <QuietButton onClick={onToggle} className="mt-2">{t("onboarding.import.grokNotNow")}</QuietButton>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ImportBeat({ onNext, onSkip, setMascot, bump, detection, client, result, onResult, onBusy }: BeatProps & {
   detection: SetupDetection;
   client: SetupImportClient;
@@ -75,6 +108,7 @@ export function ImportBeat({ onNext, onSkip, setMascot, bump, detection, client,
   const [chosen, setChosen] = useState({ skills: hasSkills, tools: hasTools });
   const [status, setStatus] = useState<"idle" | "working" | "failed">("idle");
   const [advanceSoon, setAdvanceSoon] = useState(false);
+  const [grokOpen, setGrokOpen] = useState(false);
   const working = status === "working";
 
   useEffect(() => {
@@ -169,6 +203,7 @@ export function ImportBeat({ onNext, onSkip, setMascot, bump, detection, client,
             onChange={(tools) => setChosen((now) => ({ ...now, tools }))}
           />
         )}
+        <GrokBotRow label={t("onboarding.import.grok")} open={grokOpen} disabled={working} onToggle={() => setGrokOpen((open) => !open)} />
       </div>
       {status === "failed" && <p role="alert" className="mt-3 text-[13px] text-danger">{t("onboarding.import.error")}</p>}
       <PrimaryButton onClick={() => void bring()} disabled={working || !(chosen.skills || chosen.tools)} className="mt-5">

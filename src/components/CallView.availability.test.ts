@@ -42,8 +42,8 @@ describe("call capability guidance", () => {
       reasonCode: "remote-server",
     }), false);
     expect(help).toEqual({
-      label: "Calls where you take turns work on This computer",
-      reason: "They listen with your Mac's own speech recognition, which only This computer can use.",
+      label: "Calls where you take turns work with bots on this Mac",
+      reason: "They listen with your Mac's own speech recognition, which only bots on this Mac can use.",
     });
     expect(help).not.toHaveProperty("action");
   });

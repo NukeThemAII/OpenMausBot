@@ -4,7 +4,7 @@
 import type { ServerResponse } from "node:http";
 
 import { BROWSER_HELD_ELSEWHERE } from "../../../shared/browser-held.ts";
-import { BrowserLiveError, parseBrowserLiveAction } from "../../browser-live.ts";
+import { BROWSER_ASLEEP_ERROR, BROWSER_WAITING, BrowserLiveError, parseBrowserLiveAction } from "../../browser-live.ts";
 import type { BrowserService, BrowserTarget } from "../service.ts";
 import type { Viewer, ViewerOutput } from "./core.ts";
 
@@ -51,7 +51,8 @@ interface V1Viewer {
   restarting: boolean;
 }
 
-function displayUrl(value: unknown): string {
+/** An address a viewer may show: a web page's, never its credentials. */
+export function displayUrl(value: unknown): string {
   if (typeof value !== "string" || value.length > 8192) return "";
   try {
     const url = new URL(value);
@@ -164,6 +165,10 @@ export class LiveV1 {
           this.#close(viewer);
         }
         return;
+      case "asleep":
+        this.#send(viewer, BROWSER_ASLEEP_ERROR);
+        this.#close(viewer);
+        return;
       default:
         return;
     }
@@ -183,7 +188,7 @@ export class LiveV1 {
     const waiting = setTimeout(() => {
       if (viewer.ready || viewer.closed) return;
       this.#startEvents(viewer);
-      this.#send(viewer, { type: "waiting", reason: "busy" });
+      this.#send(viewer, BROWSER_WAITING);
     }, WAITING_AFTER_MS);
     waiting.unref?.();
     try {

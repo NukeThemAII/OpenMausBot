@@ -150,9 +150,10 @@ const mintCapability = async (botId: string, threadId: string): Promise<string> 
 };
 
 const hideSeededBot = async () => {
-  // Otherwise the seeded bot joins the unsectioned team and the roster assertions depend on install order.
+  // Otherwise the seeded bot joins the unsectioned team and the roster assertions depend on install order. It is that
+  // team's Chief and the install's MausBot, which is never archived, so it steps down into a department of its own.
   const seeded = (await api("GET", "/api/bots?messages=0")).body.bots[0];
-  await api("PATCH", `/api/bots/${seeded.id}`, { hidden: true });
+  expect((await api("PATCH", `/api/bots/${seeded.id}`, { chiefOfStaff: false, section: "Starter" })).status).toBe(200);
 };
 
 const peerNames = async (selfId: string, token: string) => {

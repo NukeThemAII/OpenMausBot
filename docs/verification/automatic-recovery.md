@@ -4,7 +4,12 @@ Settings → General → Automatic recovery is off by default. Choose one backup
 engine/model and save. When an ACP engine fails during startup, before sending
 the prompt or receiving any tool, permission, file or assistant activity, the
 driver can report a recoverable failure **only after its process has stopped**.
-OMB tries the backup once in the same thread with the canonical conversation.
+Claude can also report a refused sign-in before any model or tool activity.
+Only its structured synthetic `authentication_failed` API-error frame followed
+by an error result with no new cost qualifies. The driver waits for its process
+tree to stop before reporting that refusal. Recovery skips
+other models on the same engine instance, since they share the failed sign-in.
+OMB tries the backup in the same thread with the canonical conversation.
 The thread keeps the backup selection; bot defaults and sibling threads do not
 change. A visible activity line explains the switch.
 
@@ -12,8 +17,8 @@ Direct bot threads, Chief and direct coordinated work use this path. Channels
 and drivers without the startup-proof contract do not. Credential-card
 continuations are excluded. This is not recovery from an accepted prompt that
 has gone silent: even without output, the engine might have performed actions.
-No automatic replay follows authentication, quota, invalid-model, safety or
-approval failures, a failed backup, Stop, or newer queued input.
+Other authentication failures, quota, invalid-model, safety and approval
+failures do not qualify. Neither do a failed backup, Stop, or newer queued input.
 
 Existing approval, organisation-model and spend-limit gates run again. An
 engine switch requiring a new Full/Custom grant is refused, not downgraded or
@@ -25,6 +30,7 @@ runner changes require a manual choice. Backup provider charges may apply.
 
 ```sh
 pnpm exec vitest run server/automatic-recovery.test.ts server/automatic-recovery.e2e.test.ts server/drivers/acp/acp.test.ts server/drivers/retry.test.ts server/turn-dispatch-guard.test.ts server/config.test.ts src/components/AutomaticRecoverySettings.test.ts src/state/store.test.ts
+pnpm exec vitest run server/drivers/claude-auth-recovery.test.ts server/drivers/claude.test.ts
 pnpm exec vitest run server/direct-coordination.e2e.test.ts server/guarded-messages-api.test.ts server/acp-recovery.e2e.test.ts --maxWorkers=2
 pnpm typecheck
 pnpm lint
@@ -35,7 +41,10 @@ The recovery integration suite launches `launchVerificationServer` in a
 temporary home, then configures only fake ACP and Claude engines there. It
 checks one backup dispatch, retained history, one user message, unchanged
 permissions/defaults/siblings, bounded failure, no replay after prompt/output,
-Stop/new-message precedence and settings validation. A coordinated specialist
+Stop/new-message precedence and settings validation. A signed-out fake Claude
+recovers through fake Codex with one user message and unchanged bot defaults
+and permissions. Driver checks refuse recovery after activity or failed cleanup.
+A coordinated specialist
 recovers through the real agents proxy and returns one result and one final
 Chief reply. Each fixture prints a
 retained `.log.automatic-recovery.json` evidence path, then removes its own

@@ -24,7 +24,7 @@ const BEATS = beatsFor({ dictation: true, reel: true, setupImport: true, cloud: 
 
 /** The Cloud beat's stand-in for the Admin's offer (the app reads its own). */
 const PREVIEW_CLOUD_OFFER: CloudOffer = { recommended: "pro", creditUsd: 5, reminderDays: 1, refundDays: 14, plans: [
-  { tier: "personal", label: "Personal", amount: 2900, trialDays: 3 }, { tier: "pro", label: "Pro", amount: 4900, trialDays: 3 },
+  { tier: "starter", label: "Starter", amount: 1500, trialDays: 3 }, { tier: "pro", label: "Pro", amount: 4900, trialDays: 3 },
   { tier: "max", label: "Max", amount: 9900, trialDays: 3 }] };
 
 // A fixture: the preview never looks at this computer's own skills or MCP servers.

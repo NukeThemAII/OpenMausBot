@@ -115,6 +115,16 @@ describe("workspace", () => {
     expect(loadMemory(BOT)).toBeNull();
   });
 
+  it("treats localized factory memory seeds as empty", () => {
+    for (const [language, heading] of [["pt-BR", "# Memória"], ["es", "# Memoria"], ["en", "# Memory"]] as const) {
+      const bot = `${BOT}-${language}`;
+      const dir = ensureWorkspace(bot, language);
+      expect(readFileSync(join(dir, "MEMORY.md"), "utf8")).toContain(heading);
+      expect(loadMemory(bot)).toBeNull();
+      expect(readMemoryFile(bot)).toEqual({ text: "", truncated: false });
+    }
+  });
+
   it("loads written memory whole when under budget", () => {
     const dir = ensureWorkspace(BOT);
     writeFileSync(join(dir, "MEMORY.md"), "# Memory\n- fact one\n- fact two\n");

@@ -56,6 +56,8 @@ export function cloudEngineChoices(engines: CloudEngineChoices, { handing = fals
         const picked = open === choice.id;
         const instance = cloudEngine(instances, choice.driverKind);
         const connected = Boolean(instance && engineReady(instance));
+        // Connected through an API key, not a plan: say so rather than "Use your Claude subscription".
+        const hint = connected && instance?.snapshot.account?.method === "api-key" ? t("cloudSignIn.keyHint") : choice.hint;
         return (
           <button
             key={choice.id}
@@ -84,7 +86,7 @@ export function cloudEngineChoices(engines: CloudEngineChoices, { handing = fals
                   </span>}
             </span>
             <span className="mt-5 block text-[15px] font-semibold leading-snug text-ink">{choice.label}</span>
-            <span className="mt-1 block text-[12.5px] leading-snug text-ink-secondary">{choice.hint}</span>
+            <span className="mt-1 block text-[12.5px] leading-snug text-ink-secondary">{hint}</span>
           </button>
         );
       })}

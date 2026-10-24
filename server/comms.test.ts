@@ -19,6 +19,10 @@ const FAKE_CLI = join(SERVER_DIR, "testing", "fake-acp-cli.ts");
 const TEST_CAPABILITY_KEY = "comms-test-capability-key-0123456789abcdef";
 const PORT = 18800 + Math.floor(Math.random() * 10_000);
 const BASE = `http://127.0.0.1:${PORT}`;
+// A fresh connection per request: a request sent on an idle kept-alive socket while the server's event loop is busy
+// (seconds, on a Windows runner) is reset when Node's keep-alive timeout fires before the server reads it (Node 24).
+const request = (path: string, init: { method?: string; headers?: Record<string, string>; body?: string } = {}) =>
+  fetch(`${BASE}${path}`, { ...init, headers: { ...init.headers, connection: "close" } });
 const SETTLED = "Your downstream room requests have settled.";
 const WOKE_WITH_RESULT = "woke after delegation: saw the result";
 const WOKE_WITHOUT_RESULT = "woke after delegation: no result";
@@ -109,7 +113,7 @@ describe("routine comms e2e on the job runtime (fake ACP fleet)", () => {
     for (;;) {
       if (await predicate()) return;
       if (Date.now() > deadline) {
-        const state = await fetch(`${BASE}/api/bots`).then((res) => res.json()).catch(() => ({ bots: [] })) as any;
+        const state = await request("/api/bots").then((res) => res.json()).catch(() => ({ bots: [] })) as any;
         const tails = (state.bots ?? []).filter((candidate: any) => !candidate.hidden).map((candidate: any) => ({
           name: candidate.name, busy: candidate.busy,
           tail: (candidate.messages ?? []).slice(-6).map((m: any) => ({ role: m.role, kind: m.kind, text: m.text?.slice(0, 300), tool: m.tool?.name, from: m.from?.name })),
@@ -121,7 +125,7 @@ describe("routine comms e2e on the job runtime (fake ACP fleet)", () => {
     }
   };
   const api = async (method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> => {
-    const res = await fetch(`${BASE}${path}`, {
+    const res = await request(path, {
       method,
       headers: body ? { "content-type": "application/json" } : undefined,
       body: body ? JSON.stringify(body) : undefined,
@@ -364,7 +368,7 @@ describe("routine comms e2e on the job runtime (fake ACP fleet)", () => {
     const deadline = Date.now() + 20_000;
     for (;;) {
       try {
-        const res = await fetch(`${BASE}/api/health`);
+        const res = await request("/api/health");
         if (res.ok) break;
       } catch {
       }
@@ -762,14 +766,14 @@ describe("routine comms e2e on the job runtime (fake ACP fleet)", () => {
 
         const taskId = readFileSync(join(home, "chief-task-id"), "utf8").trim();
         expect(taskId).toBeTruthy();
-        const minted = await fetch(`${BASE}/api/testing/internal-capability`, {
+        const minted = await request("/api/testing/internal-capability", {
           method: "POST",
           headers: { "content-type": "application/json", "x-openmausbot-test-capability": TEST_CAPABILITY_KEY },
           body: JSON.stringify({ botId: chief.id, threadId: sourceThreadId, kind: "agents" }),
         });
         expect(minted.status).toBe(201);
         const { token } = await minted.json() as { token: string };
-        const status = await fetch(`${BASE}/api/internal/assignment-status?id=${taskId}`, {
+        const status = await request(`/api/internal/assignment-status?id=${taskId}`, {
           headers: { authorization: `Bearer ${token}` },
         });
         expect(status.status).toBe(200);

@@ -50,7 +50,7 @@ function harness() {
 const create = { action: "create", webhook: { name: "Interested replies", instructions: "Draft a follow-up for the lead in the payload." } };
 
 describe("WebhookRequestService", () => {
-  it("creates a bot's webhook at once, with a receipt card and no secret anywhere the bot or the transcript sees", () => {
+  it("creates a bot's webhook at once, with a receipt card that never carries its secret, and keeps its address", () => {
     const { service, webhooks, store, dir } = harness();
     const applied = service.submit({ botId: "bot-a", threadId: "thread-a", operation: create });
     expect(applied).toMatchObject({ state: "applied", action: "create" });
@@ -60,12 +60,13 @@ describe("WebhookRequestService", () => {
     expect(message!.card).toMatchObject({ answered: "allow", autoApplied: true, dismissed: true, options: [], tool: "create_trigger",
       webhookRequest: { version: 1, botId: "bot-a", threadId: "thread-a", resultId: webhook!.id, operation: { action: "create" } } });
     expect(applied.summary).toBe("When another app sends something, Support follows: Draft a follow-up for the lead in the payload.");
-    // The secret was discarded: nothing returned or stored on the card carries one, and the stored file keeps only its hash.
+    // Neither the result nor the card carries the secret, and the file holds only its hash and a sealed copy.
     expect(JSON.stringify({ applied, card: message!.card })).not.toMatch(/whsec_/);
     expect(readFileSync(join(dir, "webhooks.json"), "utf8")).not.toMatch(/whsec_/);
-    // The person mints the link later, exactly as the Triggers page does today.
-    const minted = webhooks.rotateSecret(webhook!.id)!;
-    expect(webhooks.authorize(webhook!.endpointId, minted.secret)).toBe(true);
+    // The address is kept: the bot that owns it and the person's Copy address read the same one, and it works.
+    const kept = webhooks.currentSecret(webhook!.id, false)!;
+    expect(kept.secret).toMatch(/^whsec_/);
+    expect(webhooks.authorize(webhook!.endpointId, kept.secret!)).toBe(true);
   });
 
   it("refuses a duplicate, another bot's webhook, and a field a webhook does not have", () => {

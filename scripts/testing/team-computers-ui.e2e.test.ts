@@ -71,10 +71,10 @@ type Computer = { id: string; name: string; section: string | null; state: strin
     await click("Cloud computer");
     await expect.poll(() => evaluate("document.activeElement?.id")).toBe("canvas-computer-name");
     expect(await snapshot()).toContain("Your Boat plan and usage charges apply");
-    expect(await evaluate("[...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Create cloud computer')?.disabled")).toBe(true);
-    await ui("type", "--ref", await ref("New cloud computer", "textbox"), "--text", "Engineering desktop");
+    expect(await evaluate("[...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Create cloud desktop')?.disabled")).toBe(true);
+    await ui("type", "--ref", await ref("New cloud desktop", "textbox"), "--text", "Engineering desktop");
     expect((await receipts()).calls.every((call: { method: string }) => call.method === "GET")).toBe(true);
-    await click("Create cloud computer");
+    await click("Create cloud desktop");
     await expect.poll(async () => (await computers()).length, { timeout: 30_000 }).toBe(1);
     const machine = (await computers())[0];
     await expect.poll(async () => (await record(machine.id))?.state).toBe("idle");
@@ -153,7 +153,7 @@ type Computer = { id: string; name: string; section: string | null; state: strin
     await expect.poll(snapshot, { timeout: 10_000 }).toContain('log "Conversation with Ben"');
     await click("Bot's computer");
     await expect.poll(snapshot, { timeout: 10_000 }).toContain("Ben's screen");
-    await expect.poll(snapshot, { timeout: 20_000, interval: 250 }).toContain("Uses Engineering desktop, the cloud computer this team shares.");
+    await expect.poll(snapshot, { timeout: 20_000, interval: 250 }).toContain("Uses Engineering desktop, the cloud desktop this department shares.");
     expect(await snapshot()).not.toContain("Choose Cloud");
     await click("Open Team map");
     expect((await receipts()).calls.filter((call: { method: string; path: string }) => call.method === "POST" && call.path === "/sandboxes")).toHaveLength(1);
@@ -172,16 +172,16 @@ type Computer = { id: string; name: string; section: string | null; state: strin
     await click("Sleep");
     await expect.poll(async () => (await record(machine.id))?.state).toBe("archived");
     await provider("POST", "/__fixture", { refuseCreate: true });
-    await click("New cloud computer");
-    await ui("type", "--ref", await ref("New cloud computer", "textbox"), "--text", "Retry desktop");
-    await click("Create cloud computer");
+    await click("New cloud desktop");
+    await ui("type", "--ref", await ref("New cloud desktop", "textbox"), "--text", "Retry desktop");
+    await click("Create cloud desktop");
     await expect.poll(snapshot, { timeout: 20_000 }).toContain("Fixture account is rate-limited");
     const retry = (await computers()).find(computer => computer.name === "Retry desktop")!;
     expect(retry).toBeDefined();
     expect(retry.section).toBeNull();
     await provider("POST", "/__fixture", { refuseCreate: false });
     // Reusing the still-open creation form retries the durable request ID.
-    await click("Create cloud computer");
+    await click("Create cloud desktop");
     await expect.poll(async () => (await record(retry.id))?.state, { timeout: 30_000 }).toBe("idle");
     expect(await computers()).toHaveLength(2);
     const providerResult = await receipts();

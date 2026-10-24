@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { EVENTS_DIR, ensureDirs } from "../config.ts";
+import { addHeldSecretScrubber } from "../redact.ts";
 import type { RuntimeEvent } from "../contracts.ts";
 import { makeFakeDriver } from "../testing/fake-driver.ts";
 import { EventBus } from "./bus.ts";
@@ -85,6 +86,25 @@ describe("EventBus", () => {
     const logged = readFileSync(join(EVENTS_DIR, "redacted-log.ndjson"), "utf8");
     expect(logged).not.toContain(key);
     expect(logged).toContain("«redacted");
+  });
+
+  it("scrubs each event once on its way to the log", async () => {
+    const bus = new EventBus();
+    const scrubbed: string[] = [];
+    const remove = addHeldSecretScrubber((text) => {
+      scrubbed.push(text);
+      return text.replaceAll("hunter2-held-value", "••••••");
+    });
+    try {
+      bus.publish(testEvent({ type: "runtime.error", message: "login failed with hunter2-held-value" } as Partial<RuntimeEvent>));
+      await bus.flush();
+    } finally {
+      remove();
+    }
+    expect(scrubbed.filter((text) => text.includes("login failed"))).toHaveLength(1);
+    const log = readFileSync(join(EVENTS_DIR, "thread-1.ndjson"), "utf8");
+    expect(log).toContain("login failed with ••••••");
+    expect(log).not.toContain("hunter2-held-value");
   });
 
   it("reports an incomplete log once while continuing live delivery", async () => {
@@ -441,6 +461,82 @@ describe("EventBus streamed text", () => {
     expect(summary(seen).at(-1)).toBe("thread-3:assistant_text:last words");
     vi.advanceTimersByTime(100);
     expect(seen).toHaveLength(3);
+    await bus.flush();
+  });
+});
+
+describe("EventBus status-line progress", () => {
+  const progress = (bytes: number, over: Partial<RuntimeEvent> = {}): RuntimeEvent =>
+    testEvent({ type: "turn.progress", activity: "write", file: "index.html", bytes, itemId: "toolu_1", turnId: "turn-1", ...over } as Partial<RuntimeEvent>);
+  const shown = (events: RuntimeEvent[]) =>
+    events.map((event) => (event.type === "turn.progress" ? `progress:${event.bytes ?? ""}` : event.type));
+
+  beforeEach(() => {
+    rmSync(EVENTS_DIR, { recursive: true, force: true });
+    ensureDirs();
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("delivers a report live but never writes it to the event log", async () => {
+    const bus = new EventBus();
+    const seen: RuntimeEvent[] = [];
+    bus.subscribe((event) => seen.push(event));
+    bus.publish(progress(0, { threadId: "live-only" }));
+    bus.publish(testEvent({ threadId: "live-only", type: "item.started", itemType: "tool", itemId: "toolu_1", turnId: "turn-1" } as Partial<RuntimeEvent>));
+    await bus.flush();
+    expect(shown(seen)).toEqual(["progress:0", "item.started"]);
+    const logged = readFileSync(join(EVENTS_DIR, "live-only.ndjson"), "utf8").trim().split("\n").map((line) => JSON.parse(line).type);
+    expect(logged).toEqual(["item.started"]);
+  });
+
+  it("sends a frame only when what it shows changes, a few a second at most, and the newest one last", async () => {
+    const bus = new EventBus();
+    const seen: RuntimeEvent[] = [];
+    bus.subscribe((event) => seen.push(event));
+    // 30 s of a Write streaming 100 bytes every 20 ms: 1,500 reports, about 150 KB.
+    for (let i = 0; i < 1500; i++) {
+      bus.publish(progress(i * 100));
+      vi.advanceTimersByTime(20);
+    }
+    vi.advanceTimersByTime(1000);
+    const frames = seen.filter((event) => event.type === "turn.progress") as Array<Extract<RuntimeEvent, { type: "turn.progress" }>>;
+    expect(frames.length, "at most one frame per 400 ms").toBeLessThanOrEqual(Math.ceil(30_000 / 400) + 1);
+    expect(frames.length, "a frame for each visible change it could keep up with").toBeGreaterThan(50);
+    expect(frames.at(-1)!.bytes).toBe(149_900);
+    const kb = frames.map((frame) => Math.floor((frame.bytes ?? 0) / 1024));
+    expect(new Set(kb).size, "no two frames read the same").toBe(kb.length);
+    await bus.flush();
+  });
+
+  it("drops a waiting report once the thread says anything newer, and forgets it when the turn ends", async () => {
+    const bus = new EventBus();
+    const seen: RuntimeEvent[] = [];
+    bus.subscribe((event) => seen.push(event));
+    bus.publish(progress(2048));
+    bus.publish(progress(4096));
+    bus.publish(testEvent({ type: "item.started", itemType: "tool", itemId: "toolu_1", turnId: "turn-1" } as Partial<RuntimeEvent>));
+    vi.advanceTimersByTime(1000);
+    expect(shown(seen)).toEqual(["progress:2048", "item.started"]);
+
+    bus.publish(progress(8192));
+    bus.publish(progress(9216));
+    bus.publish(testEvent({ type: "turn.completed", ok: true, turnId: "turn-1" } as Partial<RuntimeEvent>));
+    vi.advanceTimersByTime(1000);
+    expect(shown(seen)).toEqual(["progress:2048", "item.started", "progress:8192", "turn.completed"]);
+    // The log writes before the next test clears its folder.
+    await bus.flush();
+  });
+
+  it("keeps threads apart", async () => {
+    const bus = new EventBus();
+    const seen: RuntimeEvent[] = [];
+    bus.subscribe((event) => seen.push(event));
+    bus.publish(progress(1024, { threadId: "a" }));
+    bus.publish(progress(1024, { threadId: "b" }));
+    expect(seen.map((event) => event.threadId)).toEqual(["a", "b"]);
     await bus.flush();
   });
 });

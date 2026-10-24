@@ -118,7 +118,7 @@ export function createWebhookIngressHandler(manager: WebhookManager, claimReques
       const raw = await readRawBody(req);
       const contentType = header(req, "content-type")?.split(";")[0]?.trim().toLowerCase() ?? "text/plain";
       const payload = parsePayload(raw, contentType);
-      const result = manager.receive(match[1], secret, {
+      const result = await manager.receive(match[1], secret, {
         payload,
         contentType,
         eventName: eventName(req),

@@ -136,6 +136,14 @@ describe("what a row records", () => {
     expect(botChangeRows({ id: "b" }, off, off)).toEqual([]);
   });
 
+  it("records a bot moving to another VPS server, and back to the default", () => {
+    const own = botAuditSnapshot({ id: "b", cloudBackend: "vps", vpsAlias: "alpha-vps" });
+    const onDefault = botAuditSnapshot({ id: "b", cloudBackend: "vps" });
+    expect(botChangeRows({ id: "b" }, onDefault, own).map((row) => [row.changed, row.before, row.after]))
+      .toEqual([[["vpsAlias"], { vpsAlias: null }, { vpsAlias: "alpha-vps" }]]);
+    expect(botChangeRows({ id: "b" }, own, onDefault).map((row) => row.changed)).toEqual([["vpsAlias"]]);
+  });
+
   it("knows when more than one person signs in", () => {
     expect(sharedSignIn({ admins: ["boss@example.test"], members: [] })).toBe(false);
     expect(sharedSignIn({ admins: [], members: [] })).toBe(false);

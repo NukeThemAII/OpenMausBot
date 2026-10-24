@@ -170,11 +170,16 @@ same rules hold on the desktop, a server and Cloud:
   read from `/proc`, so an image without `ps` works the same.
 - **Unused browsers close.** A browser nothing has used for
   `browserEngine.idleTimeoutMinutes` in `config.json` (1 to 60; 10 when
-  unset) is closed: no bot call (a tool listing counts, and so do a call
+  unset, 3 on a MausBot Cloud home, whose 4 GB fits few browsers) is closed: no bot call (a tool listing counts, and so do a call
   waiting behind another, its page-health reads and recorded step, and
   fill_login's typing; a preview frame only holds off a close while it is
-  taken), no turn that has used it and is still running, no person holding
-  it, no open Browser panel.
+  taken), no turn that has used it and is still running, and no person
+  holding it or using it through a Browser panel (opening the panel, a
+  click, a key, an address, taking or handing back control). A panel that
+  only watches does not keep it open: the panel says the browser closed
+  after it sat unused and offers to open it again, and on the new engine
+  it shows the browser again by itself once the bot's next call starts it.
+  It never reconnects on its own, which would start the browser again.
   Saved sign-ins stay, and the bot's next browser call opens it again and is
   told its pages are gone. A temporary browser saves nothing, so it starts
   fresh, and the bot is told its sign-ins went too. A profile set to My
@@ -182,7 +187,14 @@ same rules hold on the desktop, a server and Cloud:
 - **Leftovers are swept.** A crash or a kill closes nothing, so the server
   sweeps when it starts, every minute, and at shutdown. It closes only this
   data dir's browsers: each bot's own, each built-in profile's, and its
-  temporary browsers, whose names carry a tag of the data dir. A Chrome whose
+  temporary browsers, whose names carry a tag of the data dir. On a MausBot
+  Cloud home, whose HOME is the server's alone, it also closes the browser
+  of any bot that no longer exists (a `bot-` session), within a minute.
+  Deleting a bot or profile closes its browser and erases its saved
+  sign-ins with the agent-browser OpenMausBot installed, or on a Cloud home
+  the image's own; an agent-browser found only on PATH elsewhere just has
+  the running browser closed, since a wrapper there could fail the erase
+  for good. A Chrome whose
   daemon was killed under it (by the OOM killer, by hand) can never be used
   again: it is found by the session its environment names and stopped, and
   its profile folder removed. Anything else under the same HOME, such as a

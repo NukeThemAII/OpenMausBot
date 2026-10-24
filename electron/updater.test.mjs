@@ -6,7 +6,7 @@ import vm from "node:vm";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { cloudTarget } from "./cloud-account.mjs";
 import { myCloudOrigin, rememberedCloudHome, savedCloudHomeOrigin } from "./cloud-home.mjs";
-import { cloudPageSenderAllowed } from "./cloud-move.mjs";
+import { cloudPageSenderAllowed } from "./cloud-home.mjs";
 import environments from "./environments.cjs";
 import localOriginModule from "./local-origin.cjs";
 
@@ -33,7 +33,7 @@ function page(origin) {
 
 function mainRule() {
   const source = readFileSync(new URL("./main.mjs", import.meta.url), "utf8").replace(/\r\n/g, "\n");
-  const start = source.indexOf("// ── Who asks, and where to"), end = source.indexOf("// ── end Copy this computer here ──", start);
+  const start = source.indexOf("function myCloud() {"), end = source.indexOf("const savedWorkspace = id =>", start);
   expect(start).toBeGreaterThanOrEqual(0);
   expect(end).toBeGreaterThan(start);
   expect(source.includes("registerUpdaterIpc({ pageAllowed: updaterPageAllowed });"), "main.mjs wires the updater to updaterPageAllowed").toBe(true);
@@ -53,9 +53,9 @@ function mainRule() {
     // ensureCloudAccount's world: a packaged app, and a sign-in client whose state the test sets.
     app: { isPackaged: true, getPath: () => "/unused", getVersion: () => "1.0.0" }, process: { platform: "darwin", env: {} }, cloudTarget,
     path: { join: (...parts) => parts.join("/") }, os: { hostname: () => "mac" }, shell: {}, safeStorage: {},
-    createCloudAccountStore: () => ({}), rememberCloudHome: () => {}, rememberedCloudHome, computerSharing: null,
-    sendUpdaterState: () => {}, refreshCloudMenus: () => {}, announceCloudReady: () => {},
-    syncProPlan: () => {},
+    createCloudAccountStore: () => ({}), rememberCloudHome: () => {}, rememberedCloudHome, computerSharing: null, updatesConsent: null,
+    sendUpdaterState: () => {}, refreshCloudMenus: () => {}, announceCloudReady: () => {}, installCloudPlanIpc: () => {},
+    includedX: { onState: async () => {} }, includedPages: { onState: async () => {} }, cloudPower: { changed: () => {}, awaiting: () => false }, cloudLogins: { kick: () => {} },
     createCloudAccountClient: (options) => {
       signIn.options = options;
       return {

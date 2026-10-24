@@ -7,10 +7,14 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { MAUS_COLORS, type MausColor, type MausMotion, type MausState } from "@/lib/mascot";
+import { CHROME_EYES, CHROME_GRADIENT, MAUS_COLORS, type MausColor, type MausMotion, type MausState } from "@/lib/mascot";
 import { CursorAvatar, type CursorAvatarHandle } from "./CursorAvatar";
 import { avatarCropRadius, botAvatarProfile, clampAvatarFocus, clampAvatarZoom, type BotAvatarCrop } from "../../shared/bot-avatar";
-import { MASCOT_BODIES, botMascotBody, type MascotBodyId } from "../../shared/mascot-bodies";
+import { MASCOT_BODIES, botMascotBody } from "../../shared/mascot-bodies";
+import { isHalloweenBody, type BotBodyId } from "../../shared/bot-body";
+import { useHalloweenDressed, wornBody } from "@/lib/halloween-dress";
+import { CarvedAvatar } from "./CarvedAvatar";
+import { steelBodyImage } from "@/lib/steel-body";
 
 export const EYE_SCALE = 1.12;
 export const MOUTH_WEIGHT = 11;
@@ -53,6 +57,7 @@ function mix(hex: string, toward: string, t: number): string {
 }
 
 const gradientFor = (color: MausColor): [string, string, string] => {
+  if (color === "chrome") return CHROME_GRADIENT;
   const fill = MAUS_COLORS[color] ?? MAUS_COLORS.green;
   return [mix(fill, "#ffffff", 0.55), fill, mix(fill, "#000000", 0.42)];
 };
@@ -86,11 +91,33 @@ export type MausAvatarProps = {
   lookAround?: number;
   trackPointer?: boolean;
   animated?: boolean;
-  bodyId?: MascotBodyId;
+  bodyId?: BotBodyId;
   gradient?: [string, string, string];
 };
 
-function MausAvatarComponent(
+function MausAvatarComponent(props: MausAvatarProps, ref: React.Ref<MausAvatarHandle>) {
+  const { bodyId, color, size, state, motion, motionKey, gaze, trackPointer, animated, label } = props;
+  if (isHalloweenBody(bodyId)) {
+    return (
+      <CarvedAvatar
+        ref={ref}
+        body={bodyId}
+        color={color}
+        size={size}
+        state={state}
+        motion={motion}
+        motionKey={motionKey}
+        gaze={gaze}
+        trackPointer={trackPointer}
+        animated={animated}
+        label={label}
+      />
+    );
+  }
+  return <GradientAvatar ref={ref} {...props} />;
+}
+
+function GradientAvatarComponent(
   {
     color,
     state = "idle",
@@ -115,6 +142,7 @@ function MausAvatarComponent(
   ref: React.Ref<MausAvatarHandle>,
 ) {
   const silhouette = MASCOT_BODIES[botMascotBody(bodyId)];
+  const chrome = color === "chrome";
   const inner = useRef<CursorAvatarHandle>(null);
   useImperativeHandle(ref, () => ({
     blink: () => inner.current?.blink(),
@@ -160,6 +188,8 @@ function MausAvatarComponent(
         size={size}
         silhouette={silhouette}
         gradient={gradient ?? gradientFor(color)}
+        picture={chrome ? steelBodyImage(silhouette.id, size, globalThis.devicePixelRatio ?? 1) : null}
+        eyeColor={chrome ? CHROME_EYES : undefined}
         title={label ?? null}
         lookAround={lookAround ?? (forward ? 0 : 1)}
         gaze={{ x: (gaze?.x ?? 0) + pointer.x, y: (gaze?.y ?? 0) + pointer.y }}
@@ -174,6 +204,8 @@ function MausAvatarComponent(
   );
 }
 
+const GradientAvatar = forwardRef(GradientAvatarComponent);
+
 export const MausAvatar = memo(forwardRef(MausAvatarComponent));
 
 export type BotAvatarProps = Omit<MausAvatarProps, "color" | "gradient"> & {
@@ -186,7 +218,7 @@ export type BotAvatarProps = Omit<MausAvatarProps, "color" | "gradient"> & {
     avatarZoom?: number;
     avatarFocusX?: number;
     avatarFocusY?: number;
-    mascotBody?: MascotBodyId | null;
+    mascotBody?: BotBodyId | null;
   };
 };
 
@@ -207,6 +239,7 @@ export function resolveBotAvatarOutcome(params: {
 
 export function BotAvatar({ bot, size = 44, label, readable = false, ...mascotProps }: BotAvatarProps) {
   const profile = botAvatarProfile(bot);
+  const dressed = useHalloweenDressed();
   const [imageFailed, setImageFailed] = useState(false);
 
   useEffect(() => setImageFailed(false), [profile.avatarUrl]);
@@ -220,7 +253,7 @@ export function BotAvatar({ bot, size = 44, label, readable = false, ...mascotPr
   if (outcome !== "flatImage") {
     return (
       <MausAvatar
-        bodyId={bot.mascotBody ?? undefined}
+        bodyId={wornBody(bot.mascotBody, bot.color, dressed)}
         {...mascotProps}
         color={bot.color}
         gradient={readable ? roomAvatarGradient(bot.color) : undefined}
@@ -262,11 +295,18 @@ export function BotAvatar({ bot, size = 44, label, readable = false, ...mascotPr
 
 export function InitialsAvatar({
   initials,
+  avatarUrl,
   size = 32,
 }: {
   initials: string;
+  avatarUrl?: string;
   size?: number;
 }) {
+  // A picture that is gone (a restored backup carries the address, not the file) falls back to the initials.
+  const [failed, setFailed] = useState<string | null>(null);
+  if (avatarUrl && failed !== avatarUrl) {
+    return <img src={avatarUrl} alt="" onError={() => setFailed(avatarUrl)} className="shrink-0 rounded-full object-cover" style={{ width: size, height: size }} />;
+  }
   return (
     <div
       className="flex shrink-0 items-center justify-center rounded-full bg-raised text-ink-secondary font-medium"

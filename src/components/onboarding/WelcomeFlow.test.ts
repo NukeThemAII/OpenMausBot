@@ -25,7 +25,7 @@ vi.mock("react", async (original) => ({
 }));
 const local = vi.hoisted(() => ({ detect: vi.fn(), apply: vi.fn() }));
 vi.mock("@/lib/setup-import", async (original) => ({ ...(await original<typeof import("@/lib/setup-import")>()), setupImportApi: local }));
-vi.mock("@/state/store", () => ({ api: vi.fn(), useStore: () => ({ state: {}, dispatch: vi.fn() }) }));
+vi.mock("@/state/store", () => ({ api: vi.fn(), useStore: () => ({ state: { instances: [] }, dispatch: vi.fn() }) }));
 vi.mock("@/components/DesktopCapabilities", () => ({ useDesktopCapabilities: () => ({ capabilities: { dictation: { available: false } } }) }));
 vi.mock("@/lib/analytics", () => ({ track: vi.fn(), setEmailGateDone: vi.fn() }));
 vi.mock("@/components/Avatar", () => ({ MausAvatar: () => null }));

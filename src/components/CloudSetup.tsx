@@ -1,14 +1,13 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowRight, Check, ChevronDown, Cloud, Minus } from "lucide-react";
 import { MausAvatar } from "@/components/Avatar";
-import { cloudMoveOffer, CloudMoveSuggestion, moveNextSteps, useCloudMove } from "@/components/CloudMove";
 import { engineReady } from "@/components/EngineLibrary";
 import { staggerIndex } from "@/components/onboarding/beats/shared";
 import { withViewTransition } from "@/components/onboarding/view-transition";
 import { brand } from "@/lib/brand";
 import { cloudIntentDue, cloudIntentShown, jobRoutine, reopenCloudIntent, useCloudIntent } from "@/lib/cloud-intent";
 import { cn } from "@/lib/cn";
-import { CLOUD_INTENT_GIVEN, CLOUD_SETUP_HIDDEN, CLOUD_SETUP_MOVE_SKIPPED, cloudSetupItems, cloudSetupStage, cloudWelcomeStage, type CloudSetupItem, type CloudSetupStep } from "@/lib/cloud-setup";
+import { CLOUD_INTENT_GIVEN, CLOUD_SETUP_HIDDEN, cloudSetupItems, cloudSetupStage, cloudWelcomeStage, type CloudSetupItem, type CloudSetupStep } from "@/lib/cloud-setup";
 import { endWelcomeHere, returnToWelcome, saveWelcomeHints, useCloudWelcome, withEarlyHints } from "@/lib/cloud-welcome";
 import { t } from "@/lib/i18n";
 import type { MausMotion } from "@/lib/mascot";
@@ -19,10 +18,9 @@ import { useShowThreads } from "@/lib/thread-preferences";
 import { openBot, useStore } from "@/state/store";
 
 const TITLE: Record<CloudSetupStep, LocaleKey> = {
-  cloud: "cloudSetup.cloud.title", job: "cloudSetup.job.title", engine: "cloudSetup.engine.title", plan: "cloudSetup.plan.title", move: "cloudSetup.move.title",
+  cloud: "cloudSetup.cloud.title", job: "cloudSetup.job.title", engine: "cloudSetup.engine.title", plan: "cloudSetup.plan.title", move: "cloudWelcome.step.bring",
   files: "cloudWelcome.step.files",
 };
-const WELCOME_TITLE: Partial<Record<CloudSetupStep, LocaleKey>> = { move: "cloudWelcome.step.bring" };
 const WELCOME_HINT: Partial<Record<CloudSetupStep, LocaleKey>> = {
   move: "cloudWelcome.compact.bring", engine: "cloudSetup.engine.hint", files: "cloudWelcome.compact.files",
 };
@@ -107,8 +105,6 @@ export function CloudSetup({ viewer, welcomeShown = false }: { viewer: WelcomeVi
   const { state, dispatch } = useStore();
   const showThreads = useShowThreads();
   const [hidden, setHidden] = useState(false);
-  const [moveOpen, setMoveOpen] = useState(false);
-  const [moveSkipped, setMoveSkipped] = useState(false);
   const [collapsed, setCollapsed] = useState(storedCollapsed);
   const [finale, setFinale] = useState(false);
   const wasShown = useRef(false);
@@ -117,7 +113,6 @@ export function CloudSetup({ viewer, welcomeShown = false }: { viewer: WelcomeVi
   const welcome = useCloudWelcome();
   const record = withEarlyHints(state.config?.onboarding, welcome.early);
   const early: string[] = [];
-  if (moveSkipped) early.push(CLOUD_SETUP_MOVE_SKIPPED);
   if (intent.pending || intent.sent) early.push(CLOUD_INTENT_GIVEN);
   const onboarding = withEarlyHints(record, early);
   const routine = jobRoutine(state.routines, intent.sent);
@@ -129,21 +124,15 @@ export function CloudSetup({ viewer, welcomeShown = false }: { viewer: WelcomeVi
   const welcoming = welcomeStage === "pending";
   const stage = hidden ? "hidden" : cloudSetupStage(facts);
   const shown = stage === "shown";
-  const moveBridge = shown ? window.ogb?.cloudMove : undefined;
-  const move = useCloudMove(moveBridge);
   useEffect(() => {
     if (welcoming) wasShown.current = false;
     else if (stage === "shown") wasShown.current = true;
     else if (stage === "done" && wasShown.current) { wasShown.current = false; setFinale(true); }
   }, [stage, welcoming]);
   if (finale) return <CloudReady routine={routine} onDone={() => setFinale(false)} />;
-  if (!shown) return stage === "waiting" || stage === "welcome" || !viewer ? null : <CloudMoveSuggestion />;
+  if (!shown) return null;
 
-  const items = cloudSetupItems({
-    ...facts,
-    move: moveBridge && move.overview ? { phase: move.state.phase, action: move.state.action, suggest: move.overview.suggest } : null,
-  });
-  const moveItem = items.find((item) => item.id === "move");
+  const items = cloudSetupItems(facts);
   const todo = items.filter((item) => item.status === "todo");
   const current = (todo.find((item) => item.id === chosen) ?? todo[0])?.id;
   const remember = (id: string) => {
@@ -152,7 +141,6 @@ export function CloudSetup({ viewer, welcomeShown = false }: { viewer: WelcomeVi
   const hide = () => {
     setHidden(true);
     if (welcoming) endWelcomeHere();
-    if (moveBridge && moveItem?.status === "todo") void moveBridge.dismiss().catch(() => {});
     remember(CLOUD_SETUP_HIDDEN);
   };
   const asking = state.activeView === "chat" && cloudIntentShown(cloudIntentDue({ ...facts, reopened: false }), intent);
@@ -173,13 +161,6 @@ export function CloudSetup({ viewer, welcomeShown = false }: { viewer: WelcomeVi
       dispatch({ type: "showChat" });
     }) };
     if (id === "engine") return { body: hint("cloudSetup.engine.hint"), act: state.activeView !== "chat" && action("cloudSetup.engine.action", () => dispatch({ type: "showChat" })) };
-    if (id === "move") {
-      if (!moveBridge) return { body: null };
-      if (moveOpen || (moveItem?.status === "todo" && move.state.phase !== "idle")) {
-        return { body: cloudMoveOffer(move, { notNow: () => { setMoveSkipped(true); remember(CLOUD_SETUP_MOVE_SKIPPED); } }) };
-      }
-      return { body: hint("cloudSetup.move.hint"), act: action("cloudSetup.move.action", () => setMoveOpen(true)) };
-    }
     if (id === "job") return { body: hint("cloudSetup.job.hint"), act: !asking && action("cloudSetup.job.action", askAgain) };
     if (id === "plan") return { body: hint("cloudSetup.plan.hint"), act: action("cloudSetup.plan.action", openJobChat) };
     return { body: null };
@@ -194,7 +175,7 @@ export function CloudSetup({ viewer, welcomeShown = false }: { viewer: WelcomeVi
     </span>;
     return <span className="mt-px size-4 shrink-0 rounded-full border-[1.5px] border-ink-secondary/45" />;
   };
-  const titleOf = (id: CloudSetupStep) => t((welcomeStage !== "none" && WELCOME_TITLE[id]) || TITLE[id]);
+  const titleOf = (id: CloudSetupStep) => t(TITLE[id]);
   const row = (item: CloudSetupItem, index: number) => {
     const pending = item.status === "todo";
     const title = <span className="min-w-0 flex-1 text-[12.5px] leading-[18px]">
@@ -207,7 +188,6 @@ export function CloudSetup({ viewer, welcomeShown = false }: { viewer: WelcomeVi
       {pending
         ? <button type="button" onClick={() => setChosen(item.id)} className="-mx-2 flex w-[calc(100%+16px)] items-start gap-2.5 rounded-lg px-2 py-1.5 text-left text-ink transition-colors hover:bg-raised/70">{mark(item)}{title}</button>
         : <div className="-mx-2 flex items-start gap-2.5 px-2 py-1.5 text-ink-secondary">{mark(item)}{title}</div>}
-      {item.id === "move" && item.status === "done" && moveNextSteps(move.state).map(line => <p key={line} className="ml-[26px] text-[12px] leading-relaxed text-ink-secondary">{line}</p>)}
     </li>;
   };
   const inChat = state.activeView === "chat" && !asking;

@@ -6,6 +6,10 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import readline from "node:readline";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { createPageSchema } from "./testing/oversized-tool-schema.ts";
+import { schemaBytes, TOOL_SCHEMA_PROFILE_ENV } from "./tool-schema-profile.ts";
+import { TOOL_LIMIT_ENV } from "./tool-count-limit.ts";
+
 const ENTRY = join(dirname(fileURLToPath(import.meta.url)), "connector-proxy.ts");
 let child: ChildProcessWithoutNullStreams | null = null;
 let server: Server | null = null;
@@ -125,6 +129,44 @@ describe("connector MCP bridge", () => {
     });
   });
 
+  it("carries a bot's auth_config_id for a toolkit to the card request, and refuses a malformed one without a card", async () => {
+    const received: any[] = [];
+    const harness = await listen((request, response) => {
+      let body = "";
+      request.on("data", (chunk) => { body += chunk; });
+      request.on("end", () => {
+        received.push(JSON.parse(body));
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end("{}");
+      });
+    });
+    const lines = start({ OMB_HARNESS_URL: harness, OMB_CONNECTOR_TOKEN: "bridge-secret", OMB_BOT_ID: "bot-1", OMB_THREAD_ID: "thread-1" });
+    const manage = async (id: number, args: Record<string, unknown>) => {
+      child!.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "COMPOSIO_MANAGE_CONNECTIONS", arguments: args } })}\n`);
+      return nextJson(lines);
+    };
+
+    expect((await manage(1, { toolkits: [{ name: "Xero", action: "add", auth_config_id: "ac_xero1234" }, { name: "slack" }] })).result.isError).toBeUndefined();
+    expect((await manage(2, { toolkits: ["buffer"], auth_config_override: " ac_buffer99 " })).result.isError).toBeUndefined();
+    expect((await manage(3, { toolkits: ["xero", "buffer"], auth_config_override: { XERO: "ac_xero1234" } })).result.isError).toBeUndefined();
+    expect(received.map((body) => body.items)).toEqual([
+      [{ slug: "xero", authConfigId: "ac_xero1234" }, { slug: "slack" }],
+      [{ slug: "buffer", authConfigId: "ac_buffer99" }],
+      [{ slug: "xero", authConfigId: "ac_xero1234" }, { slug: "buffer" }],
+    ]);
+
+    for (const [id, args] of [
+      [4, { toolkits: [{ name: "xero", auth_config_id: "xero-app" }] }],
+      [5, { toolkits: ["xero", "buffer"], auth_config_id: "ac_xero1234" }],
+      [6, { toolkits: [{ name: "xero", auth_config_id: 42 }] }],
+    ] as const) {
+      const refused = await manage(id, args);
+      expect(refused.result.isError).toBe(true);
+      expect(refused.result.content[0].text).toMatch(/showed no card: auth_config_id must be a Composio auth config id/);
+    }
+    expect(received).toHaveLength(3);
+  });
+
   it("answers initialize locally so a missing or failing upstream cannot fail the MCP handshake", async () => {
     const lines = start({});
     child!.stdin.write(`${JSON.stringify({
@@ -239,6 +281,32 @@ describe("connector MCP bridge", () => {
     });
     expect(upstreamAuthorization).toBe("Bearer upstream-secret");
     expect(JSON.stringify(reply)).not.toContain("upstream-secret");
+  });
+
+  it("fits a connected app's tools to the engine's provider profile", async () => {
+    const tools = [{ name: "COMPOSIO_SEARCH_TOOLS", inputSchema: { type: "object", properties: { q: { type: "string" } } } },
+      { name: "DOCS_CREATE_PAGE", description: "Create a page.", inputSchema: createPageSchema() }];
+    const upstream = await listen((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ jsonrpc: "2.0", id: 4, result: { tools } }));
+    });
+    const lines = start({ OMB_CONNECTOR_UPSTREAM_URL: upstream, [TOOL_SCHEMA_PROFILE_ENV]: "moonshot" });
+    child!.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 4, method: "tools/list", params: {} })}\n`);
+    const [search, page] = (await nextJson(lines)).result.tools;
+    expect(search).toEqual(tools[0]);
+    expect(schemaBytes(page.inputSchema)).toBeLessThanOrEqual(12_000);
+    expect(page.description).toContain("OpenMausBot shortened this tool's parameters to fit Kimi's size limit");
+  });
+
+  it("lists no more connected-app tools than its share of the model's tool limit", async () => {
+    const tools = ["COMPOSIO_SEARCH_TOOLS", "GMAIL_SEND", "GMAIL_FETCH"].map((name) => ({ name, inputSchema: { type: "object" } }));
+    const upstream = await listen((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ jsonrpc: "2.0", id: 4, result: { tools } }));
+    });
+    const lines = start({ OMB_CONNECTOR_UPSTREAM_URL: upstream, [TOOL_LIMIT_ENV]: "2" });
+    child!.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 4, method: "tools/list", params: {} })}\n`);
+    expect((await nextJson(lines)).result.tools).toEqual(tools.slice(0, 2));
   });
 
   it("tells the bot to reconnect an app whose sign-in ended, and leaves successful results alone", async () => {

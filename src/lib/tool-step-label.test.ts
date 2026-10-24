@@ -7,7 +7,7 @@ describe("toolStepLabel", () => {
     [{ name: "pwd", summary: "pwd" }, "Run a command"],
     [{ name: "Read" }, "Read a file"],
     [{ name: "WebSearch" }, "Search the web"],
-    [{ name: "mcp__omb__computer_batch" }, "Use the computer"],
+    [{ name: "mcp__omb__computer_batch" }, "Use the screen"],
     [{ name: "mcp__omb__screenshot" }, "Look at the screen"],
     [{ name: "mcp__claude_ai_Gmail__list_bots" }, "Check the team"],
     [{ name: "agent_browser_click" }, "Use the browser"],

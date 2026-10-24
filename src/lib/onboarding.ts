@@ -79,6 +79,8 @@ export interface BeatOptions {
   dictation: boolean;
   reel: boolean;
   hosted?: boolean;
+  /** An AI already works here (a signed-in CLI, an API key, an organization's or the Cloud's model): it is used without a step. */
+  aiReady?: boolean;
   /** This computer has skills or MCP servers from another AI tool to bring in. */
   setupImport?: boolean;
   /** MausBot Cloud can be bought from this desktop now (cloudBeatWanted); the first bot stays the last beat. */
@@ -89,7 +91,7 @@ export function beatsFor(options: BeatOptions): BeatId[] {
   if (options.hosted) return ["hello", "bot"];
   const beats: BeatId[] = ["hello"];
   if (options.reel) beats.push("reel");
-  beats.push("engines");
+  if (!options.aiReady) beats.push("engines");
   if (options.setupImport) beats.push("import");
   if (options.dictation) beats.push("permissions");
   beats.push("phone");
@@ -174,21 +176,33 @@ export function companyModelCount(state: { providers?: Array<{ configured: boole
   return (state?.providers ?? []).reduce((total, provider) => total + (provider.configured ? provider.models.length : 0), 0);
 }
 
-interface SummaryInstance {
-  install?: unknown;
-  managed?: unknown;
+interface AiChoice {
+  driverKind: string;
+  access?: string;
+  readOnly?: boolean;
 }
 
-export function engineSummary<Instance extends SummaryInstance>(
-  instances: readonly Instance[],
-  ready: (instance: Instance) => boolean,
-  options: { company: boolean },
-): { ready: Instance[]; setup: Instance[]; company: number; allReady: boolean } {
-  const engines = instances.filter((instance) => instance.install);
-  const personal = engines.filter(ready);
-  const setup = engines.filter((instance) => !ready(instance));
-  const company = options.company ? instances.filter((instance) => instance.managed && ready(instance)).length : 0;
-  return { ready: personal, setup, company, allReady: company > 0 || (personal.length > 0 && setup.length === 0) };
+/** The one way the welcome recommends to connect an AI (a Claude account first, then a ChatGPT plan), and every other way. */
+export function aiChoices<Instance extends AiChoice>(instances: readonly Instance[]): { recommended?: Instance; others: Instance[] } {
+  const plan = (instance: Instance) => !instance.readOnly && instance.access !== "api" && instance.access !== "custom";
+  const recommended = instances.find((instance) => plan(instance) && instance.driverKind === "claudeAgent")
+    ?? instances.find((instance) => plan(instance) && instance.driverKind === "codex")
+    ?? instances.find((instance) => !instance.readOnly);
+  return { recommended, others: instances.filter((instance) => instance !== recommended) };
+}
+
+interface SignInStep {
+  snapshot: { state: string; authenticated?: boolean };
+  authentication?: unknown;
+  install?: { server?: unknown; managed?: unknown };
+}
+
+/** Whether the welcome's plain sign-in line fits this setup: a sign-in on the provider's own website, or a setup the app
+ * does by itself before one. A step finished in Terminal keeps the setup's own instructions. */
+export function plainSignIn(instance: SignInStep): boolean {
+  return instance.snapshot.state === "available" && instance.snapshot.authenticated === false
+    ? Boolean(instance.authentication)
+    : Boolean(instance.install?.server || instance.install?.managed);
 }
 
 export function cloudSignInDue<Instance>(

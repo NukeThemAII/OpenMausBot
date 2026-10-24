@@ -61,7 +61,7 @@ export function WelcomeGate({ viewer }: { viewer: WelcomeViewer | null }) {
   if (state.appSettingsOpen && (["desktopWorkspaces", "organization"].includes(state.appSettingsSection) ||
     (state.appSettingsSection === "cloudAccount" && state.appSettingsCloudLink > 0))) return null;
   if (!state.welcomeOpen && !due) return null;
-  const bot = state.bots.find((b) => !b.hidden) ?? null;
+  const bot = state.bots.find((b) => !b.hidden && b.chiefOfStaff) ?? state.bots.find((b) => !b.hidden) ?? null;
   const replay = state.welcomeOpen && !due;
   return (
     <WelcomeFlow

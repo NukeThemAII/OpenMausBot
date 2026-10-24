@@ -167,7 +167,7 @@ export function BotSettingsDialog({ bot, overlay = false }: {
         aria-labelledby="bot-settings-title"
         tabIndex={-1}
         className={cn(
-          "animate-panel-in absolute inset-0 z-40 flex h-full min-w-0 flex-col border-l border-hairline/40 bg-panel outline-none focus-visible:outline-none",
+          "animate-sheet-in md:animate-panel-in absolute inset-0 z-40 flex h-full min-w-0 flex-col border-l border-hairline/40 bg-panel outline-none focus-visible:outline-none",
           overlay
             ? "md:inset-auto md:right-0 md:top-0 md:bottom-0 md:w-[min(420px,42vw)] md:shadow-2xl"
             : "md:static md:z-auto md:w-[min(420px,42vw)] md:shrink-0",
@@ -178,7 +178,6 @@ export function BotSettingsDialog({ bot, overlay = false }: {
             bot={bot}
             derived={derived}
             headerClassName={padClass}
-            slackUrl={slackUrl}
             linkedSection={linkedSection}
             onClose={() => dispatch({ type: "toggleSettings", open: false })}
           />
@@ -211,8 +210,8 @@ export function BotSettingsDialog({ bot, overlay = false }: {
               if (query) setQuery("");
               else dispatch({ type: "toggleSettings", open: false });
             }}
-            placeholder="Search"
-            aria-label="Search settings"
+            placeholder={t("botSettings.search")}
+            aria-label={t("botSettings.searchAria")}
             className="w-full bg-transparent text-[13px] text-ink placeholder:text-ink-secondary focus:outline-none"
           />
         </div>
@@ -220,7 +219,7 @@ export function BotSettingsDialog({ bot, overlay = false }: {
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
           {visibleSections.length === 0 && (
             <div className="px-4 py-4 text-[12.5px] leading-relaxed text-ink-secondary">
-              Nothing matches “{query.trim()}”
+              {t("botSettings.searchNone", { query: query.trim() })}
             </div>
           )}
           {sections.map((entry) => {

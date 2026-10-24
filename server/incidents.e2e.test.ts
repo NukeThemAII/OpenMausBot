@@ -173,7 +173,7 @@ it("queues reports that find the Chief's incidents thread busy, answers them tog
     expect(JSON.stringify(first.prompt)).toContain("Ada's run in its thread #Reconcile the September invoices. failed");
     expect(Object.keys(first.mcpConfig.mcpServers)).toContain("agents");
     expect(Object.keys(first.mcpConfig.mcpServers)).not.toContain("computer");
-    expect(first.systemPrompt).toContain("This turn answers a Team incidents report and your computer could not be prepared for it (A cloud computer here needs your own Boat key");
+    expect(first.systemPrompt).toContain("This turn answers a Team incidents report and your computer could not be prepared for it (A cloud desktop here needs your own Boat key");
 
     const failsWhileBusy = async (bot: { id: string; activeTaskId: string }, name: string, request: string) => {
       await control(["send", "--bot", bot.id, "--text", request]);
@@ -514,5 +514,39 @@ it("tells the person of a failure whose report waited and was then refused", asy
   } finally {
     await close();
     await removeTempDir(layerDir);
+  }
+}, 150_000);
+
+it("reports a routine that keeps failing the same way once, and again when the failure changes", async () => {
+  const { dataDir, api, control, messages, useCli, incidentsThread, close } = await launch();
+  try {
+    const chief = (await control(["new-bot", "--name", "Clive", "--section", "Ops"])).bot;
+    await api("PATCH", `/api/bots/${chief.id}`, { chiefOfStaff: true });
+    const ada = (await control(["new-bot", "--name", "Ada", "--section", "Ops"])).bot;
+    const changedFlag = join(dataDir, "failure-changed");
+    await useCli(`thread === ${JSON.stringify(chief.activeTaskId)} ? "happy" : existsSync(${JSON.stringify(changedFlag)}) ? "error-result" : "exit-early"`);
+    const routine = (await api("POST", "/api/routines", {
+      name: "Inbox brief", prompt: "Summarise my inbox.", botId: ada.id, schedule: { type: "cron", expression: "0 7 * * *", timeZone: "Europe/London" },
+    }, undefined, 201)).routine;
+    const runFails = async () => {
+      const { id } = (await api("POST", `/api/routines/${routine.id}/run`, undefined, undefined, 201)).run;
+      await expect.poll(async () => ((await api("GET", "/api/routines")).runs as any[]).find((run) => run.id === id)?.status, { timeout: 30_000 }).toBe("failed");
+    };
+    const reports = async (incidents: string) => (await messages(incidents))
+      .filter((m) => m.kind === "activity" && (m.tool?.name ?? "").startsWith("Incident: Ada's scheduled routine")).map((m) => m.tool.name as string);
+
+    await runFails();
+    const incidents = (await incidentsThread(chief.id)).threadId;
+    await expect.poll(() => reports(incidents), { timeout: 20_000 }).toHaveLength(1);
+    await runFails();
+    await runFails();
+    writeFileSync(changedFlag, "changed");
+    await runFails();
+    await expect.poll(() => reports(incidents), { timeout: 20_000 }).toHaveLength(2);
+    const [crashed, changed] = await reports(incidents);
+    expect(crashed).toContain("simulated crash before result");
+    expect(changed).not.toContain("simulated crash before result");
+  } finally {
+    await close();
   }
 }, 150_000);

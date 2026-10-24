@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { serverUpdateRow, type ServerUpdateCheck } from "./server-update";
+import { serverCheckPhase, serverUpdateRow, type ServerUpdateCheck } from "./server-update";
 
 const check = (patch: Partial<ServerUpdateCheck> = {}): ServerUpdateCheck => ({
   current: "0.1.92",
@@ -22,7 +22,7 @@ describe("self-hosted update row", () => {
       subtitle: "Update with: docker compose pull omb && docker compose up -d",
     });
     const npm = check({ install: "npm", available: true, latest: "0.1.93", command: "npm install -g openmausbot@latest", restart: true });
-    expect(serverUpdateRow("available", npm).subtitle).toBe("Update with: npm install -g openmausbot@latest, then restart the server");
+    expect(serverUpdateRow("available", npm).subtitle).toBe("Update with: npm install -g openmausbot@latest, then restart the app");
     // an install it cannot recognise still learns there is a new version
     expect(serverUpdateRow("available", check({ install: "unknown", available: true, latest: "0.1.93" }))).toEqual({
       label: "Version 0.1.93 available — release notes",
@@ -34,11 +34,29 @@ describe("self-hosted update row", () => {
     expect(serverUpdateRow("up-to-date", check({ latest: "0.1.92" }))).toEqual({ label: "You're up to date", subtitle: "v0.1.92" });
   });
 
+  it("asks a page older than its server to reload instead of calling it up to date", () => {
+    // The server was updated while this page kept running the bundle About reports
+    const stale = check({ current: "0.1.114" });
+    expect(serverCheckPhase(stale, "0.1.113")).toBe("reload");
+    expect(serverUpdateRow("reload", stale, "0.1.113")).toEqual({
+      label: "Reload for v0.1.114",
+      subtitle: "This page is still running v0.1.113",
+    });
+  });
+
+  it("keeps the other check results when the page matches or can't tell", () => {
+    expect(serverCheckPhase(check({ current: "0.1.114" }), "0.1.114")).toBe("up-to-date");
+    expect(serverCheckPhase(check({ current: "0.1.114" }), "dev")).toBe("up-to-date");
+    expect(serverCheckPhase(check({ current: "0.1.114", available: true, latest: "0.1.115" }), "0.1.113")).toBe("available");
+    expect(serverCheckPhase(check({ current: "0.1.114", install: "desktop" }), "0.1.113")).toBe("up-to-date");
+    expect(serverCheckPhase(check({ current: "0.1.114", install: "managed" }), "0.1.113")).toBe("up-to-date");
+  });
+
   it("explains servers that are updated elsewhere", () => {
     expect(serverUpdateRow("up-to-date", check({ install: "desktop" })).label).toBe(
-      "Updated from the OpenMausBot app on the computer running this server",
+      "Updates come from the OpenMausBot app on the computer these bots run on",
     );
-    expect(serverUpdateRow("up-to-date", check({ install: "managed" })).label).toBe("This server is kept up to date for you");
+    expect(serverUpdateRow("up-to-date", check({ install: "managed" })).label).toBe("Kept up to date for you");
   });
 
   it("reports a failed check plainly", () => {

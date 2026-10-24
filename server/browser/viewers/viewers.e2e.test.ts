@@ -58,7 +58,7 @@ suite("viewers of the new browser on real Chrome", () => {
   async function opened(url = page): Promise<BrowserTarget> {
     const target = { session: `viewers-${++sessions}`, key: `bot:viewers-${sessions}` };
     const result = await real.call(target, "agent_browser_open", { url });
-    expect(result.isError).toBeUndefined();
+    expect(result.isError, real.text(result)).toBeUndefined();
     return target;
   }
 
@@ -174,12 +174,17 @@ suite("viewers of the new browser on real Chrome", () => {
     const { viewer, frames } = await watch(target, { size: { width: 1280, height: 800 }, maxWidth: 2560, maxHeight: 1600 });
     await until(() => frames.at(-1), (frame) => frame?.width === 2560);
     await viewer.input({ type: "takeControl" });
+    const scrolling = Date.now();
     for (let step = 0; step < 12; step++) {
       await viewer.input({ type: "wheel", x: 400, y: 400, deltaX: 0, deltaY: 120 });
       await new Promise((resolve) => setTimeout(resolve, 40));
     }
-    const settled = Date.now() + 400;
-    await until(() => frames.at(-1), (frame) => frame !== undefined && frame.at > settled && frame.width === 2560 && frame.height === 1600);
+    const scrolled = Date.now();
+    const sharp = (frame: Seen) => frame.width === 2560 && frame.height === 1600;
+    // With the spinner scrolled out of view the page may stop painting, so the scroll's last frame can come before any
+    // fixed mark: once the stream has been quiet for two seconds, its last frame is the one the person keeps seeing.
+    const last = await until(() => frames.at(-1), (frame) => frame !== undefined && frame.at > scrolling && ((frame.at > scrolled + 400 && sharp(frame)) || Date.now() - frame.at > 2_000));
+    expect(last).toMatchObject({ width: 2560, height: 1600 });
     for (const frame of frames) expect([1280, 2560]).toContain(frame.width);
     expect(await real.peek<number>(target, "scrollY")).toBeGreaterThan(0);
     await viewer.input({ type: "releaseControl" });

@@ -13,7 +13,7 @@ import { hostTimeout } from "./testing/host-timeout.ts";
 import { openSse, type SseRecorder } from "./testing/sse.ts";
 
 const STALLED = "No activity for 20 minutes — the routine was stopped";
-const SIGN_IN = "This bot's engine is signed out. Sign in again in Settings → Model providers.";
+const SIGN_IN = "This bot's AI is signed out. Sign in again in Settings → Model providers.";
 const ROUTINE_HEADER = '[Routine "Inbox brief" — do this now:]';
 
 let fixture: VerificationServer | undefined;
@@ -47,6 +47,10 @@ async function server(env: NodeJS.ProcessEnv = {}) {
   ].join("\n"), { mode: 0o700 });
   engine("happy");
   await api("PATCH", "/api/instances/claude", { cli: wrapper });
+  // Chief first makes the starter its team's Chief, which answers a teammate's failed run with a Team incidents turn of
+  // its own on the same engine. Stepped down, what these runs tell the owner is theirs alone.
+  const starter = (await api("GET", "/api/bots")).bots.find((candidate: any) => candidate.chiefOfStaff);
+  await api("PATCH", `/api/bots/${starter.id}`, { chiefOfStaff: false });
   const bot = (await runControlOmb(["new-bot", "--name", "Inbox bot", "--url", url]) as any).bot;
   events = await openSse(`${url}/api/events`, { origin: url });
   const routine = async (name = "Inbox brief") => (await api("POST", "/api/routines", {
@@ -85,14 +89,14 @@ it("starts a routine again once after its engine stalls, and it completes in the
 
   writeFileSync(join(s.dataDir, "stall-turns"), "");
   await expect.poll(() => s.run(id), { timeout: hostTimeout(15_000) }).toMatchObject({
-    status: "queued", retried: "stalled", threadId, attention: `Starting again shortly after the engine stalled: ${STALLED}`,
+    status: "queued", retried: "stalled", threadId, attention: `Starting again shortly after the AI stalled: ${STALLED}`,
   });
   rmSync(join(s.dataDir, "stall-turns"));
   writeFileSync(join(s.dataDir, "release"), "");
 
   await expect.poll(async () => (await s.run(id))?.status, { timeout: hostTimeout(60_000) }).toBe("completed");
   expect(await s.run(id)).toMatchObject({ retried: "stalled", threadId, output: "released" });
-  expect(JSON.stringify(JSON.parse(readFileSync(s.dump, "utf8")).prompt)).toContain("this run's first start stopped when its engine stalled before it finished");
+  expect(JSON.stringify(JSON.parse(readFileSync(s.dump, "utf8")).prompt)).toContain("this run's first start stopped when its AI stalled before it finished");
   expect((await s.prompts(threadId)).filter((text) => text.includes(ROUTINE_HEADER))).toHaveLength(2);
   expect(s.notified().filter((notification) => notification.kind === "routine-failed")).toEqual([]);
 }, hostTimeout(120_000));
@@ -108,7 +112,7 @@ it("fails a routine that stalls again on its retry, with a record that says so",
   writeFileSync(join(s.dataDir, "stall-turns"), "");
   await expect.poll(async () => (await s.run(id))?.retried, { timeout: hostTimeout(15_000) }).toBe("stalled");
   rmSync(join(s.dataDir, "stall-turns"));
-  await s.engineHas("this run's first start stopped when its engine stalled");
+  await s.engineHas("this run's first start stopped when its AI stalled");
   await s.engineAnnounced(threadId, 2);
   writeFileSync(join(s.dataDir, "stall-turns"), "");
 
@@ -193,11 +197,13 @@ it("keeps an ACP engine's run that a graceful shutdown cut off, and starts it on
 it("waits for the conversation it joins to be free instead of failing, then runs there", async () => {
   const s = await server();
   s.engine("hang", { FAKE_CLAUDE_RELEASE: join(s.dataDir, "release") });
-  await s.api("PATCH", "/api/config", { features: { routinesInConversation: true } });
   await runControlOmb(["send", "--bot", s.bot.id, "--task", s.bot.activeTaskId, "--text", "Draft the weekly update.", "--url", s.url]);
   await expect.poll(async () => (await s.api("GET", "/api/bots")).bots.find((bot: any) => bot.id === s.bot.id)?.busy, { timeout: hostTimeout(15_000) }).toBe(true);
 
-  const { id } = await s.runNow((await s.routine()).id);
+  const { routine } = await s.api("POST", "/api/routines", {
+    name: "Inbox brief", prompt: "Summarise my inbox.", botId: s.bot.id, schedule: { type: "limit_reset", engine: "claude" },
+  });
+  const { id } = await s.runNow(routine.id);
   await expect.poll(() => s.run(id), { timeout: hostTimeout(15_000) }).toMatchObject({
     status: "queued", threadId: s.bot.activeTaskId, deferredAt: expect.any(Number),
     attention: "Waiting to start: this thread is already working — interrupt it first",
@@ -222,7 +228,7 @@ it("never retries a signed-out engine, and tells the owner exactly once what to 
 
   for (const id of [first.id, second.id]) {
     const run = await s.run(id);
-    expect(run.error).toBe(`${SIGN_IN} The engine said: “Not logged in · Please run /login”`);
+    expect(run.error).toBe(`${SIGN_IN} The AI said: “Not logged in · Please run /login”`);
     expect(run.retried).toBeUndefined();
   }
   expect(s.notified()).toEqual([
@@ -239,11 +245,11 @@ it("waits for a usage limit that says when it resets, instead of failing", async
 
   await expect.poll(() => s.run(id), { timeout: hostTimeout(15_000) }).toMatchObject({
     status: "queued", retried: "usage_limit", retryAt: resetsAt * 1000 + 60_000,
-    attention: expect.stringMatching(/^Waiting for the engine's usage limit to reset; this run starts again at /),
+    attention: expect.stringMatching(/^Waiting for the AI's usage limit to reset; this run starts again at /),
   });
   await expect.poll(() => s.notified(), { timeout: hostTimeout(15_000) }).toEqual([
     expect.objectContaining({ kind: "routine-deferred", title: "Inbox bot's routine is waiting",
-      body: expect.stringMatching(/^Inbox brief: This bot's engine reached its usage limit\. This run starts again at /) }),
+      body: expect.stringMatching(/^Inbox brief: This bot's AI reached its usage limit\. This run starts again at /) }),
   ]);
   expect((await s.run(id)).error).toBeUndefined();
   expect((await s.api("GET", "/api/routines")).routines[0].failureStreak).toBeUndefined();

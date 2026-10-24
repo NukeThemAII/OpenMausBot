@@ -18,7 +18,7 @@ const CATALOG_PROBE_FOLDER = ["", "providers", "opencode", "discovery"].join(sep
 const turnCalls = (path: string) => jsonLines(path).filter((call) => !String(call.cwd ?? "").endsWith(CATALOG_PROBE_FOLDER));
 
 async function withRecoveryFixture(
-  options: { enabled?: boolean; method?: string; error?: unknown; afterOutput?: boolean; backupFails?: boolean; gated?: boolean; scripted?: boolean },
+  options: { enabled?: boolean; method?: string; error?: unknown; afterOutput?: boolean; backupFails?: boolean; gated?: boolean; scripted?: boolean; codexBackup?: boolean },
   check: (fixture: {
     api: (method: string, path: string, body?: unknown, expectedStatus?: number) => Promise<any>;
     control: (...args: string[]) => Promise<any>;
@@ -72,6 +72,9 @@ async function withRecoveryFixture(
       },
     };
     config.instances.secondary = { ...config.instances.opencodeGo, displayName: "Second startup fixture" };
+    if (options.codexBackup) config.instances.codex = {
+      driver: "codex", config: { cli: fileURLToPath(new URL("./testing/fake-codex-app-server.ts", import.meta.url)) },
+    };
     config.instances.claude.environment = {
       ...config.instances.claude.environment,
       FAKE_CLAUDE_PROMPTS: backupFile, FAKE_CLAUDE_TOOL_CALLS: "[]",
@@ -88,6 +91,17 @@ async function withRecoveryFixture(
     await expect.poll(async () => {
       try { return (await fetch(url + "/api/health", { signal: AbortSignal.timeout(1_000) })).ok; } catch { return false; }
     }, { timeout: 20_000 }).toBe(true);
+    // A later start listens before Codex lists its models (startup-model-catalog.ts), and a recovery backup must be
+    // a model the engine offers.
+    if (options.codexBackup) await expect.poll(async () => {
+      const { instances } = await api("GET", "/api/instances") as { instances: any[] };
+      return instances.find((instance) => instance.instanceId === "codex")?.models.options.some((option: any) => option.id === "gpt-fake-default");
+    }, { timeout: 20_000 }).toBe(true);
+    // Chief first makes the starter its team's Chief, which answers a teammate's failed run with a Team incidents turn
+    // of its own on Claude: the backup engine, whose prompts these tests count. Stepped down, only the runs under test run.
+    const { bots } = await api("GET", "/api/bots") as { bots: Array<{ id: string; chiefOfStaff?: boolean }> };
+    const starter = bots.find((bot) => bot.chiefOfStaff)!;
+    await api("PATCH", `/api/bots/${starter.id}`, { chiefOfStaff: false });
     // Armed once the server is up: the failure is the turns' to meet, not the
     // model discovery the server runs while it starts.
     writeFileSync(failureFile, JSON.stringify(options.error ?? transient));
@@ -294,6 +308,56 @@ it("stops after one failed backup instead of looping between engines", async () 
     expect(calls().filter((call) => call.method === "initialize.error")).toHaveLength(1);
     const { messages } = await control("messages", "--bot", bot.id, "--task", threadId, "--limit", "20");
     expect(messages.filter((message: any) => message.role === "user" && message.text === "ONLY_ONE_BACKUP_4T")).toHaveLength(1);
+    expect(messages.map((message: any) => message.tool).filter((tool: any) => tool?.ok === false))
+      .toEqual([{ name: "error: Not logged in · Please run /login", ok: false, setup: true }]);
+  });
+}, 90_000);
+
+it.each(["workspace", "bot"])("uses the configured %s backup when Claude refuses a turn because it is signed out", async scope => {
+  await withRecoveryFixture({ backupFails: true, codexBackup: true }, async ({ api, control, backupPrompts, evidence }) => {
+    const healthy = { instanceId: "codex", model: "gpt-fake-default" };
+    await api("PUT", "/api/config", { automaticRecovery: { enabled: true, backup: healthy } });
+    const { bot } = await control("new-bot", "--name", "Signed out primary");
+    const threadId = bot.activeTaskId;
+    await api("PATCH", `/api/bots/${bot.id}/tasks/${threadId}`, {
+      modelSelection: backup, updateBotDefault: true, approvalMode: "ask",
+    });
+    if (scope === "bot") await api("PATCH", `/api/bots/${bot.id}`, {
+      fallback: [{ ...backup, model: "claude-opus-5" }, healthy],
+    });
+    const { task: sibling } = await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Sibling keeps Claude" });
+    const text = "RECOVER_SIGNED_OUT_CLAUDE_7A";
+    await control("send", "--bot", bot.id, "--task", threadId, "--text", text);
+    const wait = await control("wait", "--bot", bot.id, "--task", threadId, "--timeout", "30");
+    await control("messages", "--bot", bot.id, "--task", threadId, "--limit", "30");
+    const { messages } = await api("GET", `/api/threads/${threadId}/messages?limit=100`);
+    const after = (await api("GET", "/api/bots")).bots.find((entry: any) => entry.id === bot.id);
+    evidence.push({ wait, messages, after });
+    expect(wait.status).toBe("settled");
+    expect(backupPrompts()).toHaveLength(1);
+    expect(messages.filter((message: any) => message.role === "user" && message.text === text)).toHaveLength(1);
+    expect(messages.filter((message: any) => message.tool?.name?.startsWith("recovery:"))).toHaveLength(1);
+    expect(messages.find((message: any) => message.tool?.name?.startsWith("recovery:"))?.tool.name).toContain("is signed out");
+    expect(messages.some((message: any) => message.tool?.ok === false)).toBe(false);
+    expect(messages.find((message: any) => message.role === "user" && message.text === text)?.requestPending).toBe(false);
+    expect(messages.findLast((message: any) => message.role === "bot" && message.kind === "text"))
+      .toMatchObject({ text: "done from fake codex", turnSucceeded: true });
+    expect(after.modelSelection).toEqual(backup);
+    expect(after.tasks.find((task: any) => task.threadId === sibling.threadId).modelSelection).toEqual(backup);
+    expect(after.tasks.find((task: any) => task.threadId === threadId))
+      .toMatchObject({ modelSelection: healthy, approvalMode: "ask", busy: false });
+  });
+}, 90_000);
+
+it("preserves the sign-in error when automatic recovery is disabled", async () => {
+  await withRecoveryFixture({ backupFails: true, codexBackup: true }, async ({ api, control }) => {
+    await api("PUT", "/api/config", { automaticRecovery: { enabled: false, backup: { instanceId: "codex", model: "gpt-fake-default" } } });
+    const { bot } = await control("new-bot", "--name", "Sign in manually");
+    await api("PATCH", `/api/bots/${bot.id}/tasks/${bot.activeTaskId}`, { modelSelection: backup, approvalMode: "ask" });
+    await control("send", "--bot", bot.id, "--text", "NO_SIGN_OUT_RECOVERY_4B");
+    expect((await control("wait", "--bot", bot.id, "--timeout", "30")).status).toBe("failed");
+    const { messages } = await control("messages", "--bot", bot.id, "--limit", "30");
+    expect(messages.filter((message: any) => message.tool?.name?.startsWith("recovery:"))).toHaveLength(0);
     expect(messages.map((message: any) => message.tool).filter((tool: any) => tool?.ok === false))
       .toEqual([{ name: "error: Not logged in · Please run /login", ok: false, setup: true }]);
   });

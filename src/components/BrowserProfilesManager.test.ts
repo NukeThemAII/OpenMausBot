@@ -83,7 +83,7 @@ describe("browser profile manager", () => {
     fixture.profiles = [{ id: "work", name: "Work", browser: "chrome" }];
     const html = renderToStaticMarkup(createElement(BrowserProfilesManager));
     expect(html).toContain('<option value="chrome" disabled="" selected="">My Chrome</option>');
-    expect(html).toContain("My Chrome is for the desktop app, where bots run on your own computer. On Cloud and on a server there is no Chrome of yours to use, so every profile uses the built-in browser.");
+    expect(html).toContain("My Chrome is for the desktop app, where bots run on your own computer. Anywhere else, such as the Cloud, there is no Chrome of yours to use, so every profile uses the built-in browser.");
     expect(html).not.toContain("act inside your real Chrome");
     expect(html).toContain("Signed-in sites");
   });

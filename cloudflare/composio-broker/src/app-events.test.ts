@@ -1,9 +1,12 @@
+import { createHmac } from "node:crypto";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { enqueue, runHourly } from "./app-events";
+import { enqueue, runHourly, WAKE_EVERY_MS } from "./app-events";
 import { DAY_MS, QUEUE_MAX_BYTES } from "./common";
 import {
   brokerHarness,
+  CLOUD_GRANT_SECRET,
   cloudGrant,
   composioSignature,
   GMAIL_TYPE,
@@ -683,6 +686,136 @@ describe("paid Cloud", () => {
   });
 });
 
+describe("waking a sleeping Cloud for its events", () => {
+  const ADMIN = "https://cloud-admin.test";
+  const MACHINE = "omb-machine-1";
+  let wakes: Array<{ url: string; method: string; headers: Headers; body: string }>;
+  let answer: () => Promise<Response>;
+  const at = (ms: number) => vi.setSystemTime(new Date(ms));
+  const T0 = Date.parse("2026-10-19T10:00:00Z");
+
+  beforeEach(() => {
+    wakes = [];
+    answer = async () => Response.json({ waking: true }, { status: 202 });
+    h.env.CLOUD_ADMIN_URL = ADMIN;
+    vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (url.origin !== ADMIN) return h.composio.fetchImpl(input, init);
+      wakes.push({ url: url.href, method: init?.method ?? "GET", headers: new Headers(init?.headers), body: String(init?.body) });
+      return answer();
+    });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    at(T0);
+  });
+
+  async function cloudTrigger() {
+    const { owner, triggerId } = await withTrigger();
+    await asCloud(owner, MACHINE);
+    return { owner, triggerId };
+  }
+  async function deliver(owner: Installation, triggerId: string) {
+    const response = await h.deliver(message(triggerId, owner.userId));
+    expect(response.status).toBe(200);
+    await Promise.all(h.background);
+  }
+
+  it("asks the Admin once, signed with the Cloud grant key over exactly the timestamp and machine id", async () => {
+    const { owner, triggerId } = await cloudTrigger();
+    await deliver(owner, triggerId);
+    expect(h.queued(owner.id)).toHaveLength(1);
+    expect(wakes).toHaveLength(1);
+    const [wake] = wakes;
+    const timestamp = String(Math.floor(T0 / 1000));
+    expect(wake.url).toBe(`${ADMIN}/api/cloud/machines/wake`);
+    expect(wake.method).toBe("POST");
+    expect(wake.body).toBe(`{"machineId":"${MACHINE}"}`);
+    expect(wake.headers.get("content-type")).toBe("application/json");
+    expect(wake.headers.get("x-omb-wake-timestamp")).toBe(timestamp);
+    const expected = createHmac("sha256", CLOUD_GRANT_SECRET).update(`omb-cloud-wake:v1\n${timestamp}\n${MACHINE}`).digest("base64url");
+    expect(wake.headers.get("x-omb-wake-signature")).toBe(`v1=${expected}`);
+    expect(h.d1.rows("SELECT wake_requested_at FROM installations WHERE id = ?", owner.id)).toEqual([{ wake_requested_at: T0 }]);
+  });
+
+  it("asks at most once a minute per installation", async () => {
+    const { owner, triggerId } = await cloudTrigger();
+    await deliver(owner, triggerId);
+    at(T0 + WAKE_EVERY_MS - 1_000);
+    await deliver(owner, triggerId);
+    expect(wakes).toHaveLength(1);
+    at(T0 + WAKE_EVERY_MS);
+    await deliver(owner, triggerId);
+    expect(wakes).toHaveLength(2);
+    expect(h.queued(owner.id)).toHaveLength(3);
+  });
+
+  it("asks nothing while the Cloud holds its poll lease, and again once the lease ran out", async () => {
+    const { owner, triggerId } = await cloudTrigger();
+    await pollBody(owner, "wait=0");
+    await deliver(owner, triggerId);
+    expect(wakes).toEqual([]);
+    at(T0 + 91_000);
+    await deliver(owner, triggerId);
+    expect(wakes).toHaveLength(1);
+  });
+
+  it("asks nothing for a desktop installation, a dropped or duplicate event, or without both settings", async () => {
+    const desktop = await withTrigger();
+    await deliver(desktop.owner, desktop.triggerId);
+    expect(wakes).toEqual([]);
+
+    const { owner, triggerId } = await cloudTrigger();
+    const event = message(triggerId, owner.userId, undefined, "msg_once");
+    await h.deliver(event);
+    await Promise.all(h.background);
+    at(T0 + 2 * WAKE_EVERY_MS);
+    await h.deliver(event);
+    await Promise.all(h.background);
+    expect(wakes).toHaveLength(1);
+
+    h.env.CLOUD_ADMIN_URL = undefined;
+    at(T0 + 4 * WAKE_EVERY_MS);
+    await deliver(owner, triggerId);
+    h.env.CLOUD_ADMIN_URL = ADMIN;
+    h.env.CLOUD_GRANT_SECRET = undefined;
+    at(T0 + 6 * WAKE_EVERY_MS);
+    await deliver(owner, triggerId);
+    h.env.CLOUD_GRANT_SECRET = CLOUD_GRANT_SECRET;
+    h.env.CLOUD_ADMIN_URL = "http://cloud-admin.test";
+    at(T0 + 8 * WAKE_EVERY_MS);
+    await deliver(owner, triggerId);
+    expect(wakes).toHaveLength(1);
+    expect(h.d1.rows("SELECT wake_requested_at FROM installations WHERE id = ?", owner.id)).toEqual([{ wake_requested_at: T0 }]);
+  });
+
+  it("queues the event and answers Composio 200 when the Admin refuses, fails or can't be reached", async () => {
+    const { owner, triggerId } = await cloudTrigger();
+    const warnings = vi.mocked(console.warn);
+    answer = async () => Response.json({ error: "bad signature" }, { status: 401 });
+    await deliver(owner, triggerId);
+    at(T0 + WAKE_EVERY_MS);
+    answer = async () => { throw new TypeError("fetch failed"); };
+    await deliver(owner, triggerId);
+    expect(wakes).toHaveLength(2);
+    expect(h.queued(owner.id)).toHaveLength(2);
+    const logged = warnings.mock.calls.map(([line]) => String(line)).filter((line) => line.includes("cloud wake"));
+    expect(logged).toHaveLength(2);
+    for (const line of logged) expect(line).not.toContain(CLOUD_GRANT_SECRET);
+  });
+
+  it("answers Composio without waiting for the Admin", async () => {
+    const { owner, triggerId } = await cloudTrigger();
+    let release!: () => void;
+    answer = () => new Promise((resolve) => { release = () => resolve(Response.json({ waking: true }, { status: 202 })); });
+    const response = await h.deliver(message(triggerId, owner.userId));
+    expect(response.status).toBe(200);
+    expect(h.background).toHaveLength(1);
+    for (let turn = 0; !release && turn < 1000; turn += 1) await new Promise((resolve) => setImmediate(resolve));
+    release();
+    await Promise.all(h.background);
+    expect(wakes).toHaveLength(1);
+  });
+});
+
 describe("fleet counter", () => {
   it("gives Admin daily totals with no event contents or installation ids", async () => {
     const { owner, triggerId } = await withTrigger();
@@ -706,6 +839,23 @@ describe("fleet counter", () => {
 });
 
 describe("deploy order", () => {
+  it("queues app events for a Cloud on a database without migration 0003, without asking the Admin", async () => {
+    h = brokerHarness({ migrations: 2 });
+    h.env.CLOUD_ADMIN_URL = "https://cloud-admin.test";
+    const admin: string[] = [];
+    vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      if (new URL(String(input)).hostname === "cloud-admin.test") { admin.push(String(input)); return Response.json({}, { status: 202 }); }
+      return h.composio.fetchImpl(input, init);
+    });
+    const { owner, triggerId } = await withTrigger();
+    await asCloud(owner, "omb-machine-1");
+    expect((await h.deliver(message(triggerId, owner.userId))).status).toBe(200);
+    await Promise.all(h.background);
+    expect(h.queued(owner.id)).toHaveLength(1);
+    expect(admin).toEqual([]);
+    expect(vi.mocked(console.warn).mock.calls.some(([line]) => String(line).includes("cloud wake failed"))).toBe(true);
+  });
+
   it("keeps the existing routes working on a database that has not run migration 0002", async () => {
     h = brokerHarness({ migrations: 1 });
     vi.stubGlobal("fetch", h.composio.fetchImpl);

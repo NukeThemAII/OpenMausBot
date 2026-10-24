@@ -14,6 +14,10 @@ import type { Notification, NotificationLogEntry } from "../shared/notification.
 export type { SearchHit } from "./message-search-query.ts";
 
 const DB_FILE = () => join(DATA_DIR, "messages.db");
+/** The rows the Today page reads, and among them the failed tool calls. JSON.stringify escapes every quote inside a
+ * string value, so a stored row holds the bare text "ok":false only as a real key. */
+const WORK_KINDS = "kind IN ('activity', 'digest', 'options')";
+const FAILED_CALL = "kind = 'activity' AND instr(json, '\"ok\":false') > 0";
 
 let handle: DatabaseSync | null = null;
 let handlePath: string | null = null;
@@ -47,6 +51,9 @@ function open(): DatabaseSync {
     -- walk these rows in time order on messages_thread. Created on every
     -- open, including a database that already has messages.
     CREATE INDEX IF NOT EXISTS messages_thread_at ON messages(thread_id, at);
+    -- Partial, so no other query's plan can move onto them: only a statement that repeats the WHERE may use one.
+    CREATE INDEX IF NOT EXISTS messages_work_at ON messages(kind, at) WHERE ${WORK_KINDS};
+    CREATE INDEX IF NOT EXISTS messages_failed_at ON messages(at) WHERE ${FAILED_CALL};
     CREATE TABLE IF NOT EXISTS thread_state (
       thread_id TEXT PRIMARY KEY,
       active_leaf_id TEXT
@@ -210,6 +217,7 @@ export interface FollowupPayload {
   mode?: "chat" | "goal";
   via?: "api" | "call";
   callId?: string;
+  fromApp?: Message["fromApp"];
   sender?: ResolvedSender;
   trigger?: UsageTrigger;
   origin?: WorkOrigin;
@@ -320,6 +328,12 @@ export function recentNotificationLog(limit = NOTIFICATION_LOG_LIMIT): Notificat
 
 export function markNotificationLogRead(id: string): void {
   db().prepare("UPDATE notification_log SET read = 1 WHERE id = ?").run(id);
+}
+
+/** Opening a conversation reads its notifications, questions and approvals included. Returns the ids it flipped. */
+export function markThreadNotificationLogRead(threadId: string): string[] {
+  const rows = db().prepare("UPDATE notification_log SET read = 1 WHERE thread_id = ? AND read = 0 RETURNING id").all(threadId) as Array<{ id: string }>;
+  return rows.map((row) => row.id);
 }
 
 export function markAllNotificationLogRead(): void {
@@ -486,6 +500,89 @@ export function workingGoalRunMessages(): Array<{ threadId: string; message: Mes
   return rows.map((row) => ({ threadId: row.thread_id, message: JSON.parse(row.json) as Message }));
 }
 
+const MULTI_EXECUTE_INPUT = "CASE WHEN json_extract(json, '$.tool.name') LIKE '%MULTI\\_EXECUTE%' ESCAPE '\\' THEN json_extract(json, '$.tool.input') END AS input";
+
+/** One tool call or turn summary in a time window, with only the fields the Today page reads. JSON booleans read as 1 or 0. */
+export interface WorkRow {
+  threadId: string;
+  id: string;
+  at: number;
+  kind: "activity" | "digest";
+  name: string | null;
+  ok: number | null;
+  turnId: string | null;
+  fromBotId: string | null;
+  turnSucceeded: number | null;
+  requestMessageId: string | null;
+  digest: string | null;
+  input: string | null;
+}
+
+export function workRows(since: number, until: number): WorkRow[] {
+  return db().prepare(
+    "SELECT thread_id AS threadId, id, at, kind, json_extract(json, '$.tool.name') AS name, json_extract(json, '$.tool.ok') AS ok, " +
+    "json_extract(json, '$.turnId') AS turnId, json_extract(json, '$.from.botId') AS fromBotId, " +
+    "json_extract(json, '$.turnSucceeded') AS turnSucceeded, json_extract(json, '$.requestMessageId') AS requestMessageId, " +
+    "CASE WHEN kind = 'digest' THEN json_extract(json, '$.digest') END AS digest, " +
+    `${MULTI_EXECUTE_INPUT} FROM messages INDEXED BY messages_work_at WHERE ${WORK_KINDS} AND kind <> 'options' AND at >= ? AND at <= ? ORDER BY at`,
+  ).all(since, until) as unknown as WorkRow[];
+}
+
+/** What might still need the person since a time: open cards, failed tool calls, and the turns that settle them. JSON booleans read as 1 or 0. */
+export interface AttentionRow {
+  threadId: string;
+  id: string;
+  at: number;
+  kind: "options" | "activity" | "digest";
+  fromBotId: string | null;
+  digestBotId: string | null;
+  name: string | null;
+  setup: number | null;
+  place: string | null;
+  output: string | null;
+  input: string | null;
+  card: string | null;
+}
+
+
+export function attentionRows(since: number): AttentionRow[] {
+  const columns = "SELECT thread_id AS threadId, id, at, kind, json_extract(json, '$.from.botId') AS fromBotId, json_extract(json, '$.digest.botId') AS digestBotId, " +
+    "json_extract(json, '$.tool.name') AS name, json_extract(json, '$.tool.setup') AS setup, json_extract(json, '$.tool.place') AS place, " +
+    `substr(json_extract(json, '$.tool.output'), 1, 2000) AS output, ${MULTI_EXECUTE_INPUT}, ` +
+    "CASE WHEN kind = 'options' THEN json_extract(json, '$.card') END AS card";
+  return db().prepare(
+    `${columns} FROM messages INDEXED BY messages_work_at WHERE ${WORK_KINDS} AND kind = 'options' AND at >= ? ` +
+    "AND json_extract(json, '$.card.answered') IS NULL AND coalesce(json_extract(json, '$.card.dismissed'), 0) = 0 " +
+    "AND coalesce(json_extract(json, '$.card.expired'), 0) = 0 AND json_extract(json, '$.helperIntro') IS NULL " +
+    `UNION ALL ${columns} FROM messages INDEXED BY messages_failed_at WHERE ${FAILED_CALL} AND at >= ? AND json_extract(json, '$.tool.ok') = 0 ` +
+    `UNION ALL ${columns} FROM messages INDEXED BY messages_work_at WHERE ${WORK_KINDS} AND kind = 'digest' AND at >= ? ` +
+    "AND json_extract(json, '$.turnSucceeded') = 1 ORDER BY at",
+  ).all(since, since, since) as unknown as AttentionRow[];
+}
+
+/** Successful tool calls after a time whose row mentions `word` (case-insensitive), newest last. */
+export function successfulCallsMentioning(since: number, word: string): Array<{ at: number; name: string; input: string | null }> {
+  return db().prepare(
+    `SELECT at, json_extract(json, '$.tool.name') AS name, ${MULTI_EXECUTE_INPUT} FROM messages ` +
+    `INDEXED BY messages_work_at WHERE ${WORK_KINDS} AND kind = 'activity' AND at > ? AND json LIKE ? ESCAPE '\\' ` +
+    "AND json_extract(json, '$.tool.ok') = 1 ORDER BY at",
+  ).all(since, `%${word.replace(/[\\%_]/g, "\\$&")}%`) as Array<{ at: number; name: string; input: string | null }>;
+}
+
+/** Who sent each request: the fields that tell a person's line from another bot's, the API's or a relay's. */
+export function requestSenders(keys: ReadonlyArray<{ threadId: string; id: string }>): Map<string, { role: string; peer: number; via: string | null; relayed: number }> {
+  const out = new Map<string, { role: string; peer: number; via: string | null; relayed: number }>();
+  for (let i = 0; i < keys.length; i += 400) {
+    const slice = keys.slice(i, i + 400);
+    const rows = db().prepare(
+      "SELECT thread_id, id, role, json_extract(json, '$.peerAsk') IS NOT NULL AS peer, json_extract(json, '$.via') AS via, " +
+      `coalesce(json_extract(json, '$.relayed'), 0) AS relayed FROM messages WHERE (thread_id, id) IN (VALUES ${slice.map(() => "(?, ?)").join(", ")})`,
+    ).all(...slice.flatMap((key) => [key.threadId, key.id])) as Array<{ thread_id: string; id: string; role: string; peer: number; via: string | null; relayed: number }>;
+    for (const row of rows) out.set(`${row.thread_id}\u0000${row.id}`, { role: row.role, peer: row.peer, via: row.via, relayed: row.relayed });
+  }
+  return out;
+}
+
 export function setActiveLeaf(threadId: string, leafId: string | null): void {
   db()
     .prepare(
@@ -493,6 +590,33 @@ export function setActiveLeaf(threadId: string, leafId: string | null): void {
         "ON CONFLICT(thread_id) DO UPDATE SET active_leaf_id = excluded.active_leaf_id",
     )
     .run(threadId, leafId);
+}
+
+/** Each conversation's newest stored row, by its row number, and how many rows it has: what Send to My Cloud compares with what it sent. */
+export function threadHeads(): Map<string, { last: number; lastId: string; rows: number }> {
+  const rows = db().prepare("SELECT m.thread_id AS threadId, m.rowid AS last, m.id AS lastId, h.rows AS rows FROM messages m " +
+    "JOIN (SELECT thread_id, MAX(rowid) AS head, COUNT(*) AS rows FROM messages GROUP BY thread_id) h ON m.rowid = h.head").all() as Array<{ threadId: string; last: number; lastId: string; rows: number }>;
+  return new Map(rows.map((row) => [row.threadId, { last: Number(row.last), lastId: row.lastId, rows: Number(row.rows) }]));
+}
+
+/** A conversation's rows numbered past `after`, oldest first, each with its stored size: `limit` of them, or all up to `through`. */
+export function threadRowsFrom(threadId: string, after: number, upTo: { limit: number } | { through: number }): Array<{ at: number; bytes: number; message: Message }> {
+  const rows = ("limit" in upTo
+    ? db().prepare("SELECT rowid AS at, json FROM messages WHERE thread_id = ? AND rowid > ? ORDER BY rowid LIMIT ?").all(threadId, after, upTo.limit)
+    : db().prepare("SELECT rowid AS at, json FROM messages WHERE thread_id = ? AND rowid > ? AND rowid <= ? ORDER BY rowid").all(threadId, after, upTo.through)) as Array<{ at: number; json: string }>;
+  return rows.map((row) => ({ at: Number(row.at), bytes: Buffer.byteLength(row.json, "utf8"), message: rowToMessage(row) }));
+}
+
+/** Each of a conversation's stored rows by id, with its row number. */
+export function threadRowNumbers(threadId: string): Map<string, number> {
+  const rows = db().prepare("SELECT rowid AS at, id FROM messages WHERE thread_id = ?").all(threadId) as Array<{ at: number; id: string }>;
+  return new Map(rows.map((row) => [row.id, Number(row.at)]));
+}
+
+/** The time on a conversation's last stored row, without reading the conversation. */
+export function lastRowAt(threadId: string): number | undefined {
+  const row = db().prepare("SELECT at FROM messages WHERE thread_id = ? ORDER BY rowid DESC LIMIT 1").get(threadId) as { at: number } | undefined;
+  return row?.at;
 }
 
 export function latestMessageAts(threadIds: readonly string[], forOrdering = false): Map<string, number> {
@@ -540,6 +664,20 @@ export function deleteThreads(threadIds: readonly string[], beforeCommit?: () =>
     for (const id of threadIds) for (const statement of statements) statement.run(id);
     beforeCommit?.();
   });
+}
+
+/** Option-card rows whose card names one of `tools`, oldest first; the caller judges each card itself. */
+export function optionCardsForTools(tools: readonly string[]): Array<{ threadId: string; messageId: string }> {
+  if (tools.length === 0) return [];
+  const rows = db()
+    .prepare(`SELECT thread_id, id FROM messages WHERE kind = 'options' AND json_extract(json, '$.card.tool') IN (${tools.map(() => "?").join(", ")}) ORDER BY rowid`)
+    .all(...tools) as Array<{ thread_id: string; id: string }>;
+  return rows.map((row) => ({ threadId: row.thread_id, messageId: row.id }));
+}
+
+export function appDocRefs(): string[] {
+  const rows = db().prepare("SELECT json_extract(json, '$.app.doc') AS doc FROM messages WHERE kind = 'app' UNION SELECT h.value FROM messages m, json_each(m.json, '$.app.history') h WHERE m.kind = 'app'").all() as Array<{ doc: unknown }>;
+  return rows.flatMap((row) => (typeof row.doc === "string" && row.doc ? [row.doc] : []));
 }
 
 export function threadsReferencing(fragment: string): string[] {

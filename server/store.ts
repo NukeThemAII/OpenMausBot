@@ -2,8 +2,10 @@ import { chmodSync, existsSync, readFileSync, mkdirSync, rmSync, statSync, unlin
 import { join } from "node:path";
 
 import { writeFileAtomic, writeFileAtomicIfChanged } from "./atomic.ts";
-import { commitBotChange, keptRevocation, saveBotsFor } from "./bots-save.ts";
+import { commitRegistryChange, keptRevocation, saveRegistryFor } from "./registry-save.ts";
 import { parseToolScope, toolScopeWidens } from "../shared/tool-scope.ts";
+import { reorderStable } from "../shared/bot-order.ts";
+import { botOwner, chiefConflict, chiefScope, ownerEmail } from "../shared/bot-owner.ts";
 import { ensureSections, readSections, changeEmptySection } from "./section-context.ts";
 import type { TeamComputers } from "./team-computers.ts";
 import { removeBotFolder, soulFile, soulHash, writeSoulMirror } from "./bot-folder.ts";
@@ -17,13 +19,11 @@ import { workspaceDir } from "./workspace.ts";
 import type { Destination } from "./surface.ts";
 import { newId, type ModelSelection } from "./contracts.ts";
 import { pickBotName } from "./names.ts";
-import { redactSecretsInText } from "./redact.ts";
-import { scrubbedSkillRequest } from "./skill-request-card.ts";
+import { redactBotAuthored } from "./message-redaction.ts";
 import { AVATAR_FOCUS_CENTER, AVATAR_ZOOM_MIN, botAvatarProfile, clampAvatarFocus, clampAvatarZoom } from "../shared/bot-avatar.ts";
-import { approvalModeFor, isApprovalMode, modelSwitchNeedsAsk, type ApprovalMode } from "../shared/approval-mode.ts";
+import { approvalModeFor, isApprovalMode, modelSwitchNeedsAsk, threadApproval, type ApprovalMode } from "../shared/approval-mode.ts";
 import { lastChangeRequestUrl } from "../shared/thread-link.ts";
 import { REMOVED_COMPUTER_DRIVER, type ComputerEngineMove } from "./computer-engine-removal.ts";
-import type { ProfileRequestChanges } from "../shared/profile-request.ts";
 import type { TeamSetupRequest, TeamSetupResult } from "../shared/team-setup.ts";
 import type { GroupGoalRunCardData } from "../shared/group-goal-run.ts";
 import { isMentionBoundary, isMentionNameContinuation } from "../shared/mention-boundary.ts";
@@ -31,12 +31,14 @@ import type { HandedState } from "./delta-context.ts";
 import type { AgentPart, PartPair, RoomPart } from "./package-parts.ts";
 import type {
   BotActivity, GroupDefaultResponder, GroupTask as GroupTaskRecord, MausColor,
-  OptionCardData, TaskClosedBy, TaskOpenedBy, TaskUsage, WireBot, WireGroup,
+  TaskClosedBy, TaskOpenedBy, TaskUsage, WireBot, WireGroup,
   WireMessage, WireTask, BotProject as BotProjectRecord,
 } from "../shared/wire.ts";
-import { movesThreadToTop } from "../shared/wire.ts";
+import { movesThreadToTop, nextOpenThread } from "../shared/wire.ts";
 import { parseConnectorTools } from "./connector-tools.ts";
 import { sameModelSelection } from "../shared/thread-model.ts";
+import { initialGreetingMessage } from "./initial-greeting.ts"; import { createDefaultBot, defaultBotRefusal } from "./default-bot.ts";
+import { ThreadCache, type ThreadState } from "./thread-cache.ts";
 export type {
   BotActivity, ConnectorCardData, GroupDefaultResponder, OptionCardData,
   SecretRequestCardData, Surface, TaskClosedBy, TaskOpenedBy, TaskUsage,
@@ -104,142 +106,17 @@ const TASK_PATCH_FIELDS = [
 ] as const satisfies readonly (keyof TaskRecord)[];
 export type TaskPatch = Partial<Pick<TaskRecord, typeof TASK_PATCH_FIELDS[number]>>;
 
+export type GroupTaskPatch = Partial<Pick<GroupTaskRecord, "title" | "pinned">> & { turnTimeoutMinutes?: number | null };
+
+function mirrorActiveGroupTask(group: GroupRecord, task: GroupTaskRecord): void {
+  Object.assign(group, { threadId: task.threadId, pinnedCwd: task.pinnedCwd, pinnedMessageId: task.pinnedMessageId });
+}
+
 function persistedPin<T extends { pinned?: boolean }>(task: T): T {
   if (task.pinned === true) return task;
   if (!("pinned" in task)) return task;
   const { pinned: _pinned, ...rest } = task;
   return rest as T;
-}
-
-/** Bot-authored text is scrubbed of secrets before it is stored (the transcript replays into every rebuild); what the user typed stays as typed. */
-function redactBotAuthored<T extends Omit<Message, "id" | "at"> & { at?: number }>(message: T): T {
-  if (message.role !== "bot") return message;
-  const out = { ...message };
-  if (out.dataResult) out.dataResult = {
-    ...out.dataResult,
-    title: redactSecretsInText(out.dataResult.title),
-    ...(out.dataResult.sql === undefined ? {} : { sql: redactSecretsInText(out.dataResult.sql) }),
-  };
-  if (typeof out.text === "string") out.text = redactSecretsInText(out.text);
-  if (out.compaction) out.compaction = { ...out.compaction, summary: redactSecretsInText(out.compaction.summary) };
-  if (out.tool?.name) {
-    out.tool = { ...out.tool, name: redactSecretsInText(out.tool.name) };
-    if (out.tool.summary) out.tool.summary = redactSecretsInText(out.tool.summary);
-  }
-  if (out.routineRun) {
-    const routineRun = { ...out.routineRun };
-    routineRun.routineName = redactSecretsInText(routineRun.routineName);
-    if (routineRun.summary) routineRun.summary = redactSecretsInText(routineRun.summary);
-    if (routineRun.error) routineRun.error = redactSecretsInText(routineRun.error);
-    out.routineRun = routineRun;
-  }
-  if (out.goalRun) {
-    out.goalRun = {
-      ...out.goalRun,
-      goal: redactSecretsInText(out.goalRun.goal),
-      coordinatorName: redactSecretsInText(out.goalRun.coordinatorName),
-      detail: out.goalRun.detail ? redactSecretsInText(out.goalRun.detail) : undefined,
-    };
-  }
-  if (out.call?.title) out.call = { ...out.call, title: redactSecretsInText(out.call.title) };
-  if (out.card) {
-    const card = { ...out.card } as OptionCardData & { summary?: string };
-    card.title = redactSecretsInText(card.title);
-    if (typeof card.subtitle === "string") card.subtitle = redactSecretsInText(card.subtitle);
-    if (typeof card.summary === "string") card.summary = redactSecretsInText(card.summary);
-    if (typeof card.held === "string") card.held = redactSecretsInText(card.held);
-    if (typeof card.answeredText === "string") card.answeredText = redactSecretsInText(card.answeredText);
-    if (card.commandAllowlist && (
-      redactSecretsInText(card.commandAllowlist.command) !== card.commandAllowlist.command ||
-      redactSecretsInText(card.commandAllowlist.cwd) !== card.commandAllowlist.cwd
-    )) delete card.commandAllowlist;
-    if (card.questionRequest) {
-      card.questionRequest = {
-        ...card.questionRequest,
-        questions: card.questionRequest.questions.map((question) => ({
-          ...question,
-          question: redactSecretsInText(question.question),
-          ...(question.header ? { header: redactSecretsInText(question.header) } : {}),
-          options: question.options.map((option) => ({
-            ...option,
-            label: redactSecretsInText(option.label),
-            ...(option.description ? { description: redactSecretsInText(option.description) } : {}),
-          })),
-        })),
-      };
-    }
-    if (card.routineRequest) {
-      const operation = card.routineRequest.operation;
-      card.routineRequest = {
-        ...card.routineRequest,
-        operation: operation.action === "create"
-          ? {
-              ...operation,
-              routine: {
-                ...operation.routine,
-                name: redactSecretsInText(operation.routine.name),
-                instructions: redactSecretsInText(operation.routine.instructions),
-              },
-            }
-          : operation.action === "update"
-            ? {
-                ...operation,
-                changes: {
-                  ...operation.changes,
-                  ...(typeof operation.changes.name === "string"
-                    ? { name: redactSecretsInText(operation.changes.name) }
-                    : {}),
-                  ...(typeof operation.changes.instructions === "string"
-                    ? { instructions: redactSecretsInText(operation.changes.instructions) }
-                    : {}),
-                },
-              }
-            : { ...operation },
-      };
-    }
-    if (card.skillRequest) card.skillRequest = scrubbedSkillRequest(card.skillRequest);
-    if (card.profileRequest) {
-      const scrubChanges = (changes: ProfileRequestChanges): ProfileRequestChanges => {
-        const out = { ...changes };
-        for (const [key, value] of Object.entries(changes)) {
-          if (typeof value === "string") (out as Record<string, string | boolean>)[key] = redactSecretsInText(value);
-        }
-        return out;
-      };
-      card.profileRequest = {
-        ...card.profileRequest,
-        targetName: redactSecretsInText(card.profileRequest.targetName),
-        reason: redactSecretsInText(card.profileRequest.reason),
-        before: scrubChanges(card.profileRequest.before),
-        changes: scrubChanges(card.profileRequest.changes),
-      };
-    }
-    out.card = card;
-  }
-  if (out.connector) {
-    out.connector = {
-      ...out.connector,
-      label: redactSecretsInText(out.connector.label),
-      description: redactSecretsInText(out.connector.description),
-      error: out.connector.error ? redactSecretsInText(out.connector.error) : undefined,
-    };
-  }
-  if (out.secret) {
-    out.secret = {
-      ...out.secret,
-      label: redactSecretsInText(out.secret.label),
-      description: redactSecretsInText(out.secret.description),
-      error: out.secret.error ? redactSecretsInText(out.secret.error) : undefined,
-    };
-  }
-  if (out.signIn) {
-    out.signIn = {
-      ...out.signIn,
-      reason: out.signIn.reason ? redactSecretsInText(out.signIn.reason) : undefined,
-      error: out.signIn.error ? redactSecretsInText(out.signIn.error) : undefined,
-    };
-  }
-  return out;
 }
 
 export const ACTIVITY_BUSY: ReadonlySet<BotActivity> = new Set(["working", "waiting-on-you", "no-signal"]);
@@ -252,6 +129,8 @@ export type StoreChange =
   | { type: "thread.deleted"; threadId: string }
   | { type: "bot"; botId: string }
   | { type: "bot.deleted"; botId: string }
+  /** The fleet was reordered as a whole; the broadcast carries every id in its new place. */
+  | { type: "bots.order" }
   | { type: "group"; groupId: string }
   | { type: "group.deleted"; groupId: string };
 
@@ -431,18 +310,14 @@ function taskCountsAsBotUnread(task: { unread?: boolean; routineRunId?: string }
   return Boolean(task.unread) && !task.routineRunId;
 }
 
-interface ThreadState {
-  messages: Message[];
-  activeLeafId: string | null;
-}
-
 export class Store {
   bots: BotRecord[] = [];
   groups: GroupRecord[] = [];
-  private threads = new Map<string, ThreadState>();
+  private threads = new ThreadCache(() => this.busyThreadIds());
   private defaultSelection: () => ModelSelection;
   private completeNewBotSelection: (selection: ModelSelection) => ModelSelection;
   private driverKindOf: (instanceId: string) => string | undefined;
+  private initialLanguage: string | (() => string);
   private listeners = new Set<(change: StoreChange) => void>();
   private registeringInitialSections = true;
   /** Clearing this slot must not clear a concurrently running task's activity. */
@@ -453,10 +328,12 @@ export class Store {
     completeNewBotSelection: (selection: ModelSelection) => ModelSelection = (selection) => selection,
     /** Unknown counts as another driver, so Full and Custom fall back to Ask. */
     driverKindOf: (instanceId: string) => string | undefined = () => undefined,
+    initialLanguage: string | (() => string) = Intl.DateTimeFormat().resolvedOptions().locale,
   ) {
     this.defaultSelection = defaultSelection;
     this.completeNewBotSelection = completeNewBotSelection;
     this.driverKindOf = driverKindOf;
+    this.initialLanguage = initialLanguage;
     mkdirSync(DATA_DIR, { recursive: true });
     for (const file of [BOTS_FILE, GROUPS_FILE]) tightenRegistryFile(file);
     // An unreadable bots.json must never read as "every member was deleted".
@@ -571,7 +448,7 @@ export class Store {
     }
     for (const b of this.bots) {
       if (!b.chiefOfStaff) continue;
-      const key = sectionKey(b.section);
+      const key = chiefScope(b);
       if (!chiefSectionsSeen.has(key)) {
         chiefSectionsSeen.add(key);
         if (b.hidden) {
@@ -828,7 +705,11 @@ export class Store {
   }
 
   private commitBotChange(bot: BotRecord, action: string, change: () => void, onRollback?: () => void) {
-    commitBotChange(bot, action, () => this.saveBots(), change, onRollback);
+    commitRegistryChange(bot, "bots.json", action, () => this.saveBots(), change, onRollback);
+  }
+
+  private commitGroupChange(group: GroupRecord, action: string, change: () => void) {
+    commitRegistryChange(group, "groups.json", action, () => this.saveGroups(), change);
   }
 
   private saveBots(bots: BotRecord[] = this.bots, registerSections = true) {
@@ -859,16 +740,16 @@ export class Store {
   }
 
   renameSection(name: string, nextName: string, computers?: TeamComputers): string | undefined {
-    if (!name || !this.sections.includes(name)) return "No such team";
+    if (!name || !this.sections.includes(name)) return "No such department";
     nextName = nextName.trim();
-    if (!nextName || nextName.length > 60 || [...nextName].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)) return "Team name must be 1 to 60 characters without control characters";
+    if (!nextName || nextName.length > 60 || [...nextName].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)) return "Department name must be 1 to 60 characters without control characters";
     if (name === nextName) return undefined;
-    if (this.sections.includes(nextName) || computers?.forSection(nextName)) return "A team with that name already exists";
+    if (this.sections.includes(nextName) || computers?.forSection(nextName)) return "A department with that name already exists";
     const members = this.bots.filter(bot => sectionKey(bot.section) === name);
     const rooms = this.groups.filter(group => sectionKey(group.section) === name);
     const affected = this.bots.filter(bot => members.includes(bot) || bot.managedSections?.some(section => sectionKey(section) === name));
     if (affected.some(bot => bot.busy || bot.tasks?.some(task => task.busy)) || rooms.some(group => group.busyBotId)) {
-      return "Stop this team's active work before renaming the team";
+      return "Stop this department's active work before renaming it";
     }
     // Removing an empty identity revokes its old grants, so recreating it cannot restore access.
     if (!members.length && !rooms.length && !computers?.forSection(name)) return this.changeEmptySection(name, nextName);
@@ -900,12 +781,12 @@ export class Store {
   }
 
   changeEmptySection(name: string, nextName: string | null): string | undefined {
-    if (!this.sections.includes(name)) return "No such team";
+    if (!this.sections.includes(name)) return "No such department";
     if ([...this.bots, ...this.groups].some((record) => sectionKey(record.section) === name)) {
-      return "Move all bots (including archived bots) and group chats out of this team first";
+      return "Move all bots (including archived bots) and group chats out of this department first";
     }
     if (nextName !== null && nextName !== name && this.sections.includes(nextName)) {
-      return "A team with that name already exists";
+      return "A department with that name already exists";
     }
     if (nextName === name) return undefined;
     const revoked = this.bots.filter((bot) => bot.managedSections?.some((section) => sectionKey(section) === name));
@@ -922,19 +803,19 @@ export class Store {
   }
 
   deleteSection(name: string): string | undefined {
-    if (!name || !this.sections.includes(name)) return "No such team";
+    if (!name || !this.sections.includes(name)) return "No such department";
     const members = this.bots.filter(bot => sectionKey(bot.section) === name);
     const rooms = this.groups.filter(group => sectionKey(group.section) === name);
     if (members.some(bot => bot.busy || bot.tasks?.some(task => task.busy)) || rooms.some(group => group.busyBotId)) {
-      return "Stop this team's active work before deleting the team";
-    }
-    if (this.bots.filter(bot => bot.chiefOfStaff && (!sectionKey(bot.section) || sectionKey(bot.section) === name)).length > 1) {
-      return "General already has a Chief of Staff. Move or change this team's Chief before deleting the team";
+      return "Stop this department's active work before deleting it";
     }
     const nextBots = this.bots.map(bot => ({ ...bot,
       ...(sectionKey(bot.section) === name ? { section: undefined } : {}),
       ...(bot.managedSections ? { managedSections: bot.managedSections.filter(section => sectionKey(section) !== name) } : {}),
     }));
+    if (chiefConflict(nextBots)) {
+      return "General already has a Chief of Staff. Move or change this department's Chief before deleting it";
+    }
     const nextGroups = this.groups.map(group => sectionKey(group.section) === name ? { ...group, section: undefined } : group);
     try {
       this.saveBots(nextBots);
@@ -986,14 +867,14 @@ export class Store {
     setup?: {
       bulletin?: string;
       defaultResponder?: GroupDefaultResponder;
-      completed?: boolean;
+      completed?: boolean; id?: string; threadId?: string;
     },
   ): GroupRecord {
     this.rememberSections([section]);
-    const threadId = newId();
+    const threadId = setup?.threadId ?? newId();
     const createdAt = Date.now();
     const group: GroupRecord = {
-      id: newId(),
+      id: setup?.id ?? newId(),
       threadId,
       name,
       memberIds,
@@ -1012,8 +893,8 @@ export class Store {
       group.setupCompletedAt = setup?.completed ? createdAt : null;
       group.setupSkippedAt = null;
     }
+    saveRegistryFor("groups.json", dm ? "the new chat" : "the new room", () => this.saveGroups([group, ...this.groups]));
     this.groups.unshift(group);
-    this.saveGroups();
     this.emit({ type: "group", groupId: group.id });
     return group;
   }
@@ -1024,32 +905,30 @@ export class Store {
     );
   }
 
-  patchGroup(id: string, patch: Partial<Pick<GroupRecord, "name" | "memberIds" | "defaultResponder" | "bulletin" | "unread" | "lastReadMessageId" | "busyBotId" | "cwd" | "pinnedMessageId" | "section" | "setupCompletedAt" | "setupSkippedAt" | "audienceFloor" | "installedPackage" | "turnTimeoutMinutes" | "holds" | "heldMessages">>): GroupRecord | null {
+  patchGroup(id: string, patch: Partial<Pick<GroupRecord, "name" | "memberIds" | "defaultResponder" | "bulletin" | "description" | "unread" | "lastReadMessageId" | "busyBotId" | "cwd" | "pinnedMessageId" | "section" | "setupCompletedAt" | "setupSkippedAt" | "audienceFloor" | "installedPackage" | "turnTimeoutMinutes" | "holds" | "heldMessages">>): GroupRecord | null {
     const group = this.group(id);
     if (!group) return null;
     if (Object.prototype.hasOwnProperty.call(patch, "section")) {
       this.rememberSections([patch.section]);
     }
-    const previousBusyBotId = group.busyBotId;
-    Object.assign(group, patch);
+    const { busyBotId, ...stored } = patch;
     if (Object.prototype.hasOwnProperty.call(patch, "busyBotId")) {
-      if (patch.busyBotId && patch.busyBotId !== previousBusyBotId) group.turnStartedAt = Date.now();
-      else if (!patch.busyBotId) delete group.turnStartedAt;
+      if (busyBotId && busyBotId !== group.busyBotId) group.turnStartedAt = Date.now();
+      else if (!busyBotId) delete group.turnStartedAt;
+      group.busyBotId = busyBotId ?? null;
     }
-    if (Object.prototype.hasOwnProperty.call(patch, "turnTimeoutMinutes") && patch.turnTimeoutMinutes == null) {
-      delete group.turnTimeoutMinutes;
-    }
-    if (!group.dm && Object.prototype.hasOwnProperty.call(patch, "pinnedMessageId")) {
-      const active = this.activeGroupTask(group.id);
-      if (active) active.pinnedMessageId = patch.pinnedMessageId;
-    }
-    group.defaultResponder = normalizeGroupDefaultResponder(
-      group.defaultResponder,
-      group.memberIds,
-      Boolean(group.dm),
-    );
-    if (Object.prototype.hasOwnProperty.call(patch, "memberIds")) pruneRoomHolds(group);
-    this.saveGroups();
+    this.commitGroupChange(group, group.dm ? "the chat's settings" : "the room's settings", () => {
+      Object.assign(group, stored);
+      if (Object.prototype.hasOwnProperty.call(stored, "turnTimeoutMinutes") && stored.turnTimeoutMinutes == null) {
+        delete group.turnTimeoutMinutes;
+      }
+      if (!group.dm && Object.prototype.hasOwnProperty.call(stored, "pinnedMessageId")) {
+        const active = this.activeGroupTask(group.id);
+        if (active) active.pinnedMessageId = stored.pinnedMessageId;
+      }
+      group.defaultResponder = normalizeGroupDefaultResponder(group.defaultResponder, group.memberIds, Boolean(group.dm));
+      if (Object.prototype.hasOwnProperty.call(stored, "memberIds")) pruneRoomHolds(group);
+    });
     this.emit({ type: "group", groupId: group.id });
     return group;
   }
@@ -1073,8 +952,9 @@ export class Store {
   deleteGroup(id: string): boolean {
     const group = this.group(id);
     if (!group) return false;
-    this.groups = this.groups.filter((g) => g.id !== id);
-    this.saveGroups();
+    const remaining = this.groups.filter((g) => g.id !== id);
+    saveRegistryFor("groups.json", group.dm ? "the chat deletion" : "the room deletion", () => this.saveGroups(remaining));
+    this.groups = remaining;
     for (const threadId of new Set([group.threadId, ...(group.tasks ?? []).map((task) => task.threadId)])) {
       this.deleteThreadRecord(threadId);
     }
@@ -1152,13 +1032,10 @@ export class Store {
       createdAt,
       updatedAt: createdAt,
     };
-    group.tasks = [task, ...(group.tasks ?? [])];
-    if (activate) {
-      group.threadId = task.threadId;
-      group.pinnedCwd = undefined;
-      group.pinnedMessageId = undefined;
-    }
-    this.saveGroups();
+    this.commitGroupChange(group, "the new thread", () => {
+      group.tasks = [task, ...(group.tasks ?? [])];
+      if (activate) mirrorActiveGroupTask(group, task);
+    });
     this.emit({ type: "group", groupId });
     return task;
   }
@@ -1167,49 +1044,34 @@ export class Store {
     const group = this.group(groupId);
     const task = group?.tasks?.find((candidate) => candidate.threadId === threadId);
     if (!group || group.dm || !task) return null;
-    group.threadId = task.threadId;
-    group.pinnedCwd = task.pinnedCwd;
-    group.pinnedMessageId = task.pinnedMessageId;
-    this.saveGroups();
+    this.commitGroupChange(group, "the thread switch", () => mirrorActiveGroupTask(group, task));
     this.emit({ type: "group", groupId });
     return group;
   }
 
-  setGroupTaskPinned(groupId: string, threadId: string, pinned: boolean): GroupTaskRecord | null {
+  patchGroupTask(groupId: string, threadId: string, patch: GroupTaskPatch): GroupTaskRecord | null {
+    const group = this.group(groupId);
     const task = this.groupTaskByThread(groupId, threadId);
-    if (!task) return null;
-    if (pinned) task.pinned = true;
-    else delete task.pinned;
-    this.saveGroups();
-    this.emit({ type: "group", groupId });
-    return task;
-  }
-
-  setGroupTaskTurnTimeout(groupId: string, threadId: string, minutes: number | null): GroupTaskRecord | null {
-    const task = this.groupTaskByThread(groupId, threadId);
-    if (!task) return null;
-    if (minutes == null) delete task.turnTimeoutMinutes;
-    else task.turnTimeoutMinutes = minutes;
-    this.saveGroups();
-    this.emit({ type: "group", groupId });
-    return task;
-  }
-
-  renameGroupTask(groupId: string, threadId: string, title: string): GroupTaskRecord | null {
-    const task = this.groupTaskByThread(groupId, threadId);
-    if (!task) return null;
-    task.title = title.trim().slice(0, 80) || UNTITLED_TASK;
-    this.saveGroups();
+    if (!group || !task) return null;
+    this.commitGroupChange(group, "the thread change", () => {
+      if (patch.title !== undefined) task.title = patch.title.trim().slice(0, 80) || UNTITLED_TASK;
+      if (patch.pinned) task.pinned = true;
+      else if (patch.pinned === false) delete task.pinned;
+      if (patch.turnTimeoutMinutes === null) delete task.turnTimeoutMinutes;
+      else if (patch.turnTimeoutMinutes !== undefined) task.turnTimeoutMinutes = patch.turnTimeoutMinutes;
+    });
     this.emit({ type: "group", groupId });
     return task;
   }
 
   titleGroupTaskFromFirstMessage(groupId: string, text: string, threadId?: string): GroupTaskRecord | null {
+    const group = this.group(groupId);
     const task = threadId ? this.groupTaskByThread(groupId, threadId) : this.activeGroupTask(groupId);
-    if (!task || task.titleFromFirstMessage || task.title !== UNTITLED_TASK) return null;
-    task.title = titleFromMessage(text);
-    task.titleFromFirstMessage = true;
-    this.saveGroups();
+    if (!group || !task || task.titleFromFirstMessage || task.title !== UNTITLED_TASK) return null;
+    this.commitGroupChange(group, "the thread's title", () => {
+      task.title = titleFromMessage(text);
+      task.titleFromFirstMessage = true;
+    });
     this.emit({ type: "group", groupId });
     return task;
   }
@@ -1217,7 +1079,7 @@ export class Store {
   retitleGroupTask(groupId: string, threadId: string, machineTitle: string, title: string): GroupTaskRecord | null {
     const task = this.groupTaskByThread(groupId, threadId);
     if (!task || task.title !== machineTitle) return null;
-    return this.renameGroupTask(groupId, threadId, threadTitleFrom(title));
+    return this.patchGroupTask(groupId, threadId, { title: threadTitleFrom(title) });
   }
 
   deleteGroupTask(groupId: string, threadId: string): GroupRecord | null {
@@ -1235,48 +1097,37 @@ export class Store {
     const missing = unique.filter((id) => !present.has(id));
     if (deleted.length >= group.tasks.length) return null;
     if (!deleted.length) return { group, deleted, missing };
-    mdb.deleteThreads(deleted);
     const doomed = new Set(deleted);
-    group.tasks = group.tasks.filter((task) => !doomed.has(task.threadId));
+    mdb.deleteThreads(deleted, () => this.commitGroupChange(group, "the thread deletion", () => {
+      group.tasks = group.tasks!.filter((task) => !doomed.has(task.threadId));
+      if (doomed.has(group.threadId)) mirrorActiveGroupTask(group, group.tasks[0]!);
+    }));
     for (const id of deleted) this.deleteThreadRecord(id, true);
-    if (doomed.has(group.threadId)) {
-      const next = group.tasks[0]!;
-      group.threadId = next.threadId;
-      group.pinnedCwd = next.pinnedCwd;
-      group.pinnedMessageId = next.pinnedMessageId;
-    }
-    this.saveGroups();
     this.emit({ type: "group", groupId });
     return { group, deleted, missing };
   }
 
-  toggleReaction(threadId: string, messageId: string, emoji: string, by: string): Message | null {
+  setReaction(threadId: string, messageId: string, by: string, reaction: Omit<NonNullable<Message["reactions"]>[number], "by"> | null): Message | null {
     const existing = this.messagesFor(threadId).find((m) => m.id === messageId);
     if (!existing) return null;
-    const reactions = existing.reactions ?? [];
-    const at = reactions.findIndex((r) => r.emoji === emoji && r.by === by);
-    const next = at >= 0 ? reactions.filter((_, i) => i !== at) : [...reactions, { emoji, by }];
+    const next = [...(existing.reactions ?? []).filter((r) => r.by !== by), ...(reaction ? [{ ...reaction, by }] : [])];
     return this.patchMessage(threadId, messageId, { reactions: next.length ? next : undefined });
   }
 
   private thread(threadId: string): ThreadState {
-    const t = this.threads.get(threadId);
-    if (t) return t;
-    return this.cacheThread(threadId, mdb.readThread(threadId, messagesFile(threadId)));
+    return this.threads.get(threadId) ?? this.threads.load(threadId, mdb.readThread(threadId, messagesFile(threadId)));
   }
 
-  private cacheThread(threadId: string, rows: mdb.ThreadRows): ThreadState {
-    const { messages, activeLeafId: storedLeaf } = rows;
-    let activeLeafId = storedLeaf;
-    let prev: string | null = null;
-    for (const m of messages) {
-      if (m.parentId === undefined) m.parentId = prev;
-      prev = m.id;
+  private busyThreadIds(): Set<string> {
+    const busy = new Set<string>();
+    for (const bot of this.bots) {
+      if (bot.busy) busy.add(bot.threadId);
+      for (const task of bot.tasks ?? []) if (task.busy) busy.add(task.threadId);
     }
-    if (!activeLeafId) activeLeafId = messages.at(-1)?.id ?? null;
-    const t = { messages, activeLeafId };
-    this.threads.set(threadId, t);
-    return t;
+    for (const group of this.groups) {
+      if (group.busyBotId) for (const threadId of [group.threadId, ...(group.tasks ?? []).map((task) => task.threadId)]) busy.add(threadId);
+    }
+    return busy;
   }
 
   messagesFor(threadId: string): Message[] {
@@ -1290,7 +1141,7 @@ export class Store {
       const tail = mdb.readThreadTail(threadId, messagesFile(threadId), limit);
       const legacyRows = tail.hasMore !== undefined && tail.messages.some((m) => m.parentId === undefined);
       if (tail.hasMore !== true || legacyRows) {
-        state = this.cacheThread(threadId, legacyRows ? mdb.readThread(threadId, messagesFile(threadId)) : tail);
+        state = this.threads.load(threadId, legacyRows ? mdb.readThread(threadId, messagesFile(threadId)) : tail);
       } else {
         return {
           messages: tail.messages,
@@ -1418,6 +1269,7 @@ export class Store {
       text,
       parentId: source.parentId ?? null,
       replyToId: source.replyToId,
+      ...(source.reaction && source.text === text ? { reaction: source.reaction } : {}),
       ...(sendId ? { sendId } : {}),
       ...(sender ? { sender } : {}),
       ...(dataContext ? { dataContext } : {}),
@@ -1479,11 +1331,11 @@ export class Store {
     profile: Partial<
       Pick<
         BotRecord,
-        "name" | "title" | "description" | "soul" | "color" | "mascotExpression" | "mascotBody" | "modelSelection" | "section" | "cwd" | "visibility" | "toolScope"
+        "name" | "title" | "description" | "soul" | "color" | "mascotExpression" | "mascotBody" | "modelSelection" | "section" | "cwd" | "visibility" | "toolScope" | "createdBy" | "reportsTo"
       >
     > = {},
     opts: {
-      seedMessages?: boolean;
+      seedMessages?: boolean; id?: string; threadId?: string;
     } = {},
   ): BotRecord {
     const toolScope = parseToolScope(profile.toolScope);
@@ -1492,8 +1344,8 @@ export class Store {
     const name = profile.name?.trim() || pickBotName(this.bots.map((b) => b.name));
     const section = sectionKey(profile.section);
     const bot: BotRecord = {
-      id: newId(),
-      threadId: newId(),
+      id: opts.id ?? newId(),
+      threadId: opts.threadId ?? newId(),
       name,
       title: profile.title ?? "",
       description: profile.description ?? "",
@@ -1512,6 +1364,8 @@ export class Store {
       createdAt: Date.now(),
     };
     if (section) bot.section = section;
+    if (profile.createdBy?.trim()) bot.createdBy = ownerEmail(profile.createdBy);
+    if (profile.reportsTo?.trim()) bot.reportsTo = ownerEmail(profile.reportsTo);
     if (profile.cwd) bot.cwd = profile.cwd;
     bot.tasks = [{
       threadId: bot.threadId,
@@ -1534,11 +1388,7 @@ export class Store {
     // Before its transcript: clients need the bot/thread mapping to place either message.
     this.emit({ type: "bot", botId: bot.id });
     if (opts.seedMessages !== false) {
-      this.appendMessage(bot.threadId, {
-        role: "bot",
-        kind: "text",
-        text: `Hi, I'm ${name}. What would you like me to do?`,
-      });
+      this.appendMessage(bot.threadId, initialGreetingMessage(name, this.initialLanguage));
     }
     return bot;
   }
@@ -1567,6 +1417,8 @@ export class Store {
           connectorTools: {},
           // A restricted Chief never creates a bot everyone sees.
           ...(chief.visibility && chief.visibility !== "everyone" ? { visibility: structuredClone(chief.visibility) } : {}),
+          // A Chief's new specialist reports to the Chief's own person.
+          ...(botOwner(chief) ? { createdBy: botOwner(chief)! } : {}),
           tasks: [{ threadId: operation.threadId, title: UNTITLED_THREAD, createdAt, updatedAt: createdAt, resumeCursors: {},
             unread: false, activity: "idle", busy: false }],
         };
@@ -1636,6 +1488,7 @@ export class Store {
   deleteBot(id: string, setupRequest?: TeamSetupRequest): boolean {
     const bot = this.bot(id);
     if (!bot) return false;
+    if (bot.defaultBot) throw Object.assign(new Error(defaultBotRefusal(bot.name)), { status: 409 });
     let nextBots = this.bots.filter((b) => b.id !== id);
     if (setupRequest) {
       const chief = this.bot(setupRequest.botId);
@@ -1766,18 +1619,11 @@ export class Store {
 
     const targetSection = sectionKey(section);
     const selected = targets as BotRecord[];
-    const destinationChiefIds = new Set([
-      ...selected.filter((bot) => bot.chiefOfStaff).map((bot) => bot.id),
-      ...this.bots
-        .filter((bot) => bot.chiefOfStaff && sectionKey(bot.section) === targetSection)
-        .map((bot) => bot.id),
-    ]);
-    if (destinationChiefIds.size > 1) return { ok: false, reason: "chief-conflict" };
-
     const patches = new Map<string, Partial<BotRecord>>();
     for (const bot of selected) {
       patches.set(bot.id, { section: targetSection || undefined });
     }
+    if (chiefConflict(this.bots.map((bot) => ({ ...bot, ...patches.get(bot.id) })))) return { ok: false, reason: "chief-conflict" };
 
     const changedIds = new Set<string>();
     const nextBots = this.bots.map((bot) => {
@@ -1813,11 +1659,7 @@ export class Store {
     }
     const next = this.bots.map(bot => ids.has(bot.id)
       ? { ...bot, section: adds.has(bot.id) ? key : undefined } : bot);
-    for (const destination of [key, ""]) {
-      if (next.filter(bot => bot.chiefOfStaff && sectionKey(bot.section) === destination).length > 1) {
-        return { ok: false, reason: "chief-conflict" };
-      }
-    }
+    if (chiefConflict(next)) return { ok: false, reason: "chief-conflict" };
     if (ids.size) {
       this.saveBots(next);
       for (let i = 0; i < next.length; i++) if (ids.has(next[i].id)) Object.assign(this.bots[i], next[i]);
@@ -1863,13 +1705,15 @@ export class Store {
     bot.busy = ACTIVITY_BUSY.has(bot.activity);
   }
 
+  /** Makes `id` its scope's one Chief (its owner's on a Team Cloud, else its department's), or with no `id` leaves
+   * `section` without one. */
   setChiefOfStaff(id: string | null, section?: string | null): BotRecord[] | null {
     const selected = id ? this.bot(id) : null;
     if (id && !selected) return null;
-    const targetSection = sectionKey(selected?.section ?? section);
+    const scope = selected ? chiefScope(selected) : chiefScope({ section: section ?? undefined });
     const changed: BotRecord[] = [];
     for (const bot of this.bots) {
-      if (sectionKey(bot.section) !== targetSection) continue;
+      if (chiefScope(bot) !== scope) continue;
       const next = bot.id === id;
       if (Boolean(bot.chiefOfStaff) === next && !(next && bot.hidden)) continue;
       if (next) {
@@ -2009,7 +1853,7 @@ export class Store {
     const task = threadId ? this.taskByThread(botId, threadId) : this.activeTask(botId);
     if (task) task.resumeCursors[instanceId] = cursor;
     if (!threadId || bot.threadId === threadId) bot.resumeCursors[instanceId] = cursor;
-    saveBotsFor("the conversation's engine session", () => this.saveBots());
+    saveRegistryFor("bots.json", "the conversation's engine session", () => this.saveBots());
     this.emit({ type: "bot", botId });
   }
 
@@ -2017,7 +1861,7 @@ export class Store {
     const task = this.taskByThread(botId, threadId);
     if (!task || task.lastInstanceId === instanceId) return;
     task.lastInstanceId = instanceId;
-    saveBotsFor("which engine has this conversation", () => this.saveBots());
+    saveRegistryFor("bots.json", "which engine has this conversation", () => this.saveBots());
   }
 
   setHandedMessages(botId: string, threadId: string, instanceId: string, state: HandedState) {
@@ -2026,7 +1870,7 @@ export class Store {
     const live = Object.entries(task.handedMessages ?? {})
       .filter(([id, record]) => id !== instanceId && record.session !== undefined && record.session === task.resumeCursors[id]);
     task.handedMessages = { ...Object.fromEntries(live), [instanceId]: state };
-    saveBotsFor("what this conversation handed its engine", () => this.saveBots());
+    saveRegistryFor("bots.json", "what this conversation handed its engine", () => this.saveBots());
   }
 
   addTaskUsage(
@@ -2063,7 +1907,7 @@ export class Store {
         ? { context: { tokens: contextTokens, ...(contextWindow > 0 ? { window: contextWindow } : {}) } }
         : prev.context ? { context: prev.context } : {}),
     };
-    saveBotsFor("the thread's usage", () => this.saveBots());
+    saveRegistryFor("bots.json", "the thread's usage", () => this.saveBots());
     this.emit({ type: "bot", botId });
     return task.usage;
   }
@@ -2108,20 +1952,20 @@ export class Store {
     const task = threadId ? this.groupTaskByThread(groupId, threadId) : this.activeGroupTask(groupId);
     if (!task) {
       if (!group.dm) return null;
-      if (group.pinnedCwd === undefined) {
-        group.pinnedCwd = group.cwd ?? null;
-        this.saveGroups();
-        this.emit({ type: "group", groupId: group.id });
-      }
-      return group.pinnedCwd;
-    }
-    if (task.pinnedCwd === undefined) {
-      task.pinnedCwd = group.cwd ?? null;
-      if (group.threadId === task.threadId) group.pinnedCwd = task.pinnedCwd;
-      this.saveGroups();
+      if (group.pinnedCwd !== undefined) return group.pinnedCwd;
+      const cwd = group.cwd ?? null;
+      this.commitGroupChange(group, "the chat's folder", () => { group.pinnedCwd = cwd; });
       this.emit({ type: "group", groupId: group.id });
+      return cwd;
     }
-    return task.pinnedCwd;
+    if (task.pinnedCwd !== undefined) return task.pinnedCwd;
+    const cwd = group.cwd ?? null;
+    this.commitGroupChange(group, "the thread's folder", () => {
+      task.pinnedCwd = cwd;
+      if (group.threadId === task.threadId) group.pinnedCwd = cwd;
+    });
+    this.emit({ type: "group", groupId: group.id });
+    return cwd;
   }
 
   project(botId: string, projectId: string): BotProjectRecord | undefined {
@@ -2162,6 +2006,20 @@ export class Store {
     this.saveBots();
     this.emit({ type: "bot", botId });
     return bot.projects;
+  }
+
+  /** A stable partial reorder of the fleet (shared/bot-order.ts): the listed bots take, in the order given, the positions
+   * they already share; every other bot stays put. Empty, repeated or unknown ids change nothing and give null. */
+  reorderBots(botIds: string[]): BotRecord[] | null {
+    if (!botIds.length || new Set(botIds).size !== botIds.length) return null;
+    const byId = new Map(this.bots.map((bot) => [bot.id, bot]));
+    if (botIds.some((id) => !byId.has(id))) return null;
+    const next = reorderStable(this.bots, botIds);
+    // Mutate in place: schedulers and other consumers hold this array and its records.
+    this.bots.splice(0, this.bots.length, ...next);
+    this.saveBots();
+    this.emit({ type: "bots.order" });
+    return this.bots;
   }
 
   deleteProject(botId: string, projectId: string): BotRecord | null {
@@ -2209,9 +2067,7 @@ export class Store {
       approvalGrant: bot.approvalGrant?.threadOnly && bot.approvalGrant.threadId !== threadId ? undefined : bot.approvalGrant,
       modelSelection: structuredClone(task.modelSelection ?? bot.modelSelection),
       resumeCursors: structuredClone(task.resumeCursors),
-      approvalMode: task.approvalMode ?? (task.autoApprove === undefined ? bot.approvalMode : undefined),
-      autoApprove: task.autoApprove ?? bot.autoApprove,
-      alwaysAllow: structuredClone(task.alwaysAllow ?? bot.alwaysAllow),
+      ...threadApproval(task, bot),
       unread: Boolean(task.unread),
       rewound: task.rewound,
       pinnedMessageId: task.pinnedMessageId,
@@ -2225,7 +2081,7 @@ export class Store {
     const task = this.taskByThread(botId, threadId);
     if (!bot || !task) return null;
     if (patch.projectId !== undefined && !this.project(botId, patch.projectId)) return null;
-    const revocation = keptRevocation(task, patch);
+    const revocation = keptRevocation(threadApproval(task, bot), threadApproval({ ...task, ...patch }, bot), patch);
     this.commitBotChange(bot, "the thread change", () => {
       for (const key of TASK_PATCH_FIELDS) {
         if (Object.prototype.hasOwnProperty.call(patch, key)) {
@@ -2387,7 +2243,7 @@ export class Store {
     const task = this.taskByThread(botId, threadId);
     if (!task || !Number.isFinite(at) || (task.askedAt ?? -1) >= at) return task ?? null;
     task.askedAt = at;
-    saveBotsFor("when you last wrote in this thread", () => this.saveBots());
+    saveRegistryFor("bots.json", "when you last wrote in this thread", () => this.saveBots());
     this.emit({ type: "bot", botId });
     return task;
   }
@@ -2453,7 +2309,7 @@ export class Store {
     const doomed = new Set(deleted);
     mdb.deleteThreads(deleted, () => this.commitBotChange(bot, "the thread deletion", () => {
       const kept = bot.tasks!.filter((t) => !doomed.has(t.threadId));
-      const visible = kept.find((task) => !task.routineRunId) ?? this.buildTask(bot);
+      const visible = nextOpenThread(kept) ?? this.buildTask(bot);
       bot.tasks = kept.includes(visible) ? kept : [visible, ...kept];
       if (doomed.has(bot.threadId) || this.taskByThread(botId, bot.threadId)?.routineRunId) this.mirrorActiveTask(bot, visible);
       bot.unread = bot.tasks.some(taskCountsAsBotUnread);
@@ -2464,12 +2320,11 @@ export class Store {
     return { bot, deleted, missing };
   }
 
-  needsSeed() {
-    return this.bots.length === 0;
-  }
+  needsSeed() { return this.bots.length === 0; }
 
-  seedIfEmpty() {
+  /** A new place's first bot is its MausBot and its Chief; a Team Cloud's (`defaultBot: false`) is the team's Chief only. */
+  seedIfEmpty({ defaultBot = true }: { defaultBot?: boolean } = {}) {
     if (!this.needsSeed()) return;
-    this.createBot();
+    if (defaultBot) createDefaultBot(this, { chief: (id) => this.setChiefOfStaff(id) }); else this.setChiefOfStaff(this.createBot().id);
   }
 }

@@ -5,15 +5,33 @@ Ask a bot in ordinary language, for example:
 > Prepare a report at 9 am on the first of every month, in Asia/Kolkata.
 
 The bot turns calendar timing into a cron expression, and OpenMausBot validates
-it. The existing confirmation card shows the rule, its timezone and the next
-three dates. Nothing is scheduled until you confirm. The scheduler wakes the
-bot at the matching time; no model runs in the background to check the date.
+it. The change applies at once; its card shows the rule, its timezone and the
+next three dates, with Edit, Pause and Undo. The scheduler wakes the bot at the
+matching time; no model runs in the background to check the date.
+
+A routine can also name **checks** (calendar, mail, other routines' runs): plain
+code that runs on each tick before any AI turn, so a quiet tick costs nothing.
+See [Proactive routines](proactive-routines.md).
 
 In **Automations → Schedule**, choose **Monthly**, **Yearly**, or **Custom cron
 (advanced)** in the existing routine editor. Monthly offers days 1–31 and
 **Last day**. The timezone defaults to your browser's zone for a new preset and
 can be changed. Saved cron routines retain their own zone even on another
 computer. Editing just a title or instructions preserves the exact schedule.
+
+## Off, on, and done
+
+The switch on **Automations** pauses a schedule or a webhook and turns it back
+on; a schedule comes back with its next time. If the server refuses, the reason
+shows beside the switch. A one-time schedule whose time has passed reads
+**Done** and has no switch: turning it on would have nothing to do, so the
+server refuses it ("Its time has passed. Edit it to pick a new time."). Saving
+it with a new time turns it back on.
+
+Deleting a bot deletes its schedules and webhooks too, and their runs. A
+webhook's address stops working at once. Automations left behind by a bot
+deleted in an earlier version are removed the next time OpenMausBot starts, and
+never run meanwhile.
 
 ## Advanced cron
 

@@ -1,7 +1,8 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { Ellipsis } from "lucide-react";
+import { Check, Copy, Ellipsis, Reply, X } from "lucide-react";
 import { popoverClosesOnKey, usePopoverDismiss } from "@/hooks/use-popover-dismiss";
 import { cn } from "@/lib/cn";
+import { useCopyFeedback } from "@/lib/copy-text";
 import { t } from "@/lib/i18n";
 
 export const ACTION_ICON = { size: 17, strokeWidth: 1.5 } as const;
@@ -219,5 +220,32 @@ export function MessageActions({
         </div>
       )}
     </div>
+  );
+}
+
+export function ReplyAction({ onReply }: { onReply: () => void }) {
+  return (
+    <button type="button" onClick={onReply} aria-label={t("chat.replyToMessage")} title={t("chat.reply")} className={messageActionClass}>
+      <Reply {...ACTION_ICON} aria-hidden="true" />
+    </button>
+  );
+}
+
+export function CopyButton({ text, className }: { text: string; className?: string }) {
+  const { state, copy } = useCopyFeedback(text);
+  const label = t(state === "copied" ? "chat.copyMessageDone" : state === "failed" ? "chat.copyMessageFailed" : "chat.copyMessage");
+  return (
+    <button
+      onClick={copy}
+      aria-label={label}
+      title={label}
+      className={cn(
+        "rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 touch:opacity-100",
+        state !== "idle" && "opacity-100",
+        className,
+      )}
+    >
+      {state === "copied" ? <Check {...ACTION_ICON} className="text-success" /> : state === "failed" ? <X {...ACTION_ICON} className="text-danger" /> : <Copy {...ACTION_ICON} />}
+    </button>
   );
 }

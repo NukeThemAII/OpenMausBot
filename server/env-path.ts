@@ -17,8 +17,8 @@ function nvmBinDirs(): string[] {
   }
 }
 
-/** A sealed test fixture sees only its own PATH, OMB_EXTRA_PATH, app-managed dirs and its temporary home, never this machine's CLIs. */
-function sealedFixture(): boolean {
+/** A sealed test fixture sees only its own PATH, OMB_EXTRA_PATH, app-managed dirs and its temporary home, never this machine's CLIs or keychain. */
+export function sealedFixture(): boolean {
   return process.env.OMB_TEST_SEALED_PATH === "1";
 }
 

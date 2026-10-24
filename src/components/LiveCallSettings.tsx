@@ -108,13 +108,16 @@ export function LiveCallSettings({ onClose }: { onClose: () => void }) {
           <button type="button" className="text-accent hover:underline" onClick={() => setChangingKey((open) => !open)}>
             {t("call.live.keyChange")}
           </button>
-          {live.configured && (
+          {live.keySource === "live" && (
             <button type="button" className="text-danger hover:underline" disabled={saving} onClick={() => void removeKey()}>
               {t("call.live.keyRemove")}
             </button>
           )}
         </span>
       </div>
+      {live.keySource !== "live" && (
+        <div className="-mt-2 text-[11.5px] text-ink-tertiary">{t(live.keySource === "openai" ? "call.live.keyFromApiKeys" : "call.live.needsKey")}</div>
+      )}
       {changingKey && <LiveKeySetup compact onSaved={() => setChangingKey(false)} />}
       <div className="text-[11.5px] text-ink-tertiary">{liveDisclosure({ cloudHome: state.config?.cloudHome === true })} {t("call.live.cost")}</div>
       {error && <div className="text-[12px] text-danger">{error}</div>}

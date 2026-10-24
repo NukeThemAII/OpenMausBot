@@ -248,8 +248,9 @@ await import(${JSON.stringify(pathToFileURL(join(SERVER_DIR, "testing", "fake-cl
   await boot(true);
 }, 120_000);
 
-async function agentTools() {
-  const agents = JSON.parse(readFileSync(held(), "utf8")).mcpConfig.mcpServers.agents;
+/** `dump`: this turn's own engine dump; every held engine writes the one file, so another bot's turn can replace it. */
+async function agentTools(dump: any = JSON.parse(readFileSync(held(), "utf8"))) {
+  const agents = dump.mcpConfig.mcpServers.agents;
   const proxy = spawn(agents.command, agents.args, { env: { PATH: process.env.PATH, HOME: home, ...agents.env }, stdio: ["pipe", "pipe", "pipe"] });
   proxies.push(proxy);
   const replies = new Map<number, (value: any) => void>();
@@ -583,7 +584,13 @@ it("a follow-up from the same conversation continues the teammate's thread inste
   const opened = (await writerTasks()).length;
   const send = async (text: string, message: string) => {
     expect((await turn(async () => expect((await api("POST", `/api/bots/${before.lead.id}/messages`, { token: owner, body: { text, threadId: chat } })).status).toBe(202))).cwd).toBe(realpathSync(project()));
-    const result = await (await agentTools())("coordinate_bots", { bot_ids: [writer.id], message });
+    // The lead's own tools, from its own turn's dump: the writer's engine writes the same file and can start meanwhile.
+    let lead: any;
+    await until(() => {
+      try { lead = JSON.parse(readFileSync(held(), "utf8")); } catch { return false; }
+      return JSON.stringify(lead.prompt ?? "").includes(text);
+    }, "the lead's turn to start", 30_000);
+    const result = await (await agentTools(lead))("coordinate_bots", { bot_ids: [writer.id], message });
     expect(JSON.stringify(result)).not.toContain("isError\":true");
     return JSON.parse(result.content[0].text).receipts[0];
   };

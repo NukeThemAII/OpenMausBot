@@ -89,6 +89,12 @@ describe("the OMB Cloud page's \"Use in your browser\" link", () => {
 
 describe("who the served UI is on its own machine", () => {
   const answer = (body: unknown) => (async () => new Response(JSON.stringify(body), { status: 200 })) as unknown as typeof fetch;
+  it("keeps the key a shared workspace gives this session's reactions, and nothing else in its place", async () => {
+    const shared = { kind: "session", id: "s", label: "Ada's laptop", scopes: ["client"], expiresAt: 1 };
+    expect(await readSessionState(answer({ ...shared, reactor: "p_ada" }))).toEqual({ ...shared, reactor: "p_ada" });
+    expect(await readSessionState(answer({ ...shared, reactor: 7 }))).toEqual(shared);
+    expect(await readSessionState(answer(shared))).toEqual(shared);
+  });
   it("is the owner on loopback unless the server says local requests are only a service", async () => {
     const owner = await readSessionState(answer({ kind: "loopback", scopes: ["admin", "client"] }));
     expect(owner).toEqual({ kind: "loopback" });

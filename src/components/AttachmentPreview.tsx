@@ -32,7 +32,7 @@ import {
 } from "@/lib/composer-attachments";
 import { cn } from "@/lib/cn";
 import { t } from "@/lib/i18n";
-import { TableFileButton } from "./TableFilePreview";
+import { FilePreviewButton } from "./FilePreviewButton";
 
 export interface PreviewImage {
   src: string;
@@ -944,7 +944,7 @@ export function AttachedFileChip({ file, message, linked = false, compact = fals
             <Download size={13} className="shrink-0" />
           )}
         </button>
-        <TableFileButton path={file.path} name={file.name} message={message} />
+        <FilePreviewButton path={file.path} name={file.name} message={message} />
       </div>
       {save.state !== "idle" && (
         <div
@@ -1016,7 +1016,7 @@ function CompactFileChip({ file, message, linked, save, className }: {
             <Download size={13} strokeWidth={1.75} className="shrink-0" aria-hidden="true" />
           )}
         </button>
-        <TableFileButton path={file.path} name={file.name} message={message} />
+        <FilePreviewButton path={file.path} name={file.name} message={message} />
       </span>
       {save.state !== "idle" && save.state !== "saved" && (
         <span role={failed ? "alert" : "status"} className={cn("px-2.5 text-[11.5px]", failed ? "text-danger" : "text-ink-secondary")}>

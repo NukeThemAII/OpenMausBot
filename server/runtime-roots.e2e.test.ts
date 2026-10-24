@@ -20,7 +20,6 @@ const RERUN_NOTE = "OpenMausBot restarted while your previous turn here was runn
 const RERUN_CHIP = "Resuming after a restart";
 const SECRET_PROVIDED = "OpenMausBot credential update: the user securely provided";
 const CONNECTED = "OpenMausBot connection update: the user securely connected";
-const DECISION = "OpenMausBot team setup decision";
 const STEP_CAP_CONTINUES = "stopped at the step limit";
 const SEAT_FREE = "the computer this conversation waited for is free again";
 const SIGNED_IN = "OpenMausBot sign-in update: the person finished signing in to";
@@ -325,55 +324,6 @@ it("T3 parks the root on connector cards and runs it again once when both connec
     await composio.close();
   }
 }, hostTimeout(90_000));
-
-it("T4 parks the root on a team-setup card, runs it again with the decision, and a Stop cancels the park", () => scenario(async (f) => {
-  // A specialist the Chief suggests unasked is its question to the person, so it waits on its card at every level.
-  expect((await f.api("PATCH", `/api/bots/${f.clive.id}`, { chiefOfStaff: true })).status).toBe(200);
-  const suggest = (name: string) => ({ name, role: "Research specialist", instructions: "Own research work.", suggestion: true });
-  f.script(f.clive.id,
-    { key: "C1", match: [DECISION, '"applied"'], reply: "T4-DONE: Mira is on the team." },
-    { key: "C0", match: ["T4-JOB"], readyFile: f.ready("c0"), gateFile: f.gate("c0"), reply: "T4-ASKED: review the setup." },
-    { key: "C2", match: ["T4-AGAIN"], readyFile: f.ready("c2"), gateFile: f.gate("c2"), reply: "T4-ASKED-AGAIN: review the second setup." });
-  const job = f.clive.activeTaskId;
-  await f.say(f.clive.id, job, "T4-JOB: set up a research specialist for me.");
-  await expect.poll(() => existsSync(f.ready("c0")), { timeout: 30_000 }).toBe(true);
-  const proposed = await f.internal("/api/internal/create-bot", suggest("Mira"), f.token());
-  expect(proposed.status, JSON.stringify(proposed.body)).toBe(201);
-  f.open("c0");
-  await f.final(job, "T4-ASKED");
-  await expect.poll(() => f.roots()[0]?.status, { timeout: 15_000 }).toBe("needs_input");
-  const card = (await f.messages(job)).find((message: any) => message.card?.requestId === proposed.body.requestId);
-  expect(f.roots()[0].cards).toEqual([card.id]);
-  expect(await f.task(f.clive.id, job)).toMatchObject({ busy: false, activity: "idle" });
-  expect(f.roots()[0].question).toContain("team setup decision");
-  const decided = await f.api("POST", `/api/threads/${job}/respond`, { requestId: proposed.body.requestId, behavior: "allow" });
-  expect(decided.status, JSON.stringify(decided.body)).toBe(200);
-  await f.final(job, "T4-DONE");
-  await expect.poll(() => f.roots()[0]?.status, { timeout: 15_000 }).toBe("completed");
-  expect(f.roots()[0]).toMatchObject({ executions: 2, outcome: "done" });
-  expect(f.turns(f.clive.id).map((record: any) => record.planKey)).toEqual(["C0", "C1"]);
-  const answered = f.body(f.turn("C1")).trimStart();
-  expect(answered.startsWith(`${DECISION} ${proposed.body.requestId}: `), answered.slice(0, 200)).toBe(true);
-  expect(answered).toContain('"state":"applied"');
-  expect((await f.messages(job)).find((message: any) => message.id === card.id).card.teamSetupRequest).toMatchObject({ resumed: true, result: { state: "applied" } });
-
-  await f.say(f.clive.id, job, "T4-AGAIN: propose another specialist.");
-  await expect.poll(() => existsSync(f.ready("c2")), { timeout: 30_000 }).toBe(true);
-  const second = await f.internal("/api/internal/create-bot", suggest("Quill"), f.token());
-  expect(second.status, JSON.stringify(second.body)).toBe(201);
-  f.open("c2");
-  await f.final(job, "T4-ASKED-AGAIN");
-  await expect.poll(() => f.roots()[1]?.status, { timeout: 15_000 }).toBe("needs_input");
-  expect((await f.api("POST", `/api/bots/${f.clive.id}/interrupt`, { threadId: job })).status).toBe(200);
-  await expect.poll(() => f.roots()[1]?.status, { timeout: 15_000 }).toBe("cancelled");
-  expect(f.roots()[1]).toMatchObject({ status: "cancelled", outcome: "stopped" });
-  const late = await f.api("POST", `/api/threads/${job}/respond`, { requestId: second.body.requestId, behavior: "deny" });
-  expect(late.status).toBe(200);
-  await f.settle(1_500);
-  expect(f.turns(f.clive.id).map((record: any) => record.planKey)).toEqual(["C0", "C1", "C2"]);
-  expect(f.roots()[1]).toMatchObject({ status: "cancelled", executions: 1 });
-  expect(await f.said(job, "T4-DONE")).toBe(1);
-}), hostTimeout(90_000));
 
 it("T5 reruns a person's cut turn once after a restart, with the restart note first and the resuming chip", () => scenario(async (f) => {
   const request = "T5-JOB: migrate the invoices and report.";
@@ -774,3 +724,96 @@ it("T11 does not rerun a cut turn that already pushed: the root ends with what i
     rmSync(home, { recursive: true, force: true });
   }
 }, hostTimeout(90_000));
+
+const STALL_CLOCK = { OMB_TEST_STALL_CLOCK: "1" };
+
+type CardState = { status?: string; stopped?: boolean; resumed?: boolean };
+type StallFixture = {
+  dataDir: string;
+  clive: { id: string };
+  roots(): Array<{ status: string; outcome?: string; executions: number; cards?: string[] }>;
+  messages(threadId: string): Promise<Array<{ id: string; kind: string; tool?: { name: string }; secret?: CardState; connector?: CardState; signIn?: CardState }>>;
+  turns(botId: string): Array<{ planKey?: string }>;
+  open(name: string): void;
+  script(botId: string, ...entries: unknown[]): void;
+  say(botId: string, threadId: string, text: string): Promise<unknown>;
+  said(threadId: string, text: string): Promise<number>;
+};
+
+const stallOverCards = async (f: StallFixture, job: string, ids: string[]) => {
+  const marker = join(f.dataDir, "stall-turns");
+  writeFileSync(marker, "now");
+  try { await expect.poll(() => f.roots()[0]?.status, { timeout: 20_000 }).not.toBe("running"); } finally { rmSync(marker, { force: true }); }
+  expect(f.roots()[0]).toMatchObject({ status: "failed", outcome: "stalled", executions: 1 });
+  expect(f.roots()[0]!.cards).toBeUndefined();
+  expect((await f.messages(job)).filter((message) => message.kind === "activity" && message.tool?.name.startsWith("error:")).map((message) => message.tool!.name))
+    .toEqual(["error: no activity for 20 minutes — the turn was stopped"]);
+  const cards = (await f.messages(job)).filter((message) => ids.includes(message.id));
+  expect(cards.map((message) => (message.secret ?? message.connector ?? message.signIn)?.stopped)).toEqual(ids.map(() => true));
+};
+
+const answerStartsNothing = async (f: StallFixture, job: string) => {
+  f.open("c0");
+  f.script(f.clive.id, { key: "C-AFTER", match: ["AFTER-ANSWER"], reply: "AFTER-ANSWER-DONE: hello back." });
+  await f.say(f.clive.id, job, "AFTER-ANSWER: hello after the card was answered.");
+  await expect.poll(() => f.roots().map((row) => row.status), { timeout: 30_000 }).toEqual(["failed", "completed"]);
+  expect(f.roots().map((row) => [row.outcome, row.executions])).toEqual([["stalled", 1], ["done", 1]]);
+  expect(await f.said(job, "AFTER-ANSWER-DONE")).toBe(1);
+  expect(f.turns(f.clive.id).map((record) => record.planKey)).toEqual(["C-AFTER"]);
+};
+
+it("T12 a turn the watchdog stops after it posted a credential card fails as stalled and stops the card", () => scenario(async (f) => {
+  f.script(f.clive.id, { key: "C0", match: ["T12-JOB"], steps: [{ tool: "request_credential", arguments: { credential_id: "xaiApiKey", reason: "T12 fixture model" } }],
+    gateFile: f.gate("c0"), reply: "T12-LATE: never shown." });
+  const job = f.clive.activeTaskId;
+  await f.say(f.clive.id, job, "T12-JOB: set up the Grok model; ask me for the key you need.");
+  await expect.poll(async () => (await f.messages(job)).find((message: { kind: string }) => message.kind === "secret")?.id, { timeout: 30_000 }).toBeTruthy();
+  const card = (await f.messages(job)).find((message: { kind: string }) => message.kind === "secret");
+  await stallOverCards(f, job, [card.id]);
+  expect((await f.api("PUT", "/api/config", { xai: { key: "xai-fixture-key" } })).status).toBe(200);
+  const provided = await f.api("POST", `/api/bots/${f.clive.id}/secret-cards/${card.id}/provided`, { threadId: job });
+  expect(provided.status, JSON.stringify(provided.body)).toBe(200);
+  expect(provided.body).toEqual({ provided: true, resumed: false });
+  await answerStartsNothing(f, job);
+}, { fake: STALL_CLOCK }), hostTimeout(60_000));
+
+it("T12 a turn the watchdog stops after it posted connector cards fails as stalled and stops the cards", async () => {
+  const composio = await composioStub();
+  try {
+    await scenario(async (f) => {
+      expect((await f.api("PUT", "/api/config", { composio: { apiKey: "ak_good" } })).status).toBe(200);
+      f.script(f.clive.id, { key: "C0", match: ["T12C-JOB"], readyFile: f.ready("c0"), gateFile: f.gate("c0"), reply: "T12C-LATE: never shown." });
+      const job = f.clive.activeTaskId;
+      await f.say(f.clive.id, job, "T12C-JOB: wire up my mail and chat.");
+      await expect.poll(() => existsSync(f.ready("c0")), { timeout: 30_000 }).toBe(true);
+      const requested = await f.internal("/api/internal/connectors/request", { botId: f.clive.id, threadId: job, resumeKey: "t12-resume-key-0001", items: ["gmail", "slack"] }, f.token("composio"));
+      expect(requested.status, JSON.stringify(requested.body)).toBe(200);
+      const [gmail, slack] = requested.body.messageIds as string[];
+      await stallOverCards(f, job, [gmail, slack]);
+      composio.connect("gmail");
+      composio.connect("slack");
+      expect((await f.api("GET", `/api/bots/${f.clive.id}/connector-cards/${gmail}/status?threadId=${job}`)).body).toMatchObject({ connected: true });
+      expect((await f.api("GET", `/api/bots/${f.clive.id}/connector-cards/${slack}/status?threadId=${job}`)).body).toMatchObject({ connected: true });
+      await answerStartsNothing(f, job);
+      const cards = (await f.messages(job)).filter((message: { kind: string }) => message.kind === "connector").map((message: { connector: CardState }) => message.connector);
+      expect(cards.map((connector: CardState) => [connector.status, connector.stopped, connector.resumed])).toEqual([["connected", true, undefined], ["connected", true, undefined]]);
+    }, { env: composio.env, fake: STALL_CLOCK });
+  } finally {
+    await composio.close();
+  }
+}, hostTimeout(90_000));
+
+it("T12 a turn the watchdog stops after it posted a sign-in card fails as stalled and stops the card", () => scenario(async (f) => {
+  await browserPlace(f);
+  f.script(f.clive.id, { key: "C0", match: ["T12S-JOB"], steps: [{ tool: "request_sign_in", arguments: { site: "https://example.com/dashboard", reason: "The dashboard is behind a login." } }],
+    gateFile: f.gate("c0"), reply: "T12S-LATE: never shown." });
+  const job = f.clive.activeTaskId;
+  await f.say(f.clive.id, job, "T12S-JOB: check my example.com dashboard.");
+  await expect.poll(async () => (await f.messages(job)).find((message: { kind: string }) => message.kind === "signin")?.id, { timeout: 30_000 }).toBeTruthy();
+  const card = (await f.messages(job)).find((message: { kind: string }) => message.kind === "signin");
+  await stallOverCards(f, job, [card.id]);
+  const done = await f.api("POST", `/api/bots/${f.clive.id}/sign-in-cards/${card.id}/done`, { threadId: job });
+  expect(done.status, JSON.stringify(done.body)).toBe(200);
+  expect(done.body).toEqual({ done: true, resumed: false });
+  await answerStartsNothing(f, job);
+}, { fake: STALL_CLOCK }), hostTimeout(60_000));

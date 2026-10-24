@@ -4,4 +4,6 @@ interface Env {
   COMPOSIO_WEBHOOK_SECRET?: string;
   CLOUD_GRANT_SECRET?: string;
   STATS_TOKEN?: string;
+  /** A var, not in wrangler.jsonc: the Cloud Admin's origin, which wakes a sleeping Cloud for its app events. */
+  CLOUD_ADMIN_URL?: string;
 }

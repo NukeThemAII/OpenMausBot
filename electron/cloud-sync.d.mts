@@ -12,8 +12,9 @@ export interface SharedFolder {
   files: number; done: number; waitingBytes: number; pendingDeletes: number; problem: string | null;
 }
 export interface CloudFilesState {
-  /** "unavailable": no Ready My Cloud for this app; "signed-out": sign in again; "offline": My Cloud can't be reached. */
-  phase: "unavailable" | "signed-out" | "offline" | "idle" | "syncing";
+  /** "unavailable": no Ready My Cloud for this app; "signed-out": sign in again; "offline": My Cloud can't be reached;
+   * "asleep": My Cloud sleeps (its plan sleeps when idle), and Files carry on when it wakes. */
+  phase: "unavailable" | "signed-out" | "offline" | "asleep" | "idle" | "syncing";
   lastSyncedAt: number | null;
   disk: CloudFilesDisk | null;
   shared: SharedFolder[];
@@ -48,6 +49,7 @@ export interface CloudFilesBridge {
 export declare function createCloudFilesService(options: Record<string, unknown>): {
   start(): void;
   pass(only?: Set<string> | null): Promise<void>;
+  running(): boolean;
   state(): CloudFilesState;
   check(pcPath: string): Promise<Omit<FolderCheck, "token">>;
   share(pcPath: string): Promise<CloudFilesState>;

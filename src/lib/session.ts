@@ -6,9 +6,12 @@ export interface EnvironmentDescriptor {
   capabilities: { remoteSessions: true; selfUpdate: "desktop-managed" | "operator"; emailSignIn?: boolean; sharedComputers?: true; cloudHome?: true };
 }
 
+/** A Team Cloud's session: the team and this person's role in it (owner, admin or member). */
+export interface TeamSession { id: string; name: string; role: string }
+
 export type SessionState =
   | { kind: "loopback"; trust?: "service" }
-  | { kind: "session"; id: string; label: string; scopes: string[]; expiresAt: number; cloudGuest?: true; openedThreads?: string[] }
+  | { kind: "session"; id: string; label: string; scopes: string[]; expiresAt: number; cloudGuest?: true; openedThreads?: string[]; reactor?: string; team?: TeamSession }
   | { kind: "unauthenticated"; error: string }
   | { kind: "unreachable"; error: string };
 
@@ -32,6 +35,8 @@ export async function readSessionState(fetchImpl: typeof fetch = fetch): Promise
       label: typeof record.label === "string" ? record.label : "",
       scopes: Array.isArray(record.scopes) ? record.scopes.filter((s): s is string => typeof s === "string") : [],
       expiresAt: typeof record.expiresAt === "number" ? record.expiresAt : 0,
+      ...(typeof record.reactor === "string" ? { reactor: record.reactor } : {}),
+      ...(teamSessionOf(record.team) ? { team: teamSessionOf(record.team)!, openedThreads: Array.isArray(record.openedThreads) ? record.openedThreads.filter((id): id is string => typeof id === "string") : [] } : {}),
       ...(record.cloudGuest === true ? {
         cloudGuest: true as const,
         openedThreads: Array.isArray(record.openedThreads) ? record.openedThreads.filter((id): id is string => typeof id === "string") : [],
@@ -39,6 +44,11 @@ export async function readSessionState(fetchImpl: typeof fetch = fetch): Promise
     };
   }
   return record.trust === "service" ? { kind: "loopback", trust: "service" } : { kind: "loopback" };
+}
+
+function teamSessionOf(value: unknown): TeamSession | null {
+  const team = Object(value) as { id?: unknown; name?: unknown; role?: unknown };
+  return typeof team.id === "string" && typeof team.name === "string" && typeof team.role === "string" ? { id: team.id, name: team.name, role: team.role } : null;
 }
 
 export const SERVICE_TRUST_REASON = "This server does not treat this computer as its owner. Sign in or pair this browser to continue.";

@@ -33,6 +33,8 @@ function routineHeader(name: string, trigger: RoutineRunTrigger): string {
   return `[${trigger === "schedule" ? "Scheduled routine" : "Routine"} ${label} — do this now:]\n`;
 }
 
+export const routinePrompt = (text: string): boolean => /^\[(?:Scheduled routine|Routine) "/u.test(text);
+
 const CONTINUITY_CHARS = 2_000;
 const finishedOrder = (run: RoutineRun) => run.finishedAt ?? run.createdAt;
 

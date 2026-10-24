@@ -3,6 +3,7 @@ import vm from "node:vm";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
+import { EngineMemory } from "./engine-memory.ts";
 import type { Message } from "./store.ts";
 import { TurnStops, stoppedTurnOutcome } from "./turn-outcome.ts";
 import { TurnWatchdog, type WatchedTurn } from "./turn-watchdog.ts";
@@ -125,7 +126,7 @@ describe("TurnWatchdog", () => {
 
 // The harness's stall handler (index.ts), run without starting a server.
 describe("the stall handler", () => {
-  function load() {
+  function load(engineMemory = new EngineMemory({ enabled: false })) {
     const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
     const from = source.indexOf("\nconst TURN_STALL_MS"), to = source.indexOf("\nwatchdog.start();");
     if (from < 0 || to <= from) throw new Error("Stall handler section moved");
@@ -151,6 +152,7 @@ describe("the stall handler", () => {
       settleDirectFollowup: (generation: string | undefined, outcome: { text: string }) => settled.push({ generation, text: outcome.text }),
       finalizeDelegationWatch: (_threadId: string, _ok: boolean, _reply: string, why: string) => delegations.push(why),
       setTimeout: () => ({ unref() {} }),
+      engineMemory,
     });
     vm.runInContext(code, context, { filename: "index.ts (stall handler fixture)" });
     return { context, settled, delegations };
@@ -162,6 +164,16 @@ describe("the stall handler", () => {
     const told = 'No activity for 20 minutes — the turn was stopped. Before it stopped it made 1 tool call: Bash ×1.\nIts last message, quoted: "Exporting the second half now."';
     expect(settled).toEqual([{ generation: "gen-1", text: told }]);
     expect(delegations).toEqual([]);
+  });
+
+  it("says when the Cloud ran out of memory while the stalled turn ran", () => {
+    const memory = new EngineMemory({ enabled: true, read: () => ({ totalBytes: 4 * 1024 ** 3, availableBytes: 0, swapFreeBytes: 0, oomKills: 0, fullStall10: 60 }),
+      groups: () => new Map(), log: () => {} });
+    memory.turnStarted("t1");
+    memory.tick();
+    const { context, settled } = load(memory);
+    context.watchdog.options.onStall({ threadId: "t1", botId: "eli" });
+    expect(settled[0]!.text).toMatch(/^No activity for 20 minutes — the turn was stopped\. This Cloud ran out of memory while 1 task ran at once \(not a problem with the AI provider\)\. Before it stopped/);
   });
 
   it("gives a stopped turn's own end the cause the harness noted before interrupting it", () => {

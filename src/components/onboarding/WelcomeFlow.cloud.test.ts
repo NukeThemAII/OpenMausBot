@@ -18,7 +18,7 @@ const { welcomeOnScreen } = await import("@/lib/onboarding");
 const allowances = { cpus: 2, memoryMb: 2048, diskGb: 20, maxDiskGb: 20, computers: 1, computerHours: 50, voiceCharacters: 1 };
 const OFFER: CloudOffer = { recommended: "pro", plans: [{ tier: "pro", amount: 4900, trialDays: 3, allowances }] };
 let host: HTMLDivElement, root: Root;
-beforeEach(() => { setLocale("en"); f.state = { config: {}, cloudAdd: null, bots: [] }; host = document.createElement("div"); document.body.append(host); root = createRoot(host); });
+beforeEach(() => { setLocale("en"); f.state = { config: {}, cloudAdd: null, bots: [], instances: [] }; host = document.createElement("div"); document.body.append(host); root = createRoot(host); });
 afterEach(async () => { await act(async () => root.unmount()); host.remove(); });
 const flow = (extra: Record<string, unknown> = {}) => createElement(WelcomeFlow, { bot: null, onDone: vi.fn(), reel: false, dictation: false, initialBeat: "cloud", cloudOffer: OFFER, ...extra });
 

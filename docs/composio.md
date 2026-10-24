@@ -27,6 +27,36 @@ A MausBot Cloud plan includes connected apps: there is no key to add. At every s
 
 The built image uses the default service; `OMB_COMPOSIO_BROKER_URL` names another (a staging service, or a closed port in CI). The server run from source registers only with an explicitly named service, so development and tests never create installations on the real one.
 
+## App events
+
+An app-event automation runs a bot when something happens in a connected app: a new Gmail message, a Slack
+message in a channel, a HubSpot deal changing stage. It uses Composio triggers through the managed service, on
+the desktop, a headless server and a Cloud alike:
+
+1. `create_trigger` (`when: "app_event"`) or the editor saves the automation in `app-triggers.json` in the data
+   folder and creates its trigger on the service (`POST /v1/triggers`), which checks that the connected account
+   belongs to this installation. A Gmail filter (from, subject, label, words) becomes Gmail's own search, so
+   other mail never arrives; other apps match the filter as events arrive.
+2. Composio posts each event, signed, to the service, which queues it per installation for up to 7 days.
+3. The server long-polls the queue (`GET /v1/events`, 25 seconds at a time) while it has an automation switched
+   on. Each event becomes a routine run, with the event fenced as untrusted data. A burst shares runs: at most 3
+   waiting runs per automation, up to 20 events each. The cursor that acknowledges events moves only after the
+   run is saved, and a redelivered event is recognised by its id, so each event runs once.
+4. The server compares its automations with the service at start and every 15 minutes (hourly while all are
+   paused) and fixes any difference by itself: a lost copy is made again, an unwanted one is removed, on/off is
+   matched. An expired connection shows as **Needs you** with **Reconnect**.
+
+| | Desktop | Paid Cloud |
+| --- | --- | --- |
+| Events kept per day (UTC) | 500 | 2,000 |
+
+A Cloud counts as paid once its server presents the Admin's signed grant (`OMB_CLOUD_CONNECTED_APPS_GRANT`).
+Events over the limit are not run; the automation shows how many were skipped today and why.
+
+Gmail and other polled apps are checked every 15 minutes, the minimum for Composio-managed sign-ins. A server
+that uses its own Composio project key cannot watch apps yet: `list_trigger_events` and the editor say so, and a
+schedule that checks the app, or a webhook, does the job instead.
+
 ## Scoped key permissions
 
 A default project API key works without additional configuration. For a least-privilege scoped key, grant:
@@ -77,6 +107,16 @@ To grant the permission:
 OpenMausBot uses your project's own auth config for an app automatically, in place of the Composio-managed one. If there are several for the same app, it uses the most recently updated, and it skips disabled ones and ones turned off for Tool Router. Google may require your OAuth app to list the added permissions on its consent screen, and to be verified before people outside your organization can grant them.
 
 On a MausBot Cloud plan, connected apps run through OpenMausBot's managed connection service rather than your own Composio project, so you cannot add permissions yourself; ask OpenMausBot support instead.
+
+## Apps with no Composio-managed sign-in
+
+Some apps, such as Xero and Buffer, have no sign-in that Composio provides: they connect only through an auth config holding your own OAuth app. Without one, Composio answers "Composio does not manage auth for toolkit … and no auth config without required fields is available".
+
+With your own Composio project key, create the auth config in the Composio dashboard (**Auth Configs → Create**), keep it enabled and available to Tool Router, then connect the app. OpenMausBot reads the project's enabled auth configs (at most once a minute, and again right after Composio reports a missing one) and names them in the Session, so the app connects with no further input. A Session that predates a new auth config is replaced once, under the same Composio user, so existing connections stay. If the auth configs cannot be read, the Session keeps the ones it last read; if Composio refuses the Session with them, it is created without them, and connecting that app says why.
+
+A bot can also name one auth config for an app: `COMPOSIO_MANAGE_CONNECTIONS` with `toolkits: [{ "name": "xero", "action": "add", "auth_config_id": "ac_…" }]` (`auth_config_override` is read as well). OpenMausBot checks the id in your project before it shows the Connect card (it must exist, belong to that app, be enabled and be available to Tool Router) and keeps the choice in `composio-auth-configs.json` in the data folder, so later Sessions use it while it stays usable.
+
+OpenMausBot's managed connection service (the desktop default and MausBot Cloud) runs on OpenMausBot's own Composio project, which cannot use an auth config in yours. For such an app it says so in one line: add your own Composio project key in **Settings → API keys**, with an enabled auth config for that app in that project.
 
 ## Browser authorization recovery
 

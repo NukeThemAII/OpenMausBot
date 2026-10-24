@@ -325,7 +325,9 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
 
   /** One model call for one bot's waiting chats, each read as its own conversation. */
   async function captureCall(batches: readonly CaptureBatch[]): Promise<CaptureReport> {
-    const bot = deps.bot(batches[0]!.botId);
+    // The batch names where the facts go (a bot's own memory, or one of its layers on a Team Cloud); the bot record says whose.
+    const id = batches[0]!.botId;
+    const bot = deps.bot(id);
     const at = now().getTime();
     const off: CaptureReport = { at, added: 0, topics: 0, aboutMe: 0, note: "upkeep is off" };
     if (!upkeepEnabled(bot)) return off;
@@ -335,28 +337,28 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
       if (same) same.turns.push(...batch.turns);
       else byThread.set(batch.threadId, { ...batch, turns: [...batch.turns] });
     }
-    const allowed = (threadId: string) => deps.mayCapture?.(bot.id, threadId) ?? true;
+    const allowed = (threadId: string) => deps.mayCapture?.(id, threadId) ?? true;
     const refused: CaptureReport = { at, added: 0, topics: 0, aboutMe: 0, note: "this conversation no longer feeds the bot's memory" };
     const conversations = [...byThread.values()].filter((conversation) => allowed(conversation.threadId));
     if (!conversations.length) return refused;
-    const engine = deps.engine(bot.id);
+    const engine = deps.engine(id);
     if (!engine?.generateText) {
       const report = { at, added: 0, topics: 0, aboutMe: 0, note: NO_TEXT_ENGINE };
-      record(bot.id, { lastCapture: report });
+      record(id, { lastCapture: report });
       return report;
     }
-    ensureWorkspace(bot.id);
+    ensureWorkspace(id);
     const today = memoryDate(now());
     const answer = await askModel(engine, capturePrompt({
       botName: bot.name,
       conversations: conversations.map((conversation) => conversation.turns),
-      notebook: readRaw(bot.id, "MEMORY.md") ?? "",
+      notebook: readRaw(id, "MEMORY.md") ?? "",
       today,
-      topics: memoryTopicIndex(bot.id),
+      topics: memoryTopicIndex(id),
     }));
     if (answer === null) {
       const report = { at, added: 0, topics: 0, aboutMe: 0, note: "The capture call did not answer in time." };
-      record(bot.id, { lastCapture: report });
+      record(id, { lastCapture: report });
       return report;
     }
     if (paused) {
@@ -364,28 +366,28 @@ export function createMemoryUpkeep(deps: UpkeepDeps): MemoryUpkeep {
       return { at, added: 0, topics: 0, aboutMe: 0, note: "deferred until the backup finishes" };
     }
     // Re-read after the await; from here to the journal rows there is no await, so no write interleaves.
-    if (!upkeepEnabled(deps.bot(bot.id))) return off;
+    if (!upkeepEnabled(deps.bot(id))) return off;
     const still = conversations.map((conversation) => allowed(conversation.threadId));
     if (!still.some(Boolean)) return refused;
     const filed = attribute(parseCandidates(answer, today, captureItemLimit(conversations.length)), conversations, still);
-    const { added, topics } = writing(bot.id, () => {
+    const { added, topics } = writing(id, () => {
       let added = 0;
       let topics = 0;
       conversations.forEach((conversation, i) => {
         const own = filed.filter((item) => item.at === i).map((item) => item.candidate);
         if (!own.length) return;
-        const result = fileCandidates(bot.id, conversation.threadId, own);
+        const result = fileCandidates(id, conversation.threadId, own);
         added += result.added;
         topics += result.topics;
       });
       return { added, topics };
     });
     const learned = filed.filter((item) => item.aboutMe).map((item) => item.candidate.text);
-    const aboutMe = learned.length ? deps.addToAboutMe({ botId: bot.id, botName: bot.name }, learned) : 0;
-    const organized = await organize(bot.id);
+    const aboutMe = learned.length ? deps.addToAboutMe({ botId: id, botName: bot.name }, learned) : 0;
+    const organized = await organize(id);
     const report: CaptureReport = { at, added, topics, aboutMe, organized };
-    record(bot.id, { lastCapture: report });
-    if (added || topics || aboutMe) log(`memory upkeep: noticed ${added} fact(s) for MEMORY.md, ${topics} for topic files and ${aboutMe} for About me — ${bot.name} (${bot.id}) from ${conversations.map((conversation) => conversation.threadId).join(", ")}`);
+    record(id, { lastCapture: report });
+    if (added || topics || aboutMe) log(`memory upkeep: noticed ${added} fact(s) for MEMORY.md, ${topics} for topic files and ${aboutMe} for About me — ${bot.name} (${id}) from ${conversations.map((conversation) => conversation.threadId).join(", ")}`);
     return report;
   }
 

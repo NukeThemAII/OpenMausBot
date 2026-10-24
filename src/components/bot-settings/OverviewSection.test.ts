@@ -19,7 +19,7 @@ const sentences: BotOverview = {
     soulLead: "Always cite primary sources and separate fact from inference.",
   },
   does: ["Daily at 9:00 AM: Morning brief. Next run 9:00 AM."],
-  reaches: ["Works in its private workspace.", "Has the built-in browser."],
+  reaches: ["Works in its own private folder.", "Has the built-in browser."],
   wont: [
     "Won't run commands without asking you first.",
     "Won't contact other bots without asking.",
@@ -43,13 +43,13 @@ describe("OverviewSection", () => {
     const markup = render(createElement(OverviewSection, {
       overview: { ...sentences, setup: [
         { id: "identity", label: "Identity", done: true, section: "identity" },
-        { id: "folder", label: "Choose a project folder", done: false, section: "access" },
+        { id: "folder", label: "Choose a working folder", done: false, section: "access" },
         { id: "schedule", label: "Add a routine", done: false, section: "routines" },
       ] }, prompt: null, onOpen: vi.fn(),
     }));
     expect(markup).toContain("Setup ideas");
     expect(markup).toContain("You can start chatting now.");
-    expect(markup).toContain("Choose a project folder");
+    expect(markup).toContain("Choose a working folder");
     expect(markup).not.toContain("Finish setting up");
     expect(markup).not.toContain("1 of 3 done");
     expect(markup).not.toContain(">Identity</span>");

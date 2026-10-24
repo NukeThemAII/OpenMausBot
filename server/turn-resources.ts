@@ -73,6 +73,10 @@ export class TurnResources {
     return true;
   }
 
+  holder(resource: string): TurnOwner | undefined {
+    return this.owners.get(resource);
+  }
+
   owns(resource: string, owner: TurnOwner): boolean {
     const current = this.owners.get(resource);
     return Boolean(current && sameOwner(current, owner));

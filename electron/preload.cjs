@@ -38,16 +38,34 @@ ipcRenderer.on("app:open-settings", (_event, section) => {
 // The full bridge goes only to the local server's UI; a remote page gets the safe subset, and main enforces the same rule.
 const localOrigin = process.argv.find((arg) => arg.startsWith("--omb-local-origin="))?.slice("--omb-local-origin=".length) ?? null;
 const isLocalPage = !localOrigin || location.origin === localOrigin;
-const savedServer = id => isLocalPage && typeof id === "string" && /^[\w-]{1,64}$/.test(id) ? [id] : [];
-const REMOTE_SAFE = new Set(["platform", "getCapabilities", "onCapabilitiesChanged", "applySkin", "setUnreadCount", "permStatus", "workspaces", "cloudMove", "cloudLending", "cloudPlan", "desktopNotices", "desktopAnalytics"]);
+const REMOTE_SAFE = new Set(["platform", "getCapabilities", "onCapabilitiesChanged", "applySkin", "setUnreadCount", "permStatus", "workspaces", "cloudLending", "cloudPlan", "cloudSendPage", "desktopNotices", "desktopAnalytics", "desktopLanguage", "updatesConsent", "windowControls"]);
+/** My Cloud's own page once it is the person's home (main checks the sender again): it is this app's page then. */
+const HOME_PAGE = ["home", "onChatLink", "onPackageInstall", "onOpenAppSettings", "exportDiagnostics", "openLogsFolder"];
 function updaterOffered() {
   try { return ipcRenderer.sendSync("update:offered") === true; } catch { return false; }
+}
+function homePage() {
+  try { return ipcRenderer.sendSync("home:page") === true; } catch { return false; }
+}
+function reloadedForUpdate() {
+  try { return ipcRenderer.sendSync("home:updating") === true; } catch { return false; }
 }
 function savedAnalyticsChoice() {
   try { const saved = ipcRenderer.sendSync("desktop-analytics:read"); return typeof saved === "boolean" ? saved : null; } catch { return null; }
 }
 let analyticsChoice;
-const remoteKeys = isLocalPage ? REMOTE_SAFE : new Set([...REMOTE_SAFE, ...(updaterOffered() ? ["updater"] : [])]);
+function savedLanguageChoice() {
+  try { const saved = ipcRenderer.sendSync("desktop-language:read"); return typeof saved === "string" ? saved : null; } catch { return null; }
+}
+let languageChoice;
+const languageListeners = new Set();
+ipcRenderer.on("desktop-language:changed", (_event, language) => {
+  if (typeof language !== "string") return;
+  languageChoice = language;
+  for (const listener of languageListeners) listener(language);
+});
+const onHomePage = !isLocalPage && homePage();
+const remoteKeys = isLocalPage ? REMOTE_SAFE : new Set([...REMOTE_SAFE, ...(updaterOffered() ? ["updater"] : []), ...(onHomePage ? HOME_PAGE : [])]);
 
 // Keep in parity with shared/workspace-backup-client.ts (a sandboxed preload cannot import it).
 const COMPANY_BACKUP_CLIENT_KEYS = [
@@ -82,6 +100,7 @@ const bridge = {
   workspaces: {
     state: () => ipcRenderer.invoke("workspaces:state"),
     menu: (options) => ipcRenderer.invoke("workspaces:menu", ...(options?.from === "howto" ? ["howto"] : [])),
+    line: () => ipcRenderer.invoke("workspaces:line"),
   },
   getCapabilities: () => ipcRenderer.invoke("desktop:capabilities"),
   onCapabilitiesChanged: (cb) => {
@@ -238,6 +257,8 @@ const bridge = {
       throw new Error(message.replace(/^Error invoking remote method '[^']*':\s*(?:Error:\s*)?/, ""));
     }),
   revealInFolder: (filePath) => ipcRenderer.invoke("desktop:reveal-file", filePath),
+  // This app's own logs folder (server.log, desktop-crashes.log, updater.log); the page names no path.
+  openLogsFolder: () => ipcRenderer.invoke("desktop:open-logs"),
   setCredential: (name, value) => ipcRenderer.invoke("credential:set", name, value),
 
   updater: {
@@ -264,7 +285,7 @@ const bridge = {
     pickDir: () => ipcRenderer.invoke("environments:pick-dir"),
     forget: (id, purge) => ipcRenderer.invoke("environments:forget", id, purge === true),
     onOpenSettings: (cb) => {
-      const handler = (_event, computerId, panel) => cb(computerId, panel === "copy" ? "copy" : undefined);
+      const handler = (_event, computerId) => cb(computerId);
       ipcRenderer.on("workspaces:open-settings", handler);
       return () => ipcRenderer.removeListener("workspaces:open-settings", handler);
     },
@@ -293,6 +314,7 @@ const bridge = {
     readySeen: () => ipcRenderer.invoke("cloud-account:readySeen"),
     connectHome: () => ipcRenderer.invoke("cloud-account:connectHome"),
     connectHomeForPhone: () => ipcRenderer.invoke("cloud-account:connectHomeForPhone"),
+    openTeam: teamId => ipcRenderer.invoke("cloud-account:openTeam", String(teamId)),
     onState: cb => {
       const handler = (_event, state) => cb(state);
       ipcRenderer.on("cloud-account:state-changed", handler);
@@ -322,30 +344,52 @@ const bridge = {
       },
     },
   } : undefined,
-  cloudMove: process.argv.includes("--omb-company-desktop=1") ? {
-    state: id => ipcRenderer.invoke("cloud-move:state", ...savedServer(id)),
-    start: id => isLocalPage ? ipcRenderer.invoke("cloud-move:start", ...savedServer(id))
-      : navigator.userActivation?.isActive === true ? ipcRenderer.invoke("cloud-move:start") : Promise.reject(new Error("Choose Copy to start copying.")),
-    cancel: () => ipcRenderer.invoke("cloud-move:cancel"),
-    restorePrevious: id => ipcRenderer.invoke("cloud-move:restore-previous", ...savedServer(id)),
-    bring: id => isLocalPage ? ipcRenderer.invoke("cloud-move:bring", ...savedServer(id)) : Promise.reject(new Error("Bring newer chats from this computer's Settings.")),
-    dismiss: id => ipcRenderer.invoke("cloud-move:dismiss", ...savedServer(id)),
-    onState: cb => {
-      const handler = (_event, state) => cb(state);
-      ipcRenderer.on("cloud-move:state-changed", handler);
-      return () => ipcRenderer.removeListener("cloud-move:state-changed", handler);
-    },
-  } : undefined,
   cloudLending: process.argv.includes("--omb-company-desktop=1") ? {
     open: () => ipcRenderer.invoke("cloud-lending:open"),
+    state: () => ipcRenderer.invoke("cloud-lending:state"),
+    set: on => on !== true || isLocalPage || navigator.userActivation?.isActive === true
+      ? ipcRenderer.invoke("cloud-lending:set", on === true) : Promise.reject(new Error("Turn on the switch to lend this computer.")),
+    screen: on => on !== true || isLocalPage || navigator.userActivation?.isActive === true
+      ? ipcRenderer.invoke("cloud-lending:screen", on === true) : Promise.reject(new Error("Tick Apps and screen to lend them.")),
+    // A bot's Use my Mac link: opens main's own popup, only from the person's click.
+    offer: () => isLocalPage || navigator.userActivation?.isActive === true
+      ? ipcRenderer.invoke("cloud-lending:offer") : Promise.reject(new Error("Press Use my Mac to share this computer.")),
+  } : undefined,
+  // Either page: the one-time move's line.
+  cloudSendPage: process.argv.includes("--omb-company-desktop=1") ? {
+    notice: () => ipcRenderer.invoke("cloud-send:notice"),
+    dismiss: signature => ipcRenderer.invoke("cloud-send:dismiss", String(signature)),
+    moveRetry: () => isLocalPage || navigator.userActivation?.isActive === true
+      ? ipcRenderer.invoke("cloud-send:move-retry") : Promise.reject(new Error("Choose Try again to move.")),
+    // My Cloud's page: a bot of its moving into one of its person's teams.
+    teams: () => ipcRenderer.invoke("cloud-send:teams"),
+    moveToTeam: (botId, teamId, name) => navigator.userActivation?.isActive === true
+      ? ipcRenderer.invoke("cloud-send:team-move", String(botId), String(teamId), String(name ?? "")) : Promise.reject(new Error("Choose Move to move the bot.")),
+    teamRetry: () => navigator.userActivation?.isActive === true
+      ? ipcRenderer.invoke("cloud-send:team-retry") : Promise.reject(new Error("Choose Try again to move.")),
+    openTeam: teamId => ipcRenderer.invoke("cloud-send:team-open", String(teamId)),
+    // Settings → MausBot Cloud, Advanced: "Keep this computer's bots on this computer".
+    keepHere: () => ipcRenderer.invoke("one-home:keep"),
+    setKeepHere: on => isLocalPage || navigator.userActivation?.isActive === true
+      ? ipcRenderer.invoke("one-home:keep-set", on === true) : Promise.reject(new Error("Turn the switch to keep this computer's bots here.")),
+    onNotice: cb => {
+      const handler = (_event, notice) => cb(notice);
+      ipcRenderer.on("cloud-send:notice-changed", handler);
+      return () => ipcRenderer.removeListener("cloud-send:notice-changed", handler);
+    },
   } : undefined,
   cloudPlan: process.argv.includes("--omb-company-desktop=1") ? {
     state: () => ipcRenderer.invoke("cloud-plan:state"),
     manage: () => isLocalPage || navigator.userActivation?.isActive === true
       ? ipcRenderer.invoke("cloud-plan:manage") : Promise.reject(new Error("Choose Manage to open your Plan page.")),
-    useThisComputer: () => isLocalPage || navigator.userActivation?.isActive === true
-      ? ipcRenderer.invoke("cloud-plan:local") : Promise.reject(new Error("Choose Use this computer to switch.")),
+    signIn: () => isLocalPage || navigator.userActivation?.isActive === true
+      ? ipcRenderer.invoke("home:sign-in") : Promise.reject(new Error("Choose Sign in to sign in again.")),
     noticeSeen: () => ipcRenderer.invoke("cloud-plan:notice-seen"),
+    // The usage meter's Upgrade: both only from the person's click (Upgrade, then the confirm's Upgrade), never by themselves.
+    upgradePreview: (plan, source) => navigator.userActivation?.isActive === true
+      ? ipcRenderer.invoke("cloud-plan:upgrade-preview", String(plan), String(source)) : Promise.reject(new Error("Choose Upgrade to see the price.")),
+    upgrade: (plan, source) => navigator.userActivation?.isActive === true
+      ? ipcRenderer.invoke("cloud-plan:upgrade", String(plan), String(source)) : Promise.reject(new Error("Choose Upgrade to change your plan.")),
   } : undefined,
   organization: process.argv.includes("--omb-company-desktop=1") ? {
     settingsOpened: () => ipcRenderer.invoke("organization:settings-opened"),
@@ -384,12 +428,32 @@ const bridge = {
     activity: id => ipcRenderer.invoke("sharing:activity", id),
   },
   confirm: message => ipcRenderer.invoke("dialog:confirm", message),
+  /** The window onto My Cloud once it is the person's home: this computer's screen while My Cloud can't be opened, and
+   * on My Cloud's own page a new session when its own has ended. */
+  home: {
+    state: () => ipcRenderer.invoke("home:state"),
+    onState: cb => {
+      const handler = (_event, view) => cb(view);
+      ipcRenderer.on("home:state-changed", handler);
+      return () => ipcRenderer.removeListener("home:state-changed", handler);
+    },
+    retry: () => ipcRenderer.invoke("home:retry"),
+    signIn: () => isLocalPage || navigator.userActivation?.isActive === true
+      ? ipcRenderer.invoke("home:sign-in") : Promise.reject(new Error("Choose Sign in to sign in again.")),
+    repair: () => ipcRenderer.invoke("home:repair"),
+    updating: onHomePage && reloadedForUpdate(),
+  },
+  updatesConsent: {
+    state: () => ipcRenderer.invoke("updates-consent:state"),
+    choose: choice => ipcRenderer.invoke("updates-consent:choose", {
+      status: String(choice?.status),
+      ...(typeof choice?.email === "string" ? { email: choice.email } : {}),
+    }),
+  },
   desktopNotices: {
     state: () => ipcRenderer.invoke("desktop-notices:state"),
     seen: id => ipcRenderer.invoke("desktop-notices:seen", String(id)),
     shown: id => ipcRenderer.invoke("desktop-notices:shown", String(id)),
-    thisComputer: intent => isLocalPage || navigator.userActivation?.isActive !== true ? Promise.reject(new Error("Choose Continue on this computer to switch."))
-      : intent === "manage" || intent === "cloud-pro" ? ipcRenderer.invoke("desktop-notices:this-computer", intent) : Promise.reject(new Error("The popup hands over only its own click.")),
   },
   desktopAnalytics: {
     enabled: () => {
@@ -397,6 +461,20 @@ const bridge = {
       return analyticsChoice;
     },
     ...(isLocalPage ? { set: enabled => { analyticsChoice = enabled === true; return ipcRenderer.invoke("desktop-analytics:set", analyticsChoice); } } : {}),
+  },
+  desktopLanguage: {
+    choice: () => {
+      if (languageChoice === undefined) languageChoice = savedLanguageChoice();
+      return languageChoice;
+    },
+    set: language => {
+      languageChoice = String(language);
+      return ipcRenderer.invoke("desktop-language:set", languageChoice);
+    },
+    onChange: listener => {
+      languageListeners.add(listener);
+      return () => { languageListeners.delete(listener); };
+    },
   },
 };
 

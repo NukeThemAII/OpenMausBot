@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { Store } from "../store.ts";
+import type { BotRecord, Store } from "../store.ts";
 import { createRoomAccess } from "./room-access.ts";
 
 // Only a thread opened as a parallel room job answers to its room; a work
@@ -22,3 +22,30 @@ describe("laneRoomThread", () => {
     expect(laneRoomThread({ botId: "e1", threadId: "lane", groupId: "room" })).toBeUndefined();
   });
 });
+
+describe("roomTalks", () => {
+  const bots = {
+    insider: { id: "insider", name: "Insider", section: "Build" },
+    stranger: { id: "stranger", name: "Stranger", section: "Elsewhere" },
+  } as unknown as Record<string, BotRecord>;
+  const store = {
+    bot: (id: string) => bots[id],
+    messagesFor: () => [],
+  } as unknown as Store;
+  const { roomTalks } = createRoomAccess({ store });
+  const room = (over: Record<string, unknown> = {}) => ({
+    id: "room", threadId: "room-thread", dm: false, memberIds: ["insider"], name: "Room", ...over,
+  }) as never;
+
+  it("returns one discriminated problem per rule", () => {
+    expect(roomTalks(bots.insider!, room())).toEqual({ ok: true });
+    expect(roomTalks(bots.insider!, room({ dm: true, threadId: "dm-thread" }))).toEqual({ ok: false, problem: "dm" });
+    expect(roomTalks(bots.stranger!, room({ memberIds: ["insider"] }))).toEqual({ ok: false, problem: "not-member" });
+    expect(roomTalks(bots.insider!, room({ memberIds: ["insider", "stranger"] })))
+      .toEqual({ ok: false, problem: "outsider", name: "Stranger" });
+    expect(roomTalks(bots.insider!, room({ setupCompletedAt: null, setupSkippedAt: null })))
+      .toEqual({ ok: false, problem: "setup" });
+    expect(roomTalks(bots.insider!, room({ setupCompletedAt: 1 }))).toEqual({ ok: true });
+  });
+});
+

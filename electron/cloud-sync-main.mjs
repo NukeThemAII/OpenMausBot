@@ -8,11 +8,11 @@ import { createDownloadMarker } from "./cloud-sync-mark.mjs";
 const TOKEN_MS = 30 * 60_000;
 
 /** `stateDir`: Files' own folder under userData; the staging Admin keeps its own (cloud-account.mjs cloudTarget). */
-export function installCloudFiles({ app, ipcMain, dialog, shell, powerMonitor, fetch, localWorkspaceOnly, send, cloudOrigin, cloudAccount, localDataDir, now = Date.now, stateDir = "cloud-sync" }) {
+export function installCloudFiles({ app, ipcMain, dialog, shell, powerMonitor, fetch, localWorkspaceOnly, send, cloudOrigin, cloudAccount, localDataDir, power, now = Date.now, stateDir = "cloud-sync" }) {
   const dir = path.join(app.getPath("userData"), stateDir);
   const service = createCloudFilesService({
     settingsFile: path.join(dir, "settings.json"), stateFile: path.join(dir, "state.db"),
-    documentsDir: app.getPath("documents"), homeDir: app.getPath("home"), localDataDir, cloudOrigin, fetch,
+    documentsDir: app.getPath("documents"), homeDir: app.getPath("home"), localDataDir, cloudOrigin, fetch, ...(power ? { power } : {}),
     trashItem: (file) => shell.trashItem(file), markDownloaded: createDownloadMarker(),
     onChange: (state) => send("files:state-changed", state),
   });
@@ -60,5 +60,5 @@ export function installCloudFiles({ app, ipcMain, dialog, shell, powerMonitor, f
   });
   handle("files:more-space", async () => { await cloudAccount().openDashboard(); });
   powerMonitor.on("resume", () => service.wake());
-  return { start: () => service.start(), close: () => service.close() };
+  return { start: () => service.start(), running: () => service.running(), close: () => service.close() };
 }

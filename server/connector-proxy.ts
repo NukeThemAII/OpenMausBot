@@ -11,6 +11,10 @@ import {
   parseConnectorServiceSlugsEnv,
 } from "./connector-advertisement.ts";
 import { withSignedOutHint } from "./connector-signed-out-hint.ts";
+import { AUTH_CONFIG_ID } from "../shared/connector-availability.ts";
+import { fitToolListResult } from "./mcp-tool-schema.ts";
+import { toolSchemaProfileFromEnv } from "./tool-schema-profile.ts";
+import { capToolListResult, toolLimitFromEnv } from "./tool-count-limit.ts";
 
 type Json = Record<string, unknown>;
 
@@ -21,6 +25,8 @@ const THREAD_ID = process.env.OMB_THREAD_ID ?? "";
 const TOKEN = process.env.OMB_CONNECTOR_TOKEN ?? process.env.OMB_COMMS_TOKEN ?? "";
 const ALLOWED_TOOLS = parseConnectorAllowedToolsEnv(process.env[CONNECTOR_ALLOWED_TOOLS_ENV]);
 const SERVICE_SLUGS = parseConnectorServiceSlugsEnv(process.env[CONNECTOR_SERVICE_SLUGS_ENV]);
+const SCHEMA_PROFILE = toolSchemaProfileFromEnv(process.env);
+const TOOL_LIMIT = toolLimitFromEnv(process.env);
 const MAX_RESPONSE_BYTES = 20 * 1024 * 1024;
 const INITIALIZE_RELAY_TIMEOUT_MS = 1_000;
 const RELAY_TIMEOUT_MS = 10 * 60_000;
@@ -124,14 +130,33 @@ async function relay(message: Json, timeoutMs = RELAY_TIMEOUT_MS): Promise<Json 
 interface ConnectorRequest {
   slug: string;
   alias?: string;
+  authConfigId?: string;
 }
 
-function connectorAdds(args: unknown): ConnectorRequest[] {
-  if (!args || typeof args !== "object" || Array.isArray(args)) return [];
+const BAD_AUTH_CONFIG_ID = "OpenMausBot showed no card: auth_config_id must be a Composio auth config id (ac_ and then letters "
+  + "or digits), copied from Auth Configs in the person's Composio project. Leave it out to use their newest enabled config.";
+
+/** Composio's own error names `auth_config_override`, so either spelling is read: on a toolkit entry, or at the top level
+ * as one id for a single toolkit or a { toolkit: id } map. */
+function requestedAuthConfig(row: Record<string, unknown>): unknown {
+  return row.auth_config_id ?? row.auth_config_override;
+}
+
+function topLevelAuthConfig(args: Record<string, unknown>, slug: string, toolkitCount: number): unknown {
+  const value = requestedAuthConfig(args);
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return Object.entries(value).find(([key]) => key.trim().toLowerCase() === slug)?.[1];
+  }
+  // One id cannot say which of several toolkits it belongs to.
+  return value !== undefined && toolkitCount !== 1 ? null : value;
+}
+
+function connectorAdds(args: unknown): { requests: ConnectorRequest[]; badAuthConfig: boolean } {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return { requests: [], badAuthConfig: false };
   const toolkits = (args as { toolkits?: unknown }).toolkits;
-  if (!Array.isArray(toolkits)) return [];
+  if (!Array.isArray(toolkits)) return { requests: [], badAuthConfig: false };
   const seen = new Set<string>();
-  const requests: ConnectorRequest[] = [];
+  const requests: Array<ConnectorRequest & { authConfig?: unknown }> = [];
   for (const item of toolkits) {
     if (typeof item === "string") {
       const slug = item.trim().toLowerCase();
@@ -153,9 +178,20 @@ function connectorAdds(args: unknown): ConnectorRequest[] {
     const key = JSON.stringify([normalized, alias.toLowerCase()]);
     if (seen.has(key)) continue;
     seen.add(key);
-    requests.push({ slug: normalized, ...(alias ? { alias } : {}) });
+    const authConfig = requestedAuthConfig(row as Record<string, unknown>);
+    requests.push({ slug: normalized, ...(alias ? { alias } : {}), ...(authConfig !== undefined ? { authConfig } : {}) });
   }
-  return requests;
+  let badAuthConfig = false;
+  const checked = requests.map(({ authConfig, ...request }) => {
+    const value = authConfig ?? topLevelAuthConfig(args as Record<string, unknown>, request.slug, requests.length);
+    if (value === undefined) return request;
+    if (typeof value !== "string" || !AUTH_CONFIG_ID.test(value.trim())) {
+      badAuthConfig = true;
+      return request;
+    }
+    return { ...request, authConfigId: value.trim() };
+  });
+  return { requests: checked, badAuthConfig };
 }
 
 async function showConnectorCards(items: ConnectorRequest[]): Promise<void> {
@@ -169,6 +205,12 @@ async function showConnectorCards(items: ConnectorRequest[]): Promise<void> {
     const body = (await response.json().catch(() => ({}))) as { error?: unknown };
     throw new Error(String(body.error ?? `could not show connection card (HTTP ${response.status})`));
   }
+}
+
+function fittedList(frame: Json): Json {
+  if ((!SCHEMA_PROFILE && TOOL_LIMIT === undefined) || !("result" in frame)) return frame;
+  const log = (line: string) => process.stderr.write(`connector-proxy: ${line}\n`);
+  return { ...frame, result: capToolListResult(fitToolListResult(frame.result, SCHEMA_PROFILE, log), TOOL_LIMIT, log) };
 }
 
 async function handle(message: Json): Promise<void> {
@@ -196,7 +238,13 @@ async function handle(message: Json): Promise<void> {
   if (method === "tools/call") {
     const params = (message.params ?? {}) as Json;
     const name = String(params.name ?? "");
-    const requests = /MANAGE_CONNECTIONS$/i.test(name) ? connectorAdds(params.arguments) : [];
+    const { requests, badAuthConfig } = /MANAGE_CONNECTIONS$/i.test(name)
+      ? connectorAdds(params.arguments)
+      : { requests: [], badAuthConfig: false };
+    if (badAuthConfig) {
+      send(textResult(id, BAD_AUTH_CONFIG_ID, true));
+      return;
+    }
     if (requests.length) {
       await showConnectorCards(requests);
       const labels = requests.map((r) => (r.alias ? `${r.slug} (${r.alias})` : r.slug)).join(", ");
@@ -217,8 +265,7 @@ async function handle(message: Json): Promise<void> {
       ? await relay(message).catch(() => delay(TOOLS_LIST_RETRY_MS).then(() => relay(message)))
       : await relay(message);
     if (response && id !== undefined) {
-      send(method === "tools/list" && ALLOWED_TOOLS
-        ? filterToolsListFrame(response, ALLOWED_TOOLS, SERVICE_SLUGS)
+      send(method === "tools/list" ? fittedList(ALLOWED_TOOLS ? filterToolsListFrame(response, ALLOWED_TOOLS, SERVICE_SLUGS) : response)
         : method === "tools/call" ? withSignedOutHint(message, response, SERVICE_SLUGS) : response);
     }
   } catch (error) {

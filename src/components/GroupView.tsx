@@ -1,7 +1,9 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { activeLocale, t } from "@/lib/i18n";
 import { useShowThreads } from "@/lib/thread-preferences";
-import { Check, ChevronDown, ChevronRight, Folder, FolderOpen, Loader2, Pause, Pin, Plus, Search, Square, X } from "lucide-react";
+import { useReactor } from "@/lib/cloud-guest";
+import { otherSpeaker } from "@/lib/own-profile";
+import { Check, ChevronDown, ChevronRight, FolderOpen, Loader2, Pause, Pin, Plus, Search, Square, X } from "lucide-react";
 import {
   api,
   useStore,
@@ -24,14 +26,16 @@ import { showToolCallsEnabled } from "@/lib/feature-flags";
 import { CompactionChip, DigestChip } from "./DigestChip";
 import { roomActivityVisible } from "@/lib/room-activity";
 import { StatusActivityRow } from "@/components/StatusActivityRow";
-import { MAUS_COLOR_NAMES, normalizeState, type MausColor } from "@/lib/mascot";
+import { normalizeState } from "@/lib/mascot";
 import { botTextShowsSpeaker, laterTextOwns, runShowsSpeaker } from "@/lib/room-speaker";
 import { defaultResponderName, effectiveDefaultResponder, groupResponseHint, jevRoomRoutingOn } from "@/lib/group-routing";
 import { ChatMarkdown } from "./ChatMarkdown";
-import { CopyButton, FailedTurnRow, MessageBoundary, ReplyAction, SIMPLE_BUBBLE } from "./ChatView";
+import { FailedTurnRow, MessageBoundary, SIMPLE_BUBBLE } from "./ChatView";
 import { useAdvancedMode } from "@/lib/interface-mode";
-import { MESSAGE_ROW, MessageActions, messageActionClass } from "./MessageActions";
-import { useBotMessageMenu, userMessageMenu, type PinAction } from "./message-menu";
+import { CopyButton, MESSAGE_ROW, MessageActions, messageActionClass, ReplyAction } from "./MessageActions";
+import { ReactAction, ReactionChips, useCanReact } from "./Reactions";
+import { ClusterLabel } from "./RoomClusterLabel";
+import { roomPin, useBotMessageMenu, userMessageMenu } from "./message-menu";
 import { RawMarkdownView, RawToggleAction } from "./RawMarkdownToggle";
 import { SpeakButton } from "./SpeakButton";
 import { useSpeech } from "@/lib/tts/useSpeech";
@@ -68,14 +72,13 @@ import { ManageMembersPanel } from "./ManageMembersPanel";
 import { groupActivityRuns, isStatusActivity, roomTurnFolds } from "@/lib/activity-runs";
 import { TurnNarrationRun } from "./TurnNarrationRun";
 import { ActivityRun } from "./ActivityRun";
-import { useDesktopCapabilities, useCaptionChrome } from "./DesktopCapabilities";
+import { useCaptionChrome } from "./DesktopCapabilities";
 import { cn } from "@/lib/cn";
 import { useMenuMotion } from "./MenuMotion";
-import { shortPath } from "@/lib/short-path";
 import { useComposerDockPad } from "@/lib/composer-dock";
 import { GlassBar, GlassScrollFrame } from "./GlassScrollFrame";
 import { awaitedMemberId, showWorkingDots } from "@/lib/turn-tail";
-import { liveActivityPhrases } from "@/lib/live-activity";
+import { turnNowPhrases } from "@/lib/live-activity"; import { useTurnLive } from "@/state/turn-status";
 import { splitTranscriptAttachments } from "@/lib/composer-attachments";
 import { useTranscriptViewport } from "@/hooks/use-transcript-viewport";
 import { useUnreadDivider } from "@/hooks/use-unread-divider";
@@ -86,13 +89,14 @@ import { citationPreviewText, splitTranscriptCitations, type CitationAttachment 
 import { highlightCitationSource } from "@/lib/citations-dom";
 import { latestFailure, latestReply, type TranscriptSnapshot } from "@/lib/transcript-announcer";
 import { pendingApprovals } from "./PendingApproval";
-import { DataResultChip } from "./DataResultChip";
+import { DataResultChip } from "./DataResultChip"; import { PublishedPageCard } from "./PublishedPageCard";
 import { TranscriptAnnouncer } from "./TranscriptAnnouncer";
 import { dayLabel, localDay } from "@/lib/transcript-derivations";
 import { roomSpeakerIds, roomThreadSpeakerId, roomThreadWorking } from "@/lib/room-threads";
 import { RoomQueueList, RoutedByLine, roomMemberQueueTitle } from "./RoomQueueList";
 import { JumpToLatestButton } from "./JumpToLatestButton";
 import { Select } from "./Select";
+import { RoomWorkingFolder, RoomWorkingFolderChip } from "./RoomWorkingFolder";
 
 export function RoomToolChip({ message, roomId }: { message: Message; roomId?: string }) {
   const { state, dispatch } = useStore();
@@ -142,41 +146,6 @@ export function RoomToolChip({ message, roomId }: { message: Message; roomId?: s
   );
 }
 
-function isPaletteColor(color: string): color is MausColor {
-  return (MAUS_COLOR_NAMES as readonly string[]).includes(color);
-}
-
-function ClusterLabel({ bot, name, color }: { bot?: Bot; name: string; color: string }) {
-  const known = isPaletteColor(color);
-  return (
-    <div className="mt-1 flex items-center gap-1.5 pl-0.5">
-      <BotAvatar
-        bot={bot ?? { name, color: color as Bot["color"] }}
-        state={normalizeState(bot?.mascotExpression) ?? "happy"}
-        size={16}
-        motion="none"
-        motionKey={0}
-        animated={false}
-        readable={known}
-      />
-      <span
-        className={cn("text-[11px] font-medium", known ? "bot-identity" : "text-ink-secondary")}
-        data-bot-color={known ? color : undefined}
-      >{name}</span>
-    </div>
-  );
-}
-
-function roomPin(group: Group, message: Message, dispatch: ReturnType<typeof useStore>["dispatch"]): PinAction | undefined {
-  if (window.ogb?.remoteClient?.active) return undefined;
-  const pinned = group.pinnedMessageId === message.id;
-  return {
-    pinned,
-    hint: t("room.pinHint"),
-    onToggle: () => dispatch({ type: "patchGroup", groupId: group.id, patch: { pinnedMessageId: pinned ? "" : message.id } }),
-  };
-}
-
 const USER_COLLAPSE_CHARS = 600;
 const USER_COLLAPSE_LINES = 8;
 
@@ -188,6 +157,7 @@ function RoomTextMessage({
   emerging,
   eager,
   onReply,
+  canReact,
 }: {
   group: Group;
   message: Message;
@@ -196,9 +166,12 @@ function RoomTextMessage({
   emerging: boolean;
   eager: boolean;
   onReply: (message: Message) => void;
+  canReact: boolean;
 }) {
   const { state, dispatch } = useStore();
   const user = m.role === "user";
+  const reactor = useReactor();
+  const speaker = otherSpeaker(m, state.config?.team && reactor !== "user" ? reactor : null);
   const rawText = user ? (m.text ?? "") : stripLeakedSystemHarnessMessages(m.text ?? "");
   const cited = user && m.text ? splitTranscriptCitations(m.text) : null;
   const attachments = user && m.text ? splitTranscriptAttachments(cited?.display ?? m.text) : null;
@@ -230,6 +203,7 @@ function RoomTextMessage({
   const replyGroup = useMemo(() => !user && botText.trim() ? replyAttachmentGroup(botText, m.attachments) : null, [user, botText, m.attachments]);
   return (
     <div {...{ [MESSAGE_ROW]: "" }} className={cn("group flex w-full flex-col", user ? "items-end" : "items-start")}>
+      {speaker && <div className="mb-0.5 px-1 text-[11.5px] font-medium text-ink-secondary">{speaker}</div>}
       <div className={cn("flex w-full items-end gap-1.5", user ? "justify-end" : "justify-start")}>
         {user && (
           <MessageActions side="user" menu={userMessageMenu({ messageId: m.id, pin })}>
@@ -319,6 +293,7 @@ function RoomTextMessage({
         {!user && (
           <MessageActions side="bot" forceOpen={viewRaw || speaking} menu={botMenu}>
             <ReplyAction onReply={() => onReply(m)} />
+            {canReact && m.from && <ReactAction threadId={group.threadId} message={m} />}
             {botText && <CopyButton text={botText} className={messageActionClass} />}
             {botText && viewRaw && <RawToggleAction active onToggle={() => setViewRaw(false)} className={messageActionClass} />}
             {botText && speaking && (
@@ -330,6 +305,7 @@ function RoomTextMessage({
           {formatTime(m.at)}
         </span>
       </div>
+      <ReactionChips threadId={group.threadId} message={m} bots={members} align={user ? "end" : "start"} canReact={canReact} />
       {!user && m.routedBy && <RoutedByLine routedBy={m.routedBy} />}
     </div>
   );
@@ -359,6 +335,7 @@ export const Transcript = memo(function Transcript({
   const { state, dispatch } = useStore();
   const showThreads = useShowThreads();
   const showToolCalls = showToolCallsEnabled(state.config);
+  const canReact = useCanReact(group.threadId);
   const memberOf = (id?: string) => members.find((b) => b.id === id);
   const folds = useMemo(() => roomTurnFolds(messages), [messages, locale]);
   const items = useMemo(() => groupActivityRuns(messages.filter(message =>
@@ -492,7 +469,7 @@ export const Transcript = memo(function Transcript({
             <CompactionChip message={m} />
           ) : m.kind === "digest" ? (
             showToolCalls ? <DigestChip message={m} /> : null
-          ) : m.kind === "text" && (m.text || m.attachments?.length) ? (
+          ) : m.publishedPage ? <PublishedPageCard message={m} /> : m.kind === "text" && (m.text || m.attachments?.length) ? (
             !user && isPureLeakedSystemHarnessMessage(m.text) && !m.attachments?.length ? null : (
               <RoomTextMessage
                 group={group}
@@ -502,6 +479,7 @@ export const Transcript = memo(function Transcript({
                 emerging={m.id === emergingId}
                 eager={m.id === newestMessageId || m.id === newestUserMessageId}
                 onReply={onReply}
+                canReact={canReact}
               />
             )
           ) : null;
@@ -536,6 +514,7 @@ export const Transcript = memo(function Transcript({
                       emerging={false}
                       eager={false}
                       onReply={onReply}
+                      canReact={canReact}
                     />
                   </div>
                 ))}
@@ -624,116 +603,6 @@ export function DefaultResponderSelect({ group, members }: { group: Group; membe
     </Select>
   );
 }
-
-/**
- * PATCHed directly, not via patchGroup: the server validates the path, and a rejected folder must not stick in local
- * state.
- */
-function RoomWorkingFolder({ group }: { group: Group }) {
-  const { capabilities } = useDesktopCapabilities();
-  const home = capabilities.host.homeDir;
-  const [draft, setDraft] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const canPick = Boolean(window.ogb?.pickFolder);
-  const pinned = group.pinnedCwd;
-  const locked = pinned !== undefined;
-  const shownCwd = locked ? (pinned ?? undefined) : group.cwd;
-
-  const save = async (cwd: string | null) => {
-    setSaving(true);
-    setError(null);
-    try {
-      await api(`/api/groups/${group.id}`, { method: "PATCH", body: JSON.stringify({ cwd }) });
-      setDraft(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setSaving(false);
-    }
-  };
-  const pick = async () => {
-    const chosen = await window.ogb?.pickFolder?.(group.cwd);
-    if (chosen) void save(chosen);
-  };
-
-  return (
-    <div className="rounded-xl bg-card p-4">
-      <div className="text-[15px] font-medium text-ink">{t("room.folder.title")}</div>
-      <div className="mt-0.5 text-[13px] text-ink-secondary">{t("room.folder.detail")}</div>
-      {locked ? (
-        <div className="mt-3">
-          <div className="truncate rounded-lg border border-hairline/40 bg-inset px-3 py-2 font-mono text-[12.5px] text-ink" title={shownCwd}>
-            {shownCwd ? shortPath(shownCwd, home) : <span className="text-ink-secondary">{t("room.folder.own")}</span>}
-          </div>
-          <div className="mt-2 text-[12px] text-ink-secondary">
-            {t("room.folder.locked")}
-          </div>
-        </div>
-      ) : canPick ? (
-        <div className="mt-3 flex items-center gap-2">
-          <div className="min-w-0 flex-1 truncate rounded-lg border border-hairline/40 bg-inset px-3 py-2 font-mono text-[12.5px] text-ink" title={group.cwd}>
-            {group.cwd ? shortPath(group.cwd, home) : <span className="text-ink-secondary">{t("room.folder.own")}</span>}
-          </div>
-          <button onClick={() => void pick()} disabled={saving} className="flex shrink-0 items-center gap-1.5 rounded-lg bg-raised px-3 py-2 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-50">
-            <FolderOpen size={14} /> {t("room.folder.choose")}
-          </button>
-          {group.cwd && (
-            <button onClick={() => void save(null)} disabled={saving} className="shrink-0 rounded-lg px-2 py-2 text-[13px] text-ink-secondary hover:text-ink disabled:opacity-50">
-              {t("keys.clear")}
-            </button>
-          )}
-        </div>
-      ) : (
-        <form
-          className="mt-3 flex items-center gap-2"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void save((draft ?? group.cwd ?? "").trim() || null);
-          }}
-        >
-          <input
-            className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2.5 font-mono text-[12.5px] text-ink placeholder:text-ink-secondary focus:outline-none"
-            placeholder={t("room.folder.placeholder")}
-            value={draft ?? group.cwd ?? ""}
-            onChange={(e) => setDraft(e.target.value)}
-          />
-          <button type="submit" disabled={saving || draft === null} className="shrink-0 rounded-lg bg-raised px-3 py-2 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-50">
-            {t("common.save")}
-          </button>
-        </form>
-      )}
-      {error && <div className="mt-2 text-[12px] text-danger">{error}</div>}
-    </div>
-  );
-}
-
-function RoomWorkingFolderChip({ group, onToggle }: { group: Group; onToggle: () => void }) {
-  const folder = group.pinnedCwd === undefined ? group.cwd : (group.pinnedCwd ?? undefined);
-  if (!folder) {
-    return (
-      <button
-        onClick={onToggle}
-        className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink"
-        title={t("room.folder.chipTitle")}
-      >
-        <Folder size={14} />
-      </button>
-    );
-  }
-  const name = folder.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || folder;
-  return (
-    <button
-      onClick={onToggle}
-      className="flex max-w-[180px] items-center gap-1.5 rounded-full border border-hairline/40 bg-raised/60 px-2.5 py-1 text-[12.5px] text-ink-secondary hover:bg-raised hover:text-ink"
-      title={t("chat.workingFolder", { folder })}
-    >
-      <Folder size={12} />
-      <span className="truncate font-mono">{name}</span>
-    </button>
-  );
-}
-
 
 type RoomSetupFields = {
   setupPending?: boolean;
@@ -1162,12 +1031,12 @@ export function GroupView({ group }: { group: Group }) {
 
   const lastGroupMessage = group.messages.at(-1);
   const toolInFlight = lastGroupMessage?.kind === "activity" && lastGroupMessage.tool?.ok === undefined;
-  const activity = liveActivityPhrases(lastGroupMessage);
+  const live = useTurnLive(group.threadId), activity = turnNowPhrases(live.status, lastGroupMessage);
   const awaited = members.find(
     (b) => b.id === awaitedMemberId(threadWorking, group.busyBotId, lastGroupMessage),
   );
   const waiting =
-    Boolean(speaker && showWorkingDots(true, group.messages.at(-1), speaker.id)) || awaited !== undefined;
+    Boolean(speaker && showWorkingDots(true, group.messages.at(-1), speaker.id, live.ended)) || awaited !== undefined;
   const wasWaiting = useRef(false);
   const [popping, setPopping] = useState<{ id: string; botId?: string } | null>(null);
   const poppingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1181,11 +1050,10 @@ export function GroupView({ group }: { group: Group }) {
     setPopping(null);
   }, [group.id, group.threadId]);
   useEffect(() => {
-    if (waiting) wasWaiting.current = true;
+    wasWaiting.current = waiting;
   }, [waiting]);
   useLayoutEffect(() => {
     if (lastGroupMessage?.role !== "bot" || lastGroupMessage.kind !== "text" || !wasWaiting.current) return;
-    wasWaiting.current = false;
     setPopping({
       id: lastGroupMessage.id,
       botId: lastGroupMessage.from?.botId,
@@ -1327,8 +1195,13 @@ export function GroupView({ group }: { group: Group }) {
       >
         <div data-roomhead-row className="flex items-center justify-between @max-3xl/roomhead:flex-wrap @max-3xl/roomhead:gap-y-1">
         <div data-roomhead-identity className="flex min-w-0 items-center gap-2 @max-3xl/roomhead:basis-full" style={headerNoDragStyle}>
-          <span className="truncate text-[15px] font-semibold text-ink">{group.name}</span>
-          {!setupPending && !group.dm && <GroupTaskPicker group={group} />}
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="truncate text-[15px] font-semibold text-ink">{group.name}</span>
+              {!setupPending && !group.dm && <GroupTaskPicker group={group} />}
+            </div>
+            {group.description && <p className="truncate text-[12px] leading-4 text-ink-secondary">{group.description}</p>}
+          </div>
         </div>
         <div
           data-roomhead-controls
@@ -1492,7 +1365,7 @@ export function GroupView({ group }: { group: Group }) {
         ) : (
         <div
           ref={transcriptRef}
-          className="glass-scroller-content chat-column flex w-full flex-col gap-3"
+          className="glass-scroller-content chat-column relative flex w-full flex-col gap-3"
           style={{ paddingBottom: composerDock.pad }}
           role="log"
           aria-live="off"
@@ -1561,8 +1434,9 @@ export function GroupView({ group }: { group: Group }) {
                 />
               }
               visible={presenceVisible}
-              phrases={activity.phrases}
-              phase={activity.phase}
+              phrases={activity?.phrases}
+              phase={activity?.phase}
+              size={activity?.size}
               seed={`${group.id}:${group.turnStartedAt ?? ""}:${speaker?.id ?? ""}`}
               answering={popping !== null}
               since={speaker ? group.turnStartedAt ?? null : null}

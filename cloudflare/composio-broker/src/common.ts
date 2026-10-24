@@ -3,9 +3,16 @@ import { z } from "zod";
 export interface InstallationRow {
   id: string;
   composio_user_id: string;
+  /** Absent on a database that has not run migration 0004 yet. */
+  shared_user_id?: string | null;
   session_id: string | null;
   disabled_at: number | null;
   last_seen_at?: number;
+}
+
+/** The Composio user whose connected accounts the installation reaches: the one shared with it, else its own. */
+export function actingUser(installation: Pick<InstallationRow, "composio_user_id" | "shared_user_id">) {
+  return installation.shared_user_id ?? installation.composio_user_id;
 }
 
 /** The installation columns the app-event routes read. authenticate() leaves them out, so the
@@ -13,6 +20,7 @@ export interface InstallationRow {
 export interface EventInstallation {
   id: string;
   composio_user_id: string;
+  shared_user_id?: string | null;
   cloud_machine_id: string | null;
   events_polled_at: number | null;
   poll_lease_id: string | null;
@@ -49,9 +57,7 @@ export function utcDay(ms: number) {
 }
 
 export async function eventInstallation(env: Env, id: string) {
-  return env.DB.prepare(
-    "SELECT id, composio_user_id, cloud_machine_id, events_polled_at, poll_lease_id, poll_lease_until, triggers_swept_at FROM installations WHERE id = ?",
-  ).bind(id).first<EventInstallation>();
+  return env.DB.prepare("SELECT * FROM installations WHERE id = ?").bind(id).first<EventInstallation>();
 }
 
 export function json(value: unknown, status = 200, headers: Record<string, string> = {}) {

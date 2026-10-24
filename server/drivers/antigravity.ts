@@ -45,7 +45,8 @@ const managedAsset = resolveAntigravityReleaseAsset();
 
 const support: AcpSupport = {
   driverKind: "antigravityAgent",
-  displayName: "Antigravity",
+  // Named for what people look for: Google moved personal Gemini subscriptions (free, AI Pro, AI Ultra) from Gemini CLI to Antigravity on 2026-06-18.
+  displayName: "Google Gemini (Antigravity)",
   models: STATIC_ANTIGRAVITY_MODELS,
   defaultCli: "agy", // migration alias: resolveAntigravityRuntime treats it as managed
   nativeSource: "antigravity.acp",

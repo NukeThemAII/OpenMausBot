@@ -76,7 +76,7 @@ const emptyFile = (): TeamMemoryFile => ({ version: 2, sections: Object.create(n
 const clean = (value: unknown, max: number): string => (typeof value === "string" ? redactSecretsInText(value).replace(/\s+/g, " ").trim().slice(0, max + 1) : "");
 export class TeamMemoryConflict extends Error {
   readonly status = 409;
-  constructor(message = "This team memory changed. Reload it before saving or approving.") { super(message); }
+  constructor(message = "This department memory changed. Reload it before saving or approving.") { super(message); }
 }
 export function teamMemoryRevision(entry: TeamMemoryEntry): string {
   const { revision: _revision, ...stored } = entry;
@@ -146,6 +146,27 @@ export class TeamMemory {
       if (writing) throw error;
       return [];
     }
+  }
+
+  /** Another server's entries for this team, as they are there: one this team already has, by id or by its key, stays
+   * as it is here. How many were added. */
+  adopt(section: string | null | undefined, entries: readonly unknown[]): number {
+    const held = this.entries(section, true);
+    const ids = new Set(held.map((entry) => entry.id));
+    const keys = new Set(held.filter(active).map((entry) => entry.key));
+    let added = 0;
+    for (const raw of entries) {
+      const parsed = entrySchema.safeParse(raw);
+      if (!parsed.success || !active(parsed.data)) continue;
+      const entry = { ...parsed.data, key: parsed.data.key ?? `${parsed.data.kind}:${parsed.data.name.toLowerCase()}` };
+      if (ids.has(entry.id) || keys.has(entry.key)) continue;
+      held.push(entry);
+      ids.add(entry.id);
+      keys.add(entry.key);
+      added++;
+    }
+    if (added) this.save();
+    return added;
   }
 
   list(section: string | null | undefined, includeHistory = false): TeamMemoryEntry[] {

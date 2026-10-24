@@ -127,7 +127,7 @@ describe("surfacePrompt", () => {
     const text = surfacePrompt({ computer: null, browser: true });
     expect(text).toMatch(/happens in the built-in browser tab/);
     expect(text).toMatch(/no desktop, file or shell computer/);
-    expect(text).toMatch(/Browser tab of the Computer panel/);
+    expect(text).toMatch(/Browser tab of the Screen panel/);
     expect(text).toMatch(/say in one short sentence where you are working/);
     expect(text).not.toMatch(/happens on the cloud computer/);
   });
@@ -166,10 +166,10 @@ describe("surfacePrompt", () => {
     expect(text).not.toContain("ask the user to change where this conversation works");
   });
 
-  it("sends the person to the Computer panel, the place control both interface modes show", () => {
+  it("sends the person to the Screen panel, the place control both interface modes show", () => {
     const text = surfacePrompt({ computer: "cloud", browser: false }, { pinned: "cloud" });
-    expect(text).toContain("explain the mismatch and ask the user to change where this conversation works in the Computer panel");
-    expect(text).toContain("changing places requires the user's choice in the Computer panel, not a different tool name");
+    expect(text).toContain("explain the mismatch and ask the user to change where this conversation works in the Screen panel");
+    expect(text).toContain("changing places requires the user's choice in the Screen panel, not a different tool name");
     expect(text).not.toContain("computer selector");
   });
 
@@ -234,7 +234,7 @@ describe("cloudPlaceRefusal", () => {
   it("refuses an engine without computer tools as one state, its fix the same whatever the source", () => {
     const refused = cloudPlaceRefusal(engine({ computerMcp: false }), "works-on", "Scout")!;
     expect(refused).toMatchObject({ name: "PlaceUnavailableError", place: "cloud", row: { state: "cc-cannot", params: { bot: "Scout", model: "Llama" }, source: "works-on" } });
-    expect(refused.message).toBe("Llama can't use a computer. Choose a model that can, such as Claude or ChatGPT. Choose another model in Scout's settings.");
+    expect(refused.message).toBe("Llama can't use a desktop. Choose a model that can, such as Claude or ChatGPT. Choose another model in Scout's settings.");
     for (const source of ["pin", "routine", "room"] as const) {
       expect(cloudPlaceRefusal(engine({}), source, "Scout")?.message).toBe(refused.message);
     }
@@ -245,13 +245,13 @@ describe("computerToolsRefusal", () => {
   it("refuses a Tool selection without the computer with one action: the setting that changes it", () => {
     const refused = computerToolsRefusal({ deny: ["mcp:computer:*"] }, "works-on", "Scout")!;
     expect(refused).toMatchObject({ name: "PlaceUnavailableError", place: "cloud", row: { state: "cc-tools-off", params: { bot: "Scout" }, source: "works-on" } });
-    const line = "What Scout can use doesn't include a computer. Change what Scout can use in its settings.";
+    const line = "What Scout can use doesn't include a desktop. Change what Scout can use in its settings.";
     expect(refused.message).toBe(line);
     for (const source of ["pin", "routine", "room"] as const) {
       expect(computerToolsRefusal({ allow: ["native:*"] }, source, "Scout")?.message).toBe(line);
     }
     expect(computerToolsRefusal({ allow: ["native:*"] }, "auto-pin", "Scout")?.message)
-      .toBe("What Scout can use doesn't include a computer. This conversation is back on Auto. Change what Scout can use in its settings.");
+      .toBe("What Scout can use doesn't include a desktop. This conversation is back on Auto. Change what Scout can use in its settings.");
   });
 
   it("lets every selection that keeps a computer tool through", () => {
@@ -265,18 +265,18 @@ describe("placeUnavailable", () => {
   it("words a passing cause's way on by where the place came from, and never says Set Works on to Auto", () => {
     const cause = (source: "works-on" | "pin" | "auto-pin" | "routine" | "room") =>
       placeUnavailable("cloud", { state: "cc-no-start", params: { bot: "Scout" }, source }).message;
-    expect(cause("works-on")).toBe("Scout's cloud computer didn't start. Try again.");
-    expect(cause("pin")).toBe("Scout's cloud computer didn't start. Clear this conversation's place in the composer to continue.");
-    expect(cause("auto-pin")).toBe("Scout's cloud computer didn't start. This conversation is back on Auto. Send your message again.");
-    expect(cause("routine")).toBe("Scout's cloud computer didn't start. Change where this routine runs.");
-    expect(cause("room")).toBe("Scout's cloud computer didn't start.");
-    expect(placeUnavailable("vm", { state: "place-failed", params: { bot: "Scout", cause: "The Local VM is not ready." }, source: "works-on" }))
-      .toMatchObject({ name: "PlaceUnavailableError", place: "vm", message: "The Local VM is not ready. Check it in the Computer panel." });
+    expect(cause("works-on")).toBe("Scout's cloud desktop didn't start. Try again.");
+    expect(cause("pin")).toBe("Scout's cloud desktop didn't start. Clear this conversation's place in the composer to continue.");
+    expect(cause("auto-pin")).toBe("Scout's cloud desktop didn't start. This conversation is back on Auto. Send your message again.");
+    expect(cause("routine")).toBe("Scout's cloud desktop didn't start. Change where this routine runs.");
+    expect(cause("room")).toBe("Scout's cloud desktop didn't start.");
+    expect(placeUnavailable("vm", { state: "place-failed", params: { bot: "Scout", cause: "The private desktop isn't ready." }, source: "works-on" }))
+      .toMatchObject({ name: "PlaceUnavailableError", place: "vm", message: "The private desktop isn't ready. Check it in the Screen panel." });
   });
 
   it("keeps the whole cause: no row cuts it", () => {
     const long = `${"x".repeat(400)}.`;
     expect(placeUnavailable("vm", { state: "place-failed", params: { bot: "Scout", cause: long }, source: "works-on" }).message)
-      .toBe(`${long} Check it in the Computer panel.`);
+      .toBe(`${long} Check it in the Screen panel.`);
   });
 });

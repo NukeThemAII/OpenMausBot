@@ -5,6 +5,7 @@ import { appEventStats, composioWebhook, pollEvents, presentCloudGrant, queueTes
 import {
   ACCOUNT_ID,
   MAX_CONNECTED_ACCOUNT_PAGES,
+  actingUser,
   composioRequest,
   json,
   JSON_HEADERS,
@@ -15,6 +16,7 @@ import {
   eventInstallation,
   type InstallationRow,
 } from "./common";
+import { adoptSharedUser, me, shareUser } from "./sharing";
 import { createTrigger, deleteTrigger, getTriggerType, listTriggers, listTriggerTypes, updateTrigger } from "./triggers";
 
 interface ComposioSession {
@@ -313,13 +315,14 @@ async function ensureSession(installation: InstallationRow, env: Env, ctx: Execu
 
 async function verifySession(installation: InstallationRow, env: Env, ctx: ExecutionContext) {
   const authConfigs = await projectAuthConfigs(env);
+  const user = actingUser(installation);
   let session = installation.session_id ? await getSession(env, installation.session_id) : null;
-  if (session && sessionReady(session, authConfigs)) {
+  if (session && sessionReady(session, authConfigs) && (!session.userId || session.userId === user)) {
     touchLastSeen(installation, env, ctx);
   } else {
     // Connected accounts are attached to this stable Composio user ID, so a
     // Session recreated for it keeps every grant.
-    session = await createSession(env, installation.composio_user_id, authConfigs);
+    session = await createSession(env, user, authConfigs);
     multiAccountUpgradeAttempted.add(session.sessionId);
     authConfigUpgradeAttempted.add(authConfigsKey(session.sessionId, authConfigs));
     await env.DB.prepare("UPDATE installations SET session_id = ?, last_seen_at = ? WHERE id = ?")
@@ -333,9 +336,8 @@ async function verifySession(installation: InstallationRow, env: Env, ctx: Execu
 async function authenticate(request: Request, env: Env) {
   const token = request.headers.get("authorization")?.match(/^Bearer ([0-9a-f]{64})$/)?.[1];
   if (!token) return null;
-  const row = await env.DB.prepare(
-    "SELECT id, composio_user_id, session_id, disabled_at, last_seen_at FROM installations WHERE token_hash = ?",
-  ).bind(await sha256(token)).first<InstallationRow>();
+  // Every column, so a database that has not run a later migration still answers.
+  const row = await env.DB.prepare("SELECT * FROM installations WHERE token_hash = ?").bind(await sha256(token)).first<InstallationRow>();
   return row && row.disabled_at === null ? row : null;
 }
 
@@ -522,7 +524,7 @@ async function connectedServices(
   const session = await ensureSession(installation, env, ctx);
   const [toolkits, accounts] = await Promise.all([
     listSessionToolkits(env, session.sessionId),
-    listConnectedAccounts(env, installation.composio_user_id, []).catch(() => []),
+    listConnectedAccounts(env, actingUser(installation), []).catch(() => []),
   ]);
   return json({
     configured: true,
@@ -538,7 +540,7 @@ async function connectionStatus(url: URL, installation: InstallationRow, env: En
       env,
       `/tool_router/session/${encodeURIComponent(session.sessionId)}/toolkits?${new URLSearchParams({ limit: "50", toolkits: slugs.join(",") })}`,
     ),
-    listConnectedAccounts(env, installation.composio_user_id, slugs).catch(() => []),
+    listConnectedAccounts(env, actingUser(installation), slugs).catch(() => []),
   ]);
   if (!response.ok) return json({ error: await upstreamError(response, "Connection status unavailable") }, 502);
   const body = toolkitPageSchema.parse(await response.json());
@@ -568,7 +570,7 @@ async function authorize(
   const session = await ensureSession(installation, env, ctx);
   // Listing can be denied to the broker's key scope; authorize must still
   // work, with the alias guardrails degrading to first-account behavior.
-  const accounts = await listConnectedAccounts(env, installation.composio_user_id, [slug]).catch(() => []);
+  const accounts = await listConnectedAccounts(env, actingUser(installation), [slug]).catch(() => []);
   const serviceAccounts = accounts.filter((account) => account.toolkit?.slug?.toLowerCase() === slug);
   const plan = planAccountLink(
     slug,
@@ -622,7 +624,7 @@ async function disconnectAccount(
 ) {
   if (!ACCOUNT_ID.test(accountId)) return json({ error: "Invalid connected-account ID" }, 400);
   await ensureSession(installation, env, ctx);
-  const accounts = await listConnectedAccounts(env, installation.composio_user_id, [slug]);
+  const accounts = await listConnectedAccounts(env, actingUser(installation), [slug]);
   const owned = accounts.some((account) =>
     account.id === accountId && account.toolkit?.slug?.toLowerCase() === slug
   );
@@ -693,14 +695,20 @@ async function route(request: Request, env: Env, ctx: ExecutionContext) {
   const url = new URL(request.url);
   if (request.method === "GET" && url.pathname === "/health") return json({ service: "openmausbot-composio", ready: Boolean(env.COMPOSIO_API_KEY) });
   if (request.method === "POST" && url.pathname === "/v1/installations") return register(request, env);
-  if (request.method === "POST" && url.pathname === "/v1/composio/webhook") return composioWebhook(request, env);
+  if (request.method === "POST" && url.pathname === "/v1/composio/webhook") return composioWebhook(request, env, ctx);
   if (request.method === "GET" && url.pathname === "/v1/stats/app-events") return appEventStats(request, url, env);
   if (!url.pathname.startsWith("/v1/")) return json({ error: "not found" }, 404);
   const installation = await authenticate(request, env);
   if (!installation) return json({ error: "unauthorized" }, 401);
   const appEvents = await appEventRoute(request, url, installation, env, ctx);
   if (appEvents) return appEvents;
-  if (request.method === "GET" && url.pathname === "/v1/me") return json({ installationId: installation.id });
+  if (request.method === "GET" && url.pathname === "/v1/me") return me(installation);
+  if (request.method === "POST" && url.pathname === "/v1/installation/share") return shareUser(request, installation, env);
+  if (request.method === "POST" && url.pathname === "/v1/installation/adopt") {
+    const adopted = await adoptSharedUser(request, installation, env);
+    if (adopted.ok) forgetSession(installation.session_id ?? "");
+    return adopted.response;
+  }
   if (request.method === "POST" && url.pathname === "/v1/mcp") return proxyMcp(request, installation, env, ctx);
   if (request.method === "GET" && url.pathname === "/v1/catalog") return catalog(env, url);
   if (request.method === "GET" && url.pathname === "/v1/connectors/connected") return connectedServices(installation, env, ctx);

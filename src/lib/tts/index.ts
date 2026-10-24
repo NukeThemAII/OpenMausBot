@@ -1,6 +1,7 @@
 // Audio comes from the harness, which holds the voice keys: the renderer never sees them or calls a voice provider.
 
 import { localSystemVoiceActive, remoteSystemVoice, resolveLocalSystemVoice } from "@/lib/local-voice";
+import { recordBlockTiming, recordPrepared, recordSpeakEnter } from "../voice-latency-probe";
 
 export type SpeechStatus = "idle" | "preparing" | "speaking";
 
@@ -22,6 +23,7 @@ type TtsPrepareBody = { ready?: boolean; utterances?: string[]; error?: string }
 type TtsErrorBody = { error?: string };
 
 const IDLE: SpeechSnapshot = { status: "idle" };
+const PREFETCH_WINDOW = 3;
 
 export class Speaker {
   private snapshot: SpeechSnapshot = IDLE;
@@ -98,6 +100,7 @@ export class Speaker {
   }
 
   async speak(text: string, opts: SpeakOptions = {}): Promise<void> {
+    recordSpeakEnter(opts.messageId);
     this.stop();
     const mine = this.token;
     const controller = new AbortController();
@@ -113,6 +116,7 @@ export class Speaker {
     let utterances: string[];
     try {
       utterances = await this.prepare(text, opts.voiceId, controller.signal);
+      recordPrepared(opts.messageId, utterances.length);
     } catch (e) {
       if (live()) this.set({ ...IDLE, error: e instanceof Error ? e.message : String(e) });
       if (this.request === controller) this.request = null;
@@ -126,15 +130,23 @@ export class Speaker {
     }
 
     type Rendered = { blob: Blob; error?: never } | { blob?: never; error: unknown };
-    const render = (utterance: string): Promise<Rendered> =>
-      this.render(utterance, opts.voiceId, controller.signal).then(
-        (blob) => ({ blob }),
+    const render = (utterance: string, block: number): Promise<Rendered> => {
+      recordBlockTiming(opts.messageId, block, "renderStart");
+      return this.render(utterance, opts.voiceId, controller.signal).then(
+        (blob) => {
+          recordBlockTiming(opts.messageId, block, "renderDone");
+          return { blob };
+        },
         (error: unknown) => ({ error }),
       );
-    let next: Promise<Rendered> | null = render(utterances[0]);
+    };
+    const inFlight: Promise<Rendered>[] = [];
     for (let i = 0; i < utterances.length; i += 1) {
-      const current = next;
-      next = i + 1 < utterances.length ? render(utterances[i + 1]) : null;
+      while (inFlight.length < PREFETCH_WINDOW && i + inFlight.length < utterances.length) {
+        const block = i + inFlight.length;
+        inFlight.push(render(utterances[block], block));
+      }
+      const current = inFlight.shift();
       if (!current) break;
       const rendered = await current;
       if ("error" in rendered) {
@@ -144,14 +156,16 @@ export class Speaker {
             error: rendered.error instanceof Error ? rendered.error.message : String(rendered.error),
           });
         }
+        controller.abort();
         if (this.request === controller) this.request = null;
         return;
       }
       if (!live()) return;
       this.set({ status: "speaking", botId: opts.botId, messageId: opts.messageId, caption: utterances[i] });
-      const finished = await this.play(rendered.blob, live);
+      const finished = await this.play(rendered.blob, live, opts.messageId, i);
       if (!finished || !live()) {
         if (live()) this.set({ ...IDLE, error: "The generated voice clip couldn't be played." });
+        controller.abort();
         if (this.request === controller) this.request = null;
         return;
       }
@@ -243,7 +257,7 @@ export class Speaker {
     return res.blob();
   }
 
-  private play(blob: Blob, live: () => boolean): Promise<boolean> {
+  private play(blob: Blob, live: () => boolean, probeMessageId?: string, probeBlock?: number): Promise<boolean> {
     return new Promise((resolve) => {
       if (!live()) return resolve(false);
       this.teardownAudio();
@@ -257,6 +271,9 @@ export class Speaker {
         settled = true;
         audio.onended = null;
         audio.onerror = null;
+        if (probeMessageId !== undefined && probeBlock !== undefined) {
+          recordBlockTiming(probeMessageId, probeBlock, "audioEnd");
+        }
         if (this.settlePlayback === done) this.settlePlayback = null;
         if (this.audio === audio) this.teardownAudio();
         resolve(ok);
@@ -264,7 +281,14 @@ export class Speaker {
       this.settlePlayback = done;
       audio.onended = () => done(true);
       audio.onerror = () => done(false);
-      audio.play().catch(() => done(false));
+      audio.play().then(
+        () => {
+          if (probeMessageId !== undefined && probeBlock !== undefined) {
+            recordBlockTiming(probeMessageId, probeBlock, "audioStart");
+          }
+        },
+        () => done(false),
+      );
     });
   }
 }

@@ -102,6 +102,31 @@ describe("engines set up with a key in Settings", () => {
     expect(markup).not.toContain("Open install in Terminal");
     expect(markup).not.toContain("config.json");
   });
+
+  it("still offers the install when a key engine's own CLI is missing, and the key once it is installed", () => {
+    vi.stubGlobal("window", { ogb: { platform: "darwin" } });
+    const dsh = (snapshot: InstanceInfo["snapshot"]): InstanceInfo => ({
+      ...instance(snapshot),
+      instanceId: "deepseek",
+      driverKind: "deepseekAgent",
+      displayName: "DeepSeek Harness",
+      install: {
+        command: { linux: "npm install -g @deepseek-ai/dsh", darwin: "npm install -g @deepseek-ai/dsh", win32: "npm install -g @deepseek-ai/dsh" },
+        docsUrl: "https://github.com/deepseek-ai/deepseek-harness",
+        needsNode: true,
+        settings: "connections",
+      },
+    });
+    const missing = renderToStaticMarkup(createElement(StoreProvider, null, createElement(EngineSetup, { instance: dsh({ state: "unavailable", reason: "dsh not found" }) })));
+    expect(missing).toContain("npm install -g @deepseek-ai/dsh");
+    expect(missing).not.toContain("needs an API key");
+    const keyless = renderToStaticMarkup(createElement(StoreProvider, null, createElement(EngineSetup, { instance: dsh({ state: "available", authenticated: false, version: "0.2.1" }) })));
+    expect(keyless).toContain("DeepSeek Harness needs an API key");
+    expect(keyless).toContain("Open API keys");
+    expect(keyless).not.toContain("Terminal");
+    // No key is saved, so nothing was rejected.
+    expect(keyless).not.toContain("rejected the saved key");
+  });
 });
 
 describe("install from Settings on the server", () => {
@@ -123,7 +148,7 @@ describe("install from Settings on the server", () => {
 
   it("offers one click on the server and keeps the terminal command behind a disclosure", () => {
     const markup = render(npmEngine({ state: "unavailable", reason: "`kimi` CLI not found" }));
-    expect(markup).toContain("Install Kimi on this server");
+    expect(markup).toContain("Install Kimi here");
     expect(markup).toContain("as its own user");
     expect(markup).toContain("Prefer a terminal?");
     expect(markup).toContain("npm install -g kimi-fixture");
@@ -132,13 +157,13 @@ describe("install from Settings on the server", () => {
 
   it("falls back to the terminal command when the server cannot install", () => {
     const markup = render(npmEngine({ state: "unavailable", reason: "`kimi` CLI not found" }, false));
-    expect(markup).not.toContain("on this server");
+    expect(markup).not.toContain("Install Kimi here");
     expect(markup).toContain("npm install -g kimi-fixture");
   });
 
   it("never offers an install when only sign-in is missing", () => {
     const markup = render(npmEngine({ state: "available", authenticated: false, version: "1.0.0" }));
-    expect(markup).not.toContain("Install Kimi on this server");
+    expect(markup).not.toContain("Install Kimi here");
     expect(markup).toContain("kimi login");
   });
 
@@ -146,10 +171,10 @@ describe("install from Settings on the server", () => {
     const update = { title: "Kimi update available", message: "Newer models need it.", command: "npm install -g kimi-fixture@latest" };
     vi.stubGlobal("window", { ogb: { platform: "linux" } });
     const withServer = renderToStaticMarkup(createElement(StoreProvider, null, createElement(EngineUpdateNotice, { update, instance: npmEngine({ state: "available", authenticated: true }) })));
-    expect(withServer).toContain("Update Kimi on this server");
+    expect(withServer).toContain("Update Kimi here");
     expect(withServer).toContain("Prefer a terminal?");
     const without = renderToStaticMarkup(createElement(StoreProvider, null, createElement(EngineUpdateNotice, { update, instance: npmEngine({ state: "available", authenticated: true }, false) })));
-    expect(without).not.toContain("on this server");
+    expect(without).not.toContain("Update Kimi here");
     expect(without).toContain("npm install -g kimi-fixture@latest");
   });
 });

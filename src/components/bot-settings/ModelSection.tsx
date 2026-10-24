@@ -20,9 +20,9 @@ export function ModelSection({ bot }: { bot: Bot }) {
           contained
           label={
             <div>
-              <div className="text-[15px] font-medium text-ink">Default model</div>
+              <div className="text-[15px] font-medium text-ink">{t("model.section.default")}</div>
               <div className="mt-0.5 text-[13px] text-ink-secondary">
-                {draft ? "Starting model for the new bot and its threads." : "For groups and every thread that uses the bot's model. A thread keeps its own model only when you pick one in it."}
+                {draft ? t("model.section.starting") : t("model.section.threads")}
               </div>
               <ProposalStatus bot={bot} kind="chief" />
             </div>
@@ -36,10 +36,10 @@ export function ModelSection({ bot }: { bot: Bot }) {
         className="rounded-xl bg-card p-4"
         label={
           <div>
-            <div className="text-[15px] font-medium text-ink">{modelVariants ? "Reasoning" : "Effort"}</div>
+            <div className="text-[15px] font-medium text-ink">{modelVariants ? t("model.simple.reasoning") : t("model.section.effort")}</div>
             {/* Codex applies a level to the whole thread and cannot take one back, so this says what the app sends, not where the engine ends up. */}
             <div className="mt-0.5 text-[13px] text-ink-secondary">
-              {modelVariants ? (draft ? "Starting reasoning variant for the new bot." : "For groups and every thread that uses the bot's model.") : `How hard this bot thinks in groups and every thread that uses its model${bot.modelSelection.effort ? "" : " (Default: no level is sent)"}`}
+              {modelVariants ? (draft ? t("model.section.startingReasoning") : t("model.section.threads")) : t(bot.modelSelection.effort ? "model.section.effortHelp" : "model.section.effortHelpDefault")}
             </div>
             <ProposalStatus bot={bot} kind="chief" />
           </div>
@@ -90,13 +90,11 @@ function FallbackChain({ bot, onChange }: { bot: Bot; onChange: (fallback: Bot["
 
   return (
     <div className="rounded-xl bg-card p-4">
-      <div className="text-[15px] font-medium text-ink">Backup models for this bot</div>
+      <div className="text-[15px] font-medium text-ink">{t("model.fallback.title")}</div>
       <div className="mt-0.5 text-[13px] text-ink-secondary">
-        When Automatic recovery is enabled in App Settings, try these models in order only if the provider
-        proves the request never started. Work that may have run is not replayed. Only that thread switches;
-        bot defaults and other threads stay unchanged. Backup provider charges may apply.
+        {t("model.fallback.help")}
       </div>
-      {!state.config?.automaticRecovery?.enabled && <p className="mt-2 text-[12px] text-ink-secondary">Automatic recovery is off. This list stays inactive until you enable it in App Settings.</p>}
+      {!state.config?.automaticRecovery?.enabled && <p className="mt-2 text-[12px] text-ink-secondary">{t("model.fallback.off")}</p>}
       {chain.length > 0 && (
         <ol className="mt-3 flex flex-col gap-1">
           {chain.map((entry, index) => (
@@ -107,7 +105,7 @@ function FallbackChain({ bot, onChange }: { bot: Bot; onChange: (fallback: Bot["
               <button
                 type="button"
                 onClick={() => onChange(chain.filter((candidate) => candidate.instanceId !== entry.instanceId))}
-                aria-label={`Remove ${nameOf(entry.instanceId)} from the fallback list`}
+                aria-label={t("model.fallback.remove", { name: nameOf(entry.instanceId) })}
                 className="shrink-0 rounded p-0.5 text-ink-secondary hover:text-ink"
               >
                 <X size={13} />
@@ -121,10 +119,10 @@ function FallbackChain({ bot, onChange }: { bot: Bot; onChange: (fallback: Bot["
           <Select size="sm"
             value=""
             onChange={(event) => add(event.target.value)}
-            aria-label="Add a fallback engine"
+            aria-label={t("model.fallback.add")}
             disabled={available.length === 0}
           >
-            <option value="">{available.length === 0 ? "No other engine is available" : "Add an engine…"}</option>
+            <option value="">{available.length === 0 ? t("model.fallback.none") : t("model.fallback.addOption")}</option>
             {available.map((instance) => (
               <option key={instance.instanceId} value={instance.instanceId}>
                 {instance.displayName}

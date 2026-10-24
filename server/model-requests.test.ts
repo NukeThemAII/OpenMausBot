@@ -77,7 +77,7 @@ describe("ModelRequestService", () => {
       botId: bot.id, threadId: bot.threadId,
       selection: { instanceId: "codex", model: "gpt-fixture" }, reason: "asked",
     });
-    expect(proposal.detail).toContain("Default engine/model:");
+    expect(proposal.detail).toContain("Default AI and model:");
     expect(proposal.detail).toContain("Loses peer coordination and every team tool");
     expect(proposal.detail).toContain("coordinate_bots");
     expect(proposal.detail).toContain("Loses approval levels: edits.");
@@ -97,7 +97,7 @@ describe("ModelRequestService", () => {
       botId: bot.id, threadId: bot.threadId,
       selection: { instanceId: "claude", model: "opus" }, reason: "asked",
     });
-    expect(proposal.detail).toContain("Default engine/model:");
+    expect(proposal.detail).toContain("Default AI and model:");
     expect(proposal.detail).not.toContain("peer coordination");
     expect(proposal.detail).not.toContain("approval levels");
   });

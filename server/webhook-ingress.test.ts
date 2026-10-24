@@ -92,6 +92,63 @@ describe("webhook-only ingress", () => {
     expect(queued.at(-1)?.prompt).toContain('"ticket": "42"');
   });
 
+  it("awaits a room delivery and answers 202 only after the post lands; a failing sink is not 2xx", async () => {
+    let finish: () => void = () => {};
+    let gate = new Promise<void>((resolve) => (finish = resolve));
+    const roomDir = mkdtempSync(join(tmpdir(), "omb-webhook-room-"));
+    const roomQueued: unknown[] = [];
+    const posts: Array<{ payload: Record<string, unknown> }> = [];
+    let sinkFails = true;
+    const rooms = new WebhookManager({
+      file: join(roomDir, "webhooks.json"),
+      botState: () => "ready",
+      enqueue: (input) => {
+        roomQueued.push(input);
+        return { id: `room-run-${roomQueued.length}` };
+      },
+      roomMember: () => ({ ok: true }),
+      roomPost: async (_trigger, payload) => {
+        await gate;
+        if (sinkFails) throw Object.assign(new Error("the voice engine is asleep"), { status: 503 });
+        posts.push({ payload: payload as Record<string, unknown> });
+        return { posted: true, attachments: 1, threadId: "room-7-thread" };
+      },
+    });
+    const created = rooms.create({ name: "Room brief", prompt: "", botId: "maus-1", delivery: "post", groupId: "room-7" });
+    const receiver = await listenWebhookIngress(rooms, { port: 0 });
+    const send = (deliveryId: string) => fetch(`${receiver.baseUrl}/hooks/${created.webhook.endpointId}/${created.secret}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": deliveryId },
+      body: JSON.stringify({ text: "Deploy done", voiceNote: "deploy done" }),
+    });
+    try {
+      const failing = send("room-evt-1");
+      finish();
+      expect((await failing).status).toBe(503);
+      expect(posts).toHaveLength(0);
+      expect(roomQueued).toHaveLength(0);
+      expect(rooms.listAttempts().at(-1)).toMatchObject({ outcome: "rejected", statusCode: 503 });
+
+      sinkFails = false;
+      gate = new Promise<void>((resolve) => (finish = resolve));
+      const accepted = send("room-evt-2");
+      const early = await Promise.race([accepted.then(() => "answered"), new Promise((resolve) => setTimeout(() => resolve("pending"), 50))]);
+      expect(early).toBe("pending");
+      expect(posts).toHaveLength(0);
+      finish();
+      const response = await accepted;
+      expect(response.status).toBe(202);
+      expect(await response.json()).toMatchObject({ accepted: true, duplicate: false, threadId: "room-7-thread" });
+      expect(posts).toHaveLength(1);
+      expect(posts[0]?.payload).toMatchObject({ text: "Deploy done", voiceNote: "deploy done" });
+      expect(roomQueued).toHaveLength(0);
+      expect(created.webhook.groupId).toBe("room-7");
+    } finally {
+      await new Promise<void>((resolve) => receiver.server.close(() => resolve()));
+      rmSync(roomDir, { recursive: true, force: true });
+    }
+  });
+
   it("does not deduplicate separate requests that reuse a generic payload id", async () => {
     const credential = webhookCredential(ingress.baseUrl, endpointId, secret);
     const before = queued.length;

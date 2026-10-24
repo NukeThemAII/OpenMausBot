@@ -26,7 +26,6 @@ export interface LiveMediaState {
   heard: string;
   notice: string | null;
   needsKey: boolean;
-  needsPro: boolean;
   busyWith: LiveCallState | null;
   action: LiveCallAction | null;
   hangingUp: boolean;
@@ -46,7 +45,7 @@ export interface LiveMediaDeps {
 
 const IDLE: LiveMediaState = {
   phase: "idle", callId: null, botId: null, threadId: null, startedAt: null, muted: false,
-  caption: "", heard: "", notice: null, needsKey: false, needsPro: false, busyWith: null, action: null, hangingUp: false,
+  caption: "", heard: "", notice: null, needsKey: false, busyWith: null, action: null, hangingUp: false,
 };
 const CAPTION_CHARS = 240;
 const HEARD_CHARS = 160;
@@ -241,10 +240,9 @@ export async function startLiveCall(target: { botId: string; threadId: string })
     }
   } catch (error) {
     if (mine !== generation) return;
-    const body = error instanceof ApiError ? (error.body as { needsKey?: boolean; needsPro?: boolean; activeCall?: LiveCallState } | undefined) : undefined;
+    const body = error instanceof ApiError ? (error.body as { needsKey?: boolean; activeCall?: LiveCallState } | undefined) : undefined;
     if (state.callId) void endOnServer(state.callId);
     release();
-    if (body?.needsPro) return set({ ...IDLE, needsPro: true, botId: target.botId, threadId: target.threadId });
     if (body?.needsKey) return set({ ...IDLE, needsKey: true, botId: target.botId, threadId: target.threadId });
     if (body?.activeCall) return set({ ...IDLE, phase: "failed", botId: target.botId, threadId: target.threadId, busyWith: body.activeCall, notice: busyText(body.activeCall) });
     const failed = { ...IDLE, phase: "failed" as const, botId: target.botId, threadId: target.threadId };
@@ -304,7 +302,7 @@ export function handleLiveCallKey(event: ChordEvent, isMac: boolean): boolean {
 }
 
 export function dismissStartPrompt(botId: string): void {
-  if ((state.needsKey || state.needsPro) && state.botId === botId) dismissLiveNotice();
+  if (state.needsKey && state.botId === botId) dismissLiveNotice();
 }
 
 export function takeLiveCallAction(): void {
@@ -317,7 +315,7 @@ export function takeLiveCallAction(): void {
 export function dismissLiveNotice(): void {
   if (noticeTimer) clearTimeout(noticeTimer);
   noticeTimer = null;
-  if (state.phase === "ended" || state.phase === "failed" || state.needsKey || state.needsPro) set({ ...IDLE });
+  if (state.phase === "ended" || state.phase === "failed" || state.needsKey) set({ ...IDLE });
 }
 
 export function endSignedOut(): void {

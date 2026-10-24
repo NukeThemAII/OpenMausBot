@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { splitLaunchNote } from "./testing/launch-note.ts";
 import { withoutTurnClock } from "./testing/turn-clock-text.ts";
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
@@ -318,9 +319,10 @@ posixOnly("mid-turn steering e2e", () => {
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line));
-      const followUp = nativeRows
+      // A new session's first message also carries the volatile half of the bot's instructions: read it as the prompt.
+      const followUp = splitLaunchNote(nativeRows
         .filter((row) => row.dir === "out" && row.source === "claude.sdk.message")
-        .at(-1)?.msg;
+        .at(-1)?.msg).prompt;
       expect(followUp.message.content.map((block: any) => block.type === "text" ? { ...block, text: withoutTurnClock(block.text) } : block)).toEqual([
         {
           type: "image",

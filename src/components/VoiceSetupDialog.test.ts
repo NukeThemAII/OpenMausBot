@@ -109,7 +109,7 @@ describe("voice set-up pop-up", () => {
     expect(html).toContain("glass-surface");
     expect(html).toMatch(/role="dialog" aria-modal="true"/);
     expect(html).toContain("Give Pepper a voice");
-    expect(html).toContain("Choose an engine, add its key if it needs one, then pick a voice.");
+    expect(html).toContain("Choose a voice provider, add its key if it needs one, then pick a voice.");
     expect(html).toContain('data-voice-settings="pepper"');
     expect(html).toContain('aria-label="Close voice set-up"');
     expect(html).toContain("All voice settings");

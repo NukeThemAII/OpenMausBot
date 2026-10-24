@@ -155,6 +155,9 @@ export function createCloudComputerPower(deps: CloudComputerPowerDeps) {
     attached,
     released,
     used,
+    /** A computer is on (its idle window runs here) or starting: a Cloud home on a plan that sleeps stays awake for it,
+     * since its idle timer lives in this process. */
+    awake: () => timers.size > 0 || starting.size > 0,
     /** For activity that only matters to a computer already on, such as a person handing back control. */
     renew: (owner: string) => timers.get(owner)?.touch(),
     armRunning,

@@ -157,7 +157,7 @@ describe("quota-switch card", () => {
       const card = await failed(QUOTA, { messageId });
       expect(card?.card).toMatchObject({
         title: "Claude is out of quota",
-        subtitle: "Continue this conversation on another engine?",
+        subtitle: "Continue this conversation with another AI?",
         options: ["Codex", "Cursor", NOT_NOW],
         fixedOptions: true,
         // the failed request's own root in the job runtime rides the card
@@ -325,7 +325,7 @@ describe("quota-switch card", () => {
 
     it("says on the card to send the message again when there is none to resend", async () => {
       const card = (await failed(QUOTA, { messageId: undefined }))!;
-      expect(card.card!.subtitle).toBe("Switch this conversation to another engine? Send your message again afterwards.");
+      expect(card.card!.subtitle).toBe("Switch this conversation to another AI? Send your message again afterwards.");
       expect(card.card!.quotaSwitch!.messageId).toBeUndefined();
     });
 
@@ -481,7 +481,7 @@ describe("quota-switch card", () => {
       // It is the conversation's own engine that is gone, not Codex: no backup
       // can be checked against it, now or on the next press.
       expect(notices()).toEqual([{
-        name: "notice: this conversation's own engine is no longer configured here, so no other engine can be checked against it — nothing switched. Choose a model for this conversation instead.",
+        name: "notice: this conversation's own AI is no longer configured here, so no other AI can be checked against it — nothing switched. Choose a model for this conversation instead.",
         ok: false,
       }]);
       expect(cardNow(card)).toMatchObject({ answered: "unavailable", dismissed: true });
@@ -512,7 +512,7 @@ describe("quota-switch card", () => {
 
       expect(await answer(card, "Codex")).toBe("unavailable");
 
-      expect(notices()).toEqual([{ name: "notice: Codex is no longer configured, and the card offered no other engine — nothing switched.", ok: false }]);
+      expect(notices()).toEqual([{ name: "notice: Codex is no longer configured, and the card offered no other AI — nothing switched.", ok: false }]);
       expect(cardNow(card)).toMatchObject({ answered: "unavailable", dismissed: true });
       expect(pending()).toBeUndefined();
     });
@@ -801,7 +801,7 @@ describe("quota-switch card", () => {
       await answer(card, "Codex");
       expect(thread().modelSelection.instanceId).toBe("claude");
       expect(resend).not.toHaveBeenCalled();
-      expect(notices()).toContainEqual({ name: "notice: continuing on another engine is switched off — nothing switched.", ok: false });
+      expect(notices()).toContainEqual({ name: "notice: continuing with another AI is switched off — nothing switched.", ok: false });
       expect(cardNow(card)).toMatchObject({ answered: "unavailable", dismissed: true });
     });
   });

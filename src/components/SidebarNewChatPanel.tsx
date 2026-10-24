@@ -207,7 +207,7 @@ export function SidebarNewChatPanel({
                 title={subtext || undefined}
                 className={rowClass(index)}
               >
-                <BotAvatar bot={bot} state="happy" size={32} />
+                <BotAvatar bot={bot} state="happy" size={32} animated={false} />
                 <span dir="auto" className="min-w-0 flex-1 truncate">{bot.name}</span>
               </button>
             </div>

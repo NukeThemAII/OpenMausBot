@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { isTechnicalError, plainErrorLine } from "./plain-error";
-import { botsSaveFailure } from "../../shared/bots-save-failure";
+import { setLocale } from "./i18n";
+import { registrySaveFailure } from "../../shared/registry-save-failure";
+import { requestTooLargeMessage } from "../../shared/request-too-large";
 
 describe("plainErrorLine", () => {
   it.each([
@@ -41,11 +43,25 @@ describe("plainErrorLine", () => {
     "no activity for 10 minutes — the turn was stopped",
     "The server returned HTTP 503. Wait for the scheduled maintenance to finish, then try again.",
     "Couldn't undo that change.",
-    botsSaveFailure("the thread switch", "EPERM"),
-    botsSaveFailure("the thread's usage", "ENOSPC"),
+    registrySaveFailure("the thread switch", "bots.json", "EPERM"),
+    registrySaveFailure("the thread deletion", "groups.json", "ENOSPC"),
     "",
   ])("keeps a sentence a person can read: %j", (raw) => {
     expect(isTechnicalError(raw)).toBe(false);
     expect(plainErrorLine(raw)).toBeUndefined();
+  });
+});
+
+describe("a provider refusing a message as too large", () => {
+  afterEach(() => setLocale("en"));
+
+  it("is said in the reader's language with the model's name", () => {
+    const cause = requestTooLargeMessage("GLM 5.3 Flash");
+    expect(plainErrorLine(cause)).toBe(cause);
+    setLocale("de");
+    expect(plainErrorLine(cause)).toBe("Diese Nachricht ist zu groß für GLM 5.3 Flash. Starte einen neuen Chat oder wähle ein Modell, das mehr annimmt.");
+    setLocale("ja");
+    expect(plainErrorLine(`  ${requestTooLargeMessage("vendor/model-1.5")}\n`)).toBe("このメッセージは vendor/model-1.5 には大きすぎます。新しいチャットを始めるか、より多くを受け付けるモデルを選んでください。");
+    expect(plainErrorLine("This message is too large for the box.")).toBeUndefined();
   });
 });

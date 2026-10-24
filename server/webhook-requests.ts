@@ -1,6 +1,5 @@
 // Webhook triggers a bot makes or changes from chat. Every change applies at once (OpenMausBot adds no confirmation
-// card of its own); the conversation gets a receipt card with Undo. A bot-made webhook's secret is never shown to the
-// bot: the person copies the address from the card or the Automations page, which mints it then.
+// card of its own); the conversation gets a receipt card with Undo, which never carries the address.
 import { z } from "zod";
 
 import type { WebhookRequestCardData, WebhookRequestDefinition, WebhookRequestOperation, WebhookRequestSnapshot } from "../shared/webhook-request.ts";
@@ -159,7 +158,6 @@ export class WebhookRequestService {
     let runId: string | undefined;
     switch (operation.action) {
       case "create":
-        // The secret is discarded: the person mints a usable link from the card, so it never enters the transcript.
         after = webhooks.create({ ...managerInput(operation.webhook), name: operation.webhook.name, prompt: operation.webhook.instructions, botId: owner, enabled: true }).webhook;
         break;
       case "update":

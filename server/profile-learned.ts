@@ -104,3 +104,29 @@ export function removeLearned(id: string, aboutMe: string, saveAboutMe?: (text: 
   save(file);
   return { fact, aboutMe: next };
 }
+
+/** What this server learned about the person, and what the person removed, as another server takes them. */
+export function learnedState(): { learned: LearnedFact[]; removed: string[] } {
+  return load();
+}
+
+/** Another server's learned facts and removals: each fact neither removed here nor already in About me is added to it
+ * once, and its removals are remembered here too. Null when About me has no room for them. */
+export function adoptLearned(facts: readonly LearnedFact[], removed: readonly string[], aboutMe: string): { aboutMe: string; added: number } | null {
+  const file = load();
+  const tombstones = new Set([...file.removed, ...removed]);
+  const known = new Set([...file.learned.map((fact) => factIdentity(fact.text)), ...aboutMe.split("\n").map(lineIdentity)]);
+  const held = new Set([...file.learned.map((fact) => fact.id), ...file.learned.map((fact) => factIdentity(fact.text))]);
+  const lines: string[] = [], kept: LearnedFact[] = [];
+  for (const fact of facts) {
+    const key = factIdentity(fact.text);
+    if (!key || tombstones.has(key)) continue;
+    if (!held.has(fact.id) && !held.has(key)) { kept.push(fact); held.add(fact.id).add(key); }
+    if (!known.has(key)) { lines.push(fact.line); known.add(key); }
+  }
+  const next = appendAboutMe(aboutMe, lines);
+  if (next === null) return null;
+  const removals = [...new Set([...file.removed, ...removed])].slice(-MAX_REMOVED);
+  if (kept.length || removals.length !== file.removed.length) save({ learned: [...file.learned, ...kept].slice(-MAX_KEPT), removed: removals });
+  return { aboutMe: next, added: lines.length };
+}

@@ -17,7 +17,7 @@ const { track } = await import("@/lib/analytics");
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const allowances = { cpus: 2, memoryMb: 2048, diskGb: 20, maxDiskGb: 20, computers: 1, computerHours: 50, voiceCharacters: 1 };
 const OFFER: CloudOffer = { recommended: "pro", creditUsd: 5, reminderDays: 1, refundDays: 14, plans: [
-  { tier: "personal", amount: 2900, trialDays: 3, allowances }, { tier: "pro", amount: 4900, trialDays: 3, allowances }] };
+  { tier: "starter", amount: 1500, trialDays: 3, allowances }, { tier: "pro", amount: 4900, trialDays: 3, allowances }] };
 const signedOut: CloudAccountState = { status: "signed-out" };
 let host: HTMLDivElement, root: Root | null = null;
 const mount = async (element: ReturnType<typeof createElement>) => {
@@ -100,9 +100,9 @@ it("the beat: what Cloud does, the night shift scene, the Admin's offer in one l
   const beat = () => createElement(CloudBeat, { offer: OFFER, onNext, onSkip, setMascot, bump: vi.fn() });
   await mount(beat());
   const text = host.textContent!;
-  for (const words of ["MausBot Cloud is your own computer in the cloud. Your bots keep going 24/7, even when this computer is off.",
+  for (const words of ["MausBot Cloud runs your bots in the cloud. They keep going 24/7, even when this computer is off.",
     "Routines run on time, day and night", "Talk to your bots from your phone", "Bring everything over in one click",
-    "Free for 3 days, then from $29/month + tax. Includes $5 of Claude credit. 14-day money-back.", "Start free trial", "Not now",
+    "Free for 3 days, then from $15/month + tax. Includes $5 of Claude credit. 14-day money-back.", "Start free trial", "Not now",
     "You can add a Cloud any time from the switcher."]) expect(text).toContain(words);
   expect(f.api).toHaveBeenCalledWith("/api/config", { method: "PUT", body: JSON.stringify({ onboarding: { hintsSeen: ["onboarding-cloud-v1"] } }) });
   expect(button("Start free trial").hasAttribute("data-primary"), "the welcome focuses it").toBe(true);
@@ -127,7 +127,7 @@ it("without a trial the beat says the lowest price and See plans; a beat already
   f.state = { ...f.state, config: { onboarding: { completedAt: "", version: 0, reelSeen: false, hintsSeen: ["onboarding-cloud-v1"] } } };
   await mount(createElement(CloudBeat, { offer: { ...OFFER, creditUsd: undefined, plans: OFFER.plans.map(({ trialDays: _days, ...plan }) => plan) },
     onNext: vi.fn(), onSkip: vi.fn(), setMascot: vi.fn(), bump: vi.fn() }));
-  expect(host.textContent).toContain("From $29/month + tax. 14-day money-back.");
+  expect(host.textContent).toContain("From $15/month + tax. 14-day money-back.");
   expect(button("See plans")).toBeTruthy();
   expect(f.api).not.toHaveBeenCalled();
 });

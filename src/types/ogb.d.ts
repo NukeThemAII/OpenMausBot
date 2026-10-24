@@ -116,17 +116,22 @@ const __APP_VERSION__: string;
       platform: NodeJS.Platform;
       organization?: import("../../electron/managed-desktop.mjs").ManagedDesktopBridge;
       cloudAccount?: import("../../electron/cloud-account.mjs").CloudAccountBridge;
-      /** Copy this computer here: this computer's page names a saved server (or
-       * "cloud"); a server's own page is answered about itself only, and its
-       * Copy opens this computer's Settings on that copy (the verified Cloud's starts it). */
-      cloudMove?: import("../../electron/cloud-move.mjs").CloudMoveBridge;
-      /** The Cloud's setup checklist: shows the lending switch in this app's
-       * own Settings → OMB Cloud (leaving the Cloud's page). */
-      cloudLending?: { open(): Promise<void> };
+      /** "Let my bots use this Mac" (this PC, this computer), on My Cloud's own page in this app: its one switch and
+       * what is lent (electron/cloud-lending-ipc.mjs). `open` shows this computer's own Settings, leaving the page. */
+      cloudLending?: { open(): Promise<void>; state?(): Promise<import("../../electron/cloud-lending-ipc.mjs").PageLending>; set?(on: boolean): Promise<import("../../electron/cloud-lending-ipc.mjs").PageLending>; screen?(on: boolean): Promise<import("../../electron/cloud-lending-ipc.mjs").PageLending>;
+        /** A bot's Use my Mac link: this app's own popup, which turns on every part of Let my bots use this Mac. */
+        offer?(): Promise<void> };
+      /** Either page in this app: the one-time move's line (on its way, what arrived, coming home). */
+      cloudSendPage?: import("../../electron/cloud-send.mjs").CloudSendPageBridge;
       /** Settings on the person's own Cloud: the plan, read only. */
       cloudPlan?: import("../../electron/cloud-account.mjs").CloudPlanBridge;
+      /** This computer's page, and My Cloud's own page once it is the person's home: the window onto My Cloud. */
+      home?: import("../../electron/home-window.mjs").HomeBridge;
       desktopNotices?: import("../../electron/desktop-prefs.mjs").DesktopNoticesBridge;
       desktopAnalytics?: import("../../electron/desktop-prefs.mjs").DesktopAnalyticsBridge;
+      desktopLanguage?: import("../../electron/desktop-prefs.mjs").DesktopLanguageBridge;
+      /** This computer's page and My Cloud's own page: the one-time "Get MausBot updates?" answer. */
+      updatesConsent?: import("../../electron/updates-consent.mjs").UpdatesConsentBridge;
       companyBackups?: {
         state(): Promise<CompanyBackupState>;
         list(): Promise<{ backups: CompanyBackupEntry[]; usedBytes: number; limits: { ownerQuotaBytes: number; retainedSnapshots: number } }>;
@@ -139,10 +144,13 @@ const __APP_VERSION__: string;
         onState(callback: (state: CompanyBackupState) => void): () => void;
       };
       workspaces?: {
-        /** `color`: a saved server's colour name (its owner chose it while setting the Cloud up). */
-        state: () => Promise<{ local: boolean; name: string; origin?: string; color?: string }>;
+        /** `color`: a saved server's colour name (its owner chose it while setting the Cloud up); `home`: this window's
+         * home is this Cloud, so there is nothing to switch to. */
+        state: () => Promise<{ local: boolean; name: string; origin?: string; color?: string; home?: boolean; role?: string }>;
         /** The native server menu; resolves when it closes. `from: "howto"`: the Show me how tip opened it. */
         menu: (options?: { from?: "howto" }) => Promise<void>;
+        /** One plain line for the next page, served once: a team this person is no longer in. */
+        line?: () => Promise<{ kind: "left"; name: string } | null>;
       };
       /** Saved servers and the active one (desktop Server menu). Present on
        * the local server's UI; a remote server's page sees a reduced bridge. */
@@ -162,6 +170,8 @@ const __APP_VERSION__: string;
             missing?: boolean;
             /** One of the six Cloud colours (environments.cjs ENTRY_COLORS). */
             color?: string;
+            /** The person's own My Cloud. */
+            home?: boolean;
           }>;
         }>;
         /** Local targets answer {ok, error?} (error strings are an open set); remote ones answer nothing. */
@@ -175,7 +185,7 @@ const __APP_VERSION__: string;
          * cancelled remote confirm and remote success answer nothing. */
         forget: (id: string, purge?: boolean) => Promise<{ ok: boolean; error?: string } | void>;
         /** `panel` "copy": that server's Copy this computer here panel; otherwise its Computer access. */
-        onOpenSettings?: (callback: (computerId?: string | null, panel?: "copy") => void) => () => void;
+        onOpenSettings?: (callback: (computerId?: string | null) => void) => () => void;
       };
       /** Local main-window only. Hosted renderers cannot grant themselves access. */
       computerSharing?: {
@@ -331,9 +341,11 @@ const __APP_VERSION__: string;
       /** Points this computer's file manager at a file a bot linked outside
        * its workspace, without opening or reading it. Local app only. */
       revealInFolder?(filePath: string): Promise<"shown" | "missing" | "invalid">;
+      /** Opens this app's logs folder in Explorer or Finder and says where it is. */
+      openLogsFolder?(): Promise<{ folder: string; opened: boolean; error?: string }>;
       /** Save a provider credential through Electron's OS-backed store. */
       setCredential?(
-        name: "composioApiKey" | "xaiApiKey" | "boxToken" | "opencodeGoApiKey" | "ttsKey" | "fishAudioKey" | "jevApiKey" | "openrouterDeciderKey" | "openaiImageApiKey" | "customImageApiKey" | "openaiLiveKey",
+        name: "composioApiKey" | "xaiApiKey" | "boxToken" | "opencodeGoApiKey" | "ttsKey" | "fishAudioKey" | "jevApiKey" | "openrouterDeciderKey" | "workersAiToken" | "openaiImageApiKey" | "customImageApiKey" | "openaiLiveKey" | "tregApiKey",
         value: string,
       ): Promise<ConfigStatus>;
       /** In-app auto-update (packaged app only; dormant in dev). Updates
