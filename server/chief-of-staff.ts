@@ -49,7 +49,9 @@ export function chiefOfStaffSystemPrompt(
       ? person
         ? `You are ${person}'s assistant and Chief of Staff: their one point of contact. You coordinate only the bots that report to ${person}, in every department; other people's bots are theirs.`
         : `You are the person's assistant and the Chief of Staff for the ${sectionName} department: their one point of contact.`
-      : `You hold a Chief of Staff's tools for the ${sectionName} department, but you are not the Chief: the daily brief, team incidents and escalations stay with the Chief.`,
+      : chief?.defaultBot?.person
+        ? `You hold a Chief of Staff's tools for the ${sectionName} department, but you are not the Chief: the daily brief, team incidents and escalations stay with the Chief.`
+        : `You hold a Chief of Staff's tools for the ${sectionName} department, but you are not the Chief: team incidents and escalations stay with the Chief. Keeping an eye on the person's day and their daily brief are yours.`,
     chief?.managedSections?.length
       ? `The owner also allows you to coordinate and propose setup changes for these departments: ${chief.managedSections.map(s => peerName(s) || "General").join(", ")}. You remain the user's single point of contact. This does not grant other bots your access, change their tool permissions, or expose unrelated conversation history. Use list_bots for the actual reachable roster.`
       : "",

@@ -559,7 +559,7 @@ import {
   type Viewer,
 } from "./bot-visibility.ts";
 import { describeBrand, loadBrand } from "./brand.ts";
-import { deliverSseFrame } from "./sse-fanout.ts";
+import { deliverSseFrame, openSseHeartbeat } from "./sse-fanout.ts";
 import {
   PHONE_SECRET_PROTOCOL_VERSION,
   PhoneSecretBridge,
@@ -571,7 +571,7 @@ import {
 } from "./phone-secret.ts";
 // Keep these two last, so loading the route table leaves module start-up order as is.
 import { gzipTunnelReplies, json, onJsonBody, parsedBodyOf, readBody } from "./harness/http.ts";
-import { PASS, ROUTES, dispatchRoutes } from "./routes/table.ts"; import { applyIncludedPagesMessage } from "./pages/access.ts"; import { createPublishedPages } from "./pages/service.ts"; import { createXResearchInternalRoutes } from "./routes/x-research.ts"; import { createHelperToolRoutes } from "./routes/helper-tools.ts"; import { createHelperSuggestionRoutes } from "./routes/helper-suggestion.ts"; import { createXConnectorRoutes } from "./routes/x-connector.ts"; import { createMoveFreeze, switchAutomationsOff } from "./move-freeze.ts"; import { createMoveFreezeRoutes } from "./routes/move-freeze.ts"; import { assertBotHere, createBotMoves } from "./bot-moves.ts"; import { createBotMoveRoutes } from "./routes/bot-moves.ts"; import { createTeamMoveIn, moveInRefusal } from "./team-move-in.ts";
+import { PASS, ROUTES, dispatchRoutes } from "./routes/table.ts"; import { applyIncludedPagesMessage } from "./pages/access.ts"; import { createPublishedPages } from "./pages/service.ts"; import { createXResearchInternalRoutes } from "./routes/x-research.ts"; import { createHelperToolRoutes } from "./routes/helper-tools.ts"; import { createHelperSuggestionRoutes } from "./routes/helper-suggestion.ts"; import { createXConnectorRoutes } from "./routes/x-connector.ts"; import { createMoveFreeze, switchAutomationsOff } from "./move-freeze.ts"; import { createMoveFreezeRoutes } from "./routes/move-freeze.ts"; import { createMoveWaits } from "./move-waits.ts"; import { assertBotHere, createBotMoves } from "./bot-moves.ts"; import { createBotMoveRoutes } from "./routes/bot-moves.ts"; import { createTeamMoveIn, moveInRefusal } from "./team-move-in.ts";
 import { createHostedSlackRoutes } from "./routes/hosted-slack.ts";
 import { createBotPresetRoutes } from "./routes/bot-presets.ts";
 import { createBotMemoryRoutes } from "./routes/bot-memory.ts";
@@ -4999,6 +4999,8 @@ interface SseClient {
   viewer: Viewer;
   seen: StreamSeen;
   ask: AskViewer;
+  /** Stops the heartbeat and leaves `sseClients` before ending the response; every way a stream ends goes through it. */
+  close: () => void;
 }
 const sseClients = new Set<SseClient>();
 
@@ -5007,9 +5009,7 @@ function audienceChanged(): void {
   audienceChangedAt = lastSeq;
   browserLive.recheck();
   for (const client of sseClients) {
-    if (client.viewer.kind !== "member") continue;
-    sseClients.delete(client);
-    try { client.res.end(); } catch {}
+    if (client.viewer.kind === "member") client.close();
   }
 }
 // Before any revocation callback: Cloud boot can revoke sessions before routes are registered.
@@ -5048,11 +5048,7 @@ function closeSessionStreams(sessionId: string): void {
   browserLive.closeForOwner(sessionId);
   desktopViewer.closeForOwner(sessionId);
   for (const client of sseClients) {
-    if (client.sessionId !== sessionId) continue;
-    sseClients.delete(client);
-    try {
-      client.res.end();
-    } catch {}
+    if (client.sessionId === sessionId) client.close();
   }
 }
 sessions.onSessionRevoked((sessionId) => {
@@ -5117,9 +5113,7 @@ function broadcast(payload: Record<string, unknown>, options: { adminOnly?: bool
     const out = CLOUD_TEAM && kind === "config" && clientFrame !== null ? teamConfigFrame(client, seq, payload)
       : memberFrame(client, seq, payload, client.admin ? frame : clientFrame);
     if (out === null) continue;
-    if (deliverSseFrame(client, kind, out) === "disconnected") {
-      sseClients.delete(client);
-    }
+    if (deliverSseFrame(client, kind, out) === "disconnected") client.close();
   }
 }
 
@@ -5972,7 +5966,7 @@ const reviewAnswerThreads = new Set<string>();
 let routines: RoutineManager | null = null;
 const automationReports = createAutomationReports({ store, routines: () => routines, busy: threadBusy, wrote: markTaskContextExternallyUpdated, brief: (run, turnId) => proactive.runSettled(run, turnId),
   notify: (kind, bot, threadId, detail) => notify(buildNotification(kind, bot, threadId, detail, { avatarUrl: bot.avatarUrl })) });
-const proactive = createProactive({ store, cfg, composio, registry, dataDir: DATA_DIR, team: Boolean(HOSTED_WORKSPACE || CLOUD_TEAM), routines: () => routines, mainThread: botMainThread, threadBusy, notify, helpers: { decider, extractor }, cloud: Boolean(CLOUD_HOME || HOSTED_WORKSPACE || CLOUD_TEAM),
+const proactive = createProactive({ store, cfg, composio, registry, dataDir: DATA_DIR, team: Boolean(HOSTED_WORKSPACE || CLOUD_TEAM), frozen: moveFreeze.frozen, routines: () => routines, mainThread: botMainThread, threadBusy, notify, helpers: { decider, extractor }, cloud: Boolean(CLOUD_HOME || HOSTED_WORKSPACE || CLOUD_TEAM),
   engineName: (instanceId) => engineName(instanceId), hostTimeZone: () => (CLOUD_HOME ? undefined : hostTimeZone()), decide: (row) => appendDecision(DATA_DIR, row), stale: shouldIgnoreProviderEvent, release: (threadId) => watchdog.setWaitingOnHuman(threadId, false),
   owned: (routine) => { cloudRoutineAuthors?.record(routine.id, routine); if (CLOUD_OWNER_KEY) cloudRoutineAuthors?.wrote(routine.id, CLOUD_OWNER_KEY); }, needsYou: () => needsYouNow({ bots: store.bots, groups: store.groups, routines, parked: coordinator.active(), engines: registry.instances().map((instance) => ({ instanceId: instance.instanceId, snapshot: registry.lastSnapshot(instance.instanceId) })) }, { admin: true, thread: () => true, routine: () => true }) });
 teamOwners.startBriefs({ store, threadBusy, runs: () => routines?.listRuns(Date.now() - 36 * 60 * 60_000) ?? [], needsYou: (asks) => needsYouNow({ bots: store.bots, groups: store.groups, routines, parked: coordinator.active(), engines: [] }, { admin: false, thread: () => true, routine: () => true, asks }),
@@ -9916,7 +9910,7 @@ const appTriggers = createAppTriggerHost({ store, webhooks, webhookBase: () => w
   access: composio.brokerAccess, connectedApps: () => composio.connectedServices(cfg), visibleBot: (auth, botId) => visibleTo(viewerFor(auth)).bot(botId),
   audit: (row) => appendDecision(DATA_DIR, { ...row, decision: "auto-approved", source: "routine" }) });
 tieAutomationsToBots(store, { routines: routines!, webhooks, apps: appTriggers.manager });
-ROUTES.push(appTriggers.routes); ROUTES.unshift(createMoveFreezeRoutes({ freeze: moveFreeze, automationsOff: () => switchAutomationsOff({ routines: () => routines, calls: () => calendarCalls, webhooks: () => webhooks, appEvents: () => appTriggers.manager }), restart: () => { restartRequested = true; gracefulShutdown(); }, busy: () => store.bots.find((bot) => botHasActiveTurn(bot.id) || routines?.activeRunForBot(bot.id))?.name ?? store.groups.find(groupIsWorking)?.name ?? (coordinator.active().some((node) => !ENDED.has(node.status)) || providerAuthSessions.active ? "" : null) }));
+ROUTES.push(appTriggers.routes); ROUTES.unshift(createMoveFreezeRoutes({ freeze: moveFreeze, automationsOff: () => switchAutomationsOff({ routines: () => routines, calls: () => calendarCalls, webhooks: () => webhooks, appEvents: () => appTriggers.manager }), restart: () => { restartRequested = true; gracefulShutdown(); }, busy: createMoveWaits({ bots: () => store.bots, rooms: () => store.groups, answering: (id) => watchdog.answering(id), turn: botHasActiveTurn, runs: () => routines?.listRuns() ?? [], roomWorking: (id) => { const group = store.group(id); return Boolean(group && groupIsWorking(group)); }, handoffs: () => coordinator.active(), exists: (node) => !(!node.parentId && node.groupId ? roomRootProblem(node) : roomHandoffProblem(node)), signingIn: () => providerAuthSessions.active }) }));
 ROUTES.push(createLimitResetRoutes({ clock: limitClock, routines: routines!, requests: routineRequests, engineName, threadEngine: (botId, threadId) => turnSelection(botId, threadId)?.instanceId,
   threadTitle: (botId, threadId) => store.bot(botId) && !store.bot(botId)!.hidden ? store.taskByThread(botId, threadId)?.title ?? null : null,
   created: (id, auth) => cloudRoutineAuthors?.wrote(id, auth.kind === "session" ? actorKey(auth) : CLOUD_NOBODY_KEY) }));
@@ -15807,6 +15801,12 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
           bots: new Set(store.bots.filter((bot) => visibleNow.bot(bot.id)).map((bot) => bot.id)),
           groups: new Set(store.groups.filter((group) => visibleNow.group(group.id)).map((group) => group.id)),
         },
+        // A comment frame keeps intermediaries from idling the connection; a data frame resets EventSource's own liveness watchdog. Heartbeats carry no id.
+        close: openSseHeartbeat(res, {
+          everyMs: SSE_HEARTBEAT_MS,
+          live: () => !client.sessionId || sessions.isLive(client.sessionId),
+          onClose: () => sseClients.delete(client),
+        }),
       };
       if (auth.kind === "session") client.sessionId = auth.session.id;
       if (CLOUD_TEAM && auth.kind === "session") client.person = auth.session;
@@ -15852,20 +15852,7 @@ const handleRequest = async (req: IncomingMessage, res: ServerResponse) => {
 
       sseClients.add(client);
       req.socket.setTimeout(0);
-      // A comment frame keeps intermediaries from idling the connection; a data frame resets EventSource's own liveness watchdog. Heartbeats carry no id.
-      const keepalive = setInterval(() => {
-        if (client.sessionId && !sessions.isLive(client.sessionId)) {
-          res.end();
-          return;
-        }
-        try {
-          res.write(`: keepalive\n\ndata: ${JSON.stringify({ kind: "ping" })}\n\n`);
-        } catch {}
-      }, SSE_HEARTBEAT_MS);
-      req.on("close", () => {
-        clearInterval(keepalive);
-        sseClients.delete(client);
-      });
+      req.on("close", client.close);
       return;
     }
 

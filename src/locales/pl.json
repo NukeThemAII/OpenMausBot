@@ -688,6 +688,7 @@
   "cloudSend.move.bringingChats": "Przenoszenie botów tego komputera do My Cloud… Czaty: {done} z {total}",
   "cloudSend.move.waiting": "Przenoszenie botów do My Cloud… czekanie, aż {name} zakończy",
   "cloudSend.move.waitingAny": "Przenoszenie botów do My Cloud… czekanie, aż boty zakończą",
+  "cloudSend.move.waitingSignIn": "Przenoszenie botów do My Cloud… czekanie, aż zakończy się logowanie",
   "cloudSend.move.finishing": "Przenoszenie do My Cloud… prawie gotowe",
   "cloudSend.move.updating": "My Cloud się aktualizuje. Przenoszenie zacznie się po zakończeniu.",
   "cloudSend.move.failing": "Boty nie mogły jeszcze przejść do My Cloud: {error}",
@@ -6177,5 +6178,6 @@
   "usageMeter.err.unavailable": "Teraz nie można zmienić planu w aplikacji. Nic nie zostało pobrane. Otwórz swoją stronę planu, aby zobaczyć dostępne opcje.",
   "usageMeter.err.priceChanged": "Cena zmieniła się od chwili, gdy ją sprawdzono, więc nic nie zostało pobrane. Wybierz Zmień na wyższy plan, aby zobaczyć nową cenę.",
   "usageMeter.err.rateLimited": "Zbyt wiele prób. Odczekaj kilka minut i spróbuj ponownie.",
-  "usageMeter.err.failed": "Nie udało się zmienić planu. Nic nie zostało pobrane. Spróbuj ponownie za minutę."
+  "usageMeter.err.failed": "Nie udało się zmienić planu. Nic nie zostało pobrane. Spróbuj ponownie za minutę.",
+  "helperIntro.watch": "Pilnuję też Twojego dnia i wysyłam Ci krótkie podsumowanie."
 }

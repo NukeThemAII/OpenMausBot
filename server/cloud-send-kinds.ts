@@ -20,6 +20,7 @@ import type { CalendarCall, CalendarCallManager } from "./calendar-calls.ts";
 import type { CloudOwner } from "./cloud-owner-lines.ts";
 import type { CloudSendItem } from "./cloud-send.ts";
 import { retireUnusedStarter, takeArrivingDefaultBot } from "./default-bot.ts";
+import { watchAsMade } from "./host/default-watch.ts";
 import { IMPORTED_SKILLS_DIR, readImportedSkills, storeImportedSkills, type ImportedSkillInput } from "./imported-skills.ts";
 import type { RequestAuth } from "./request-auth.ts";
 import { withCheckFields } from "./routine-load.ts";
@@ -171,6 +172,11 @@ export function moveItems(deps: MoveKindsDeps, bots: ReadonlySet<string>, only?:
   for (const skill of importedSkills(deps)) add("imported-skill", skill.name, skill.name, { files: importedSkillHash(skill) });
   for (const { entry } of librarySkills()) add("library-skill", entry.name, entry.name, { text: entry.sha256.slice(0, 24) || EMPTY, state: entry.reviewState });
   return items;
+}
+
+/** The bot has a routine here the person set up or changed: a move counts it as in use, so the routine goes with it. */
+export function automatedBot(deps: Pick<MoveKindsDeps, "routines">, botId: string): boolean {
+  return (deps.routines()?.listRoutines() ?? []).some((routine) => routine.botId === botId && !watchAsMade(routine));
 }
 
 /** Each automation here and whether it is on, for the switch that turns on there what was on here; `bot`: that bot's

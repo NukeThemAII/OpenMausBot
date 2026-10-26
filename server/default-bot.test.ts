@@ -110,13 +110,15 @@ describe("MausBot, every person's helper", () => {
     expect(briefChief(store)?.id).toBe(seeded.id);
   });
 
-  it("leaves a place's own Chief as the Chief and the one the brief comes from", () => {
+  it("leaves a place's own Chief as the Chief, and the brief comes from MausBot, which says so", () => {
     const store = new Store(selection);
     const chief = store.createBot({ name: "Clive" });
     store.setChiefOfStaff(chief.id);
     const maus = boot(store)!;
     expect(store.bot(maus.id)?.chiefOfStaff).toBeFalsy();
-    expect(briefChief(store)?.id).toBe(chief.id);
+    expect(briefChief(store)?.id).toBe(maus.id);
+    expect(intros(store, maus)[0]?.text).toContain("I also keep an eye on your day and send you a short brief.");
+    expect(intros(store, maus)[0]?.text).not.toContain("Chief of Staff");
   });
 
   it("keeps a MausBot Chief hidden from the sidebar working as the Chief", () => {
@@ -218,6 +220,7 @@ describe("MausBot, every person's helper", () => {
     expect(bea).toMatchObject({ defaultBot: { person: "bea@example.com" }, visibility: { people: ["bea@example.com"] } });
     expect(ada.chiefOfStaff).toBeFalsy();
     expect(intros(store, ada)[0]?.text).toContain("On Acme, I'm here for you and look after your own bots.");
+    expect(intros(store, ada)[0]?.text).not.toContain("keep an eye on your day");
     expect(store.bots).toHaveLength(3);
   });
 

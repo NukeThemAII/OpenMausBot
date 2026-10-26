@@ -1,5 +1,5 @@
-// The main agent's brief: one server-built card a day in a fixed chat of the Chief's, edited in place, rendered with no
-// AI from what the checks found and what the watch run sorted. It exists only once it has something for the person, opens
+// The main agent's brief: one server-built card a day in a fixed chat of the proactive bot's, edited in place, rendered
+// with no AI from what the checks found and what the watch run sorted. It exists only once it has something for the person, opens
 // on the first open of the day and after three hours away, and tells the person once per update. Presence, the brief's home and its rows live in brief.json,
 // ids and times only; the senders and subjects it shows are read back from Gmail by id after a restart.
 import { readFileSync } from "node:fs";
@@ -58,7 +58,7 @@ export interface BriefDeps {
   now?: () => number;
   /** A hosted team workspace or a Team Cloud: the people there are not one person, so there is no brief. */
   hosted: boolean;
-  /** The Chief's briefing routine is on; with it paused or deleted there is no brief. */
+  /** The proactive bot's briefing routine is on; with it paused or deleted there is no brief. */
   watching(): boolean;
   mainThread(botId: string): string | undefined;
   threadBusy(botId: string, threadId: string): boolean;
@@ -145,7 +145,7 @@ export function createBrief(deps: BriefDeps) {
   /** The bot the brief belongs to: proactiveOwner decides. */
   const chief = (): BotRecord | null => proactiveOwner(deps.store);
 
-  /** The brief's chat: chosen once, the Chief's main chat at the time, and chosen again only if it is gone. */
+  /** The brief's chat: chosen once, the bot's main chat at the time, and chosen again only if it is gone. */
   function home(bot: BotRecord): string | undefined {
     if (state.home?.botId === bot.id && deps.store.taskByThread(bot.id, state.home.threadId)) return state.home.threadId;
     const threadId = deps.mainThread(bot.id);
@@ -155,9 +155,10 @@ export function createBrief(deps: BriefDeps) {
     return threadId;
   }
 
-  const currentCard = (): { row: Message; card: NonNullable<BriefState["card"]> } | null => {
+  /** Today's card, while it is this bot's: one the brief's earlier bot posted stays where it is. */
+  const currentCard = (bot: BotRecord): { row: Message; card: NonNullable<BriefState["card"]> } | null => {
     const card = state.card;
-    if (!card || card.day !== today()) return null;
+    if (!card || card.day !== today() || card.botId !== bot.id) return null;
     const row = deps.store.messagesFor(card.threadId).find((message) => message.id === card.messageId);
     return row?.serverCard ? { row, card } : null;
   };
@@ -276,7 +277,7 @@ export function createBrief(deps: BriefDeps) {
     rendering = true;
     try {
       await rereadHeaders();
-      const existing = currentCard();
+      const existing = currentCard(bot);
       const built = facts(bot);
       const threadId = existing?.card.threadId ?? home(bot);
       if (!threadId) return null;
@@ -328,7 +329,7 @@ export function createBrief(deps: BriefDeps) {
     return edited.messageId;
   }
 
-  /** A server card of its own in the brief's chat: a prep or a reminder. Null when there is no Chief or chat. */
+  /** A server card of its own in the brief's chat: a prep or a reminder. Null when there is no proactive bot or chat. */
   function postCard(built: BuiltCard): { bot: BotRecord; threadId: string; messageId: string } | null {
     const bot = chief();
     const threadId = bot ? home(bot) : undefined;
@@ -464,8 +465,18 @@ export function createBrief(deps: BriefDeps) {
     /** Each minute: an edit a busy chat held back. */
     tick: (): void => { if (dirty) void render({ create: false, notify: false }); },
     card: (): WidgetRoot | undefined => {
-      const shown = currentCard();
-      return shown?.row.widget?.root;
+      const bot = chief();
+      return bot ? currentCard(bot)?.row.widget?.root : undefined;
+    },
+    /** The brief moved to another bot: from now on it lives in that bot's main chat, and its next card says what it
+     * does. Cards already posted stay where they are. */
+    moveTo: (botId: string): void => {
+      if (state.home?.botId === botId) return;
+      const threadId = deps.mainThread(botId);
+      if (threadId) state.home = { botId, threadId };
+      else delete state.home;
+      delete state.introducedOn;
+      save();
     },
   };
 }

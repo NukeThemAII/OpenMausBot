@@ -1,23 +1,48 @@
 # Proactive routines
 
-The Chief of Staff keeps an eye on the person's day with one ordinary routine,
+MausBot keeps an eye on the person's day with one ordinary routine,
 "Keep an eye on my day". It is made once, with no button, on a personal install
 or Cloud that can reach connected apps, and it is built from four upgrades every
 routine can use, plus the helper models for the inbox.
 The bot that is proactive is the one `proactiveOwner` names
-(`server/host/proactive-owner.ts`): the main Chief today, in one place.
-There is no second bot and no separate watcher: the routine engine
-(`server/routines.ts`) runs it like any other routine, on the desktop, headless
-and on a Cloud.
+(`server/host/proactive-owner.ts`): the place's MausBot, shown in the sidebar or
+not, and the main Chief only where there is no MausBot. A Team Cloud member's
+MausBot is never the one. There is no second bot and no separate watcher: the
+routine engine (`server/routines.ts`) runs it like any other routine, on the
+desktop, headless and on a Cloud.
+
+## Who owns it
+
+- **A new install.** Its first bot is MausBot, which is also its Chief. The
+  routine, the brief, the add-a-key card and the intro's line about the day are
+  MausBot's.
+- **An install that had a Chief before MausBot.** The Chief stays the Chief.
+  The first time the server starts with MausBot there, the Chief's "Keep an eye
+  on my day" becomes MausBot's. It is the same routine, moved, so everything
+  the person set stays: on or paused, the instructions they edited, the checks'
+  cursors and seen ids, and the day's run count. The brief's chat becomes
+  MausBot's own conversation, and its next card says again what it does. Cards
+  already posted stay where they were.
+- **The handover is safe to repeat.** It waits while a run of the routine is
+  queued or working. `watch.json` records which bot each briefing routine was
+  handed to, so it happens once: a routine the person later puts back on the
+  Chief stays there. A restart between the steps finishes them at the next
+  start, and a computer frozen by a move to My Cloud hands nothing over.
+- **One on at a time.** When a briefing routine lands on MausBot, handed over
+  or arrived with it in a move, it is the one. Every other briefing routine is
+  paused, never deleted, so the inbox is never read twice and a paused routine
+  stays paused.
+- **Hidden from the sidebar.** MausBot keeps working: the brief is posted to its
+  chat, and the notification and the first open of the day open that chat.
 
 ## What the person sees
 
-- **The brief.** One card a day in a fixed chat of the Chief's, edited in
+- **The brief.** One card a day in a fixed chat of MausBot's, edited in
   place, built with no AI. It exists only once it has something for the person
   (something that needs them, an important email or a meeting today); an empty
   brief is never posted. It opens on the first open of the day and after three
   hours away. Any other moment, it never takes the screen from the chat in use.
-  Its first appearance says what it does and that the person can tell the Chief
+  Its first appearance says what it does and that the person can tell MausBot
   to stop or change it. Sections:
   1. **Needs you**: emails waiting on a reply, failed or missed routines,
      meetings that clash, an app that can't be read ("Couldn't read Gmail ·
@@ -112,7 +137,8 @@ there is no brief at all. Its row says
   record (from the person's device, so a Cloud is not stuck on UTC), the
   important rows by id, and recent dismissals with the sender's address. The
   senders and subjects it shows are read back from Gmail by id after a restart.
-- `watch.json`: that the default routine was made, so it is never made again.
+- `watch.json`: that the default routine was made, so it is never made again,
+  and the bot each briefing routine was handed to.
 - A card the server built carries `serverCard`. A bot can't edit it, and it
   replays into a turn only as records. Dismiss works only for the owner or an
   admin, only on the brief, checks thread ownership before reading a widget, and
@@ -124,8 +150,11 @@ there is no brief at all. Its row says
   start. A scripted test install without the fake connected-apps service
   behaves as before.
 - Routines carry `checks`, `access` and `deliver` through Cloud moves and team
-  backups. The move freeze pauses the watch like any routine, so two homes never
-  watch the same inbox.
+  backups. The watch moves to My Cloud with MausBot. A move carries MausBot
+  when it has a routine the person set up, paused or changed, even if nobody
+  has opened MausBot; the watch exactly as the server made it does not count.
+  On My Cloud the arrived watch pauses My Cloud's own. The move freeze pauses the watch like any routine, so two
+  homes never watch the same inbox. MausBot never moves into a team.
 
 ## Not in v1
 

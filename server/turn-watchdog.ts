@@ -80,6 +80,13 @@ export class TurnWatchdog {
     return turn !== undefined && parked(turn);
   }
 
+  /** A turn of this bot is answering now: running and not parked on a person or a computer. One that goes silent is
+   * stopped by the sweep, so this never holds anything for longer than stallMs without events. */
+  answering(botId: string): boolean {
+    for (const turn of this.turns.values()) if (turn.botId === botId && !parked(turn)) return true;
+    return false;
+  }
+
   sweep(): void {
     const at = this.now();
     for (const turn of this.turns.values()) {

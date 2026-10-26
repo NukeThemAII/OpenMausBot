@@ -122,6 +122,24 @@ describe("TurnWatchdog", () => {
     dog.sweep();
     expect(stalls).toEqual([expect.objectContaining({ botId: "bot2" })]);
   });
+
+  it("says a bot is answering while one of its turns runs unparked, and not once it waits or ends", () => {
+    const { dog } = rig();
+    expect(dog.answering("bot1")).toBe(false);
+    dog.watch("t1", "bot1");
+    dog.watch("t2", "bot2");
+    expect(dog.answering("bot1")).toBe(true);
+    dog.setWaitingOnHuman("t1", true);
+    expect(dog.answering("bot1"), "paused on the person's approval").toBe(false);
+    dog.watch("t3", "bot1");
+    expect(dog.answering("bot1"), "its other conversation answers").toBe(true);
+    dog.setWaitingOnComputer("t3", true);
+    expect(dog.answering("bot1"), "waiting for a computer").toBe(false);
+    dog.setWaitingOnComputer("t3", false);
+    dog.settle("t3");
+    expect(dog.answering("bot1")).toBe(false);
+    expect(dog.answering("bot2")).toBe(true);
+  });
 });
 
 // The harness's stall handler (index.ts), run without starting a server.
